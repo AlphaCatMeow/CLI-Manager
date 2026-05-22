@@ -241,6 +241,9 @@ function App() {
     const appWindow = getCurrentWindow();
     void (async () => {
       try {
+        const shouldPreserveWindowBounds =
+          (await appWindow.isMaximized()) || (await appWindow.isFullscreen());
+        if (shouldPreserveWindowBounds) return;
         if (viewMode !== "compact") {
           if (restoreWindowWidthRef.current && restoreWindowWidthRef.current > COMPACT_WINDOW_WIDTH) {
             await appWindow.setSize(
@@ -255,11 +258,7 @@ function App() {
           restoreWindowWidthRef.current = window.innerWidth;
         }
         if (settingsOpen) {
-          // 精简模式下打开设置：临时扩展窗口以容纳设置面板
           await appWindow.setMinSize(new LogicalSize(800, WINDOW_MIN_HEIGHT));
-          if (await appWindow.isMaximized()) {
-            await appWindow.unmaximize();
-          }
           const targetWidth = Math.max(restoreWindowWidthRef.current ?? 800, 800);
           await appWindow.setSize(
             new LogicalSize(targetWidth, Math.max(window.innerHeight, WINDOW_MIN_HEIGHT))
@@ -267,9 +266,6 @@ function App() {
           return;
         }
         await appWindow.setMinSize(new LogicalSize(COMPACT_WINDOW_WIDTH, WINDOW_MIN_HEIGHT));
-        if (await appWindow.isMaximized()) {
-          await appWindow.unmaximize();
-        }
         await appWindow.setSize(
           new LogicalSize(COMPACT_WINDOW_WIDTH, Math.max(window.innerHeight, WINDOW_MIN_HEIGHT))
         );

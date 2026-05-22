@@ -250,16 +250,55 @@ export function XTermTerminal({ sessionId, isActive = true, fontSize = 14, fontF
     });
 
     const textarea = containerRef.current.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
+    const viewport = containerRef.current.querySelector(".xterm-viewport") as HTMLElement | null;
+    let compositionScrollRafId: number | null = null;
+    let compositionScrollLock: { element: HTMLElement; scrollTop: number; scrollLeft: number }[] = [];
+
+    const captureCompositionScroll = () => {
+      const container = containerRef.current;
+      compositionScrollLock = [container, viewport]
+        .filter((element): element is HTMLElement => Boolean(element))
+        .map((element) => ({
+          element,
+          scrollTop: element.scrollTop,
+          scrollLeft: element.scrollLeft,
+        }));
+    };
+
+    const restoreCompositionScroll = () => {
+      for (const { element, scrollTop, scrollLeft } of compositionScrollLock) {
+        element.scrollTop = scrollTop;
+        element.scrollLeft = scrollLeft;
+      }
+    };
+
+    const scheduleCompositionScrollRestore = () => {
+      restoreCompositionScroll();
+      if (compositionScrollRafId !== null) {
+        cancelAnimationFrame(compositionScrollRafId);
+      }
+      compositionScrollRafId = requestAnimationFrame(() => {
+        compositionScrollRafId = null;
+        restoreCompositionScroll();
+      });
+    };
 
     const onCompositionStart = () => {
       isComposingRef.current = true;
+      captureCompositionScroll();
+      scheduleCompositionScrollRestore();
+    };
+    const onCompositionUpdate = () => {
+      scheduleCompositionScrollRestore();
     };
     const onCompositionEnd = () => {
       isComposingRef.current = false;
+      scheduleCompositionScrollRestore();
       scheduleFit(true);
     };
 
     textarea?.addEventListener("compositionstart", onCompositionStart);
+    textarea?.addEventListener("compositionupdate", onCompositionUpdate);
     textarea?.addEventListener("compositionend", onCompositionEnd);
 
     // Ctrl + wheel adjusts global font size (writes settings store, like Windows Terminal but persistent).
@@ -302,12 +341,17 @@ export function XTermTerminal({ sessionId, isActive = true, fontSize = 14, fontF
     return () => {
       cancelled = true;
       textarea?.removeEventListener("compositionstart", onCompositionStart);
+      textarea?.removeEventListener("compositionupdate", onCompositionUpdate);
       textarea?.removeEventListener("compositionend", onCompositionEnd);
       wheelTarget.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
       resizeObserver.disconnect();
       if (fitRafRef.current !== null) {
         cancelAnimationFrame(fitRafRef.current);
         fitRafRef.current = null;
+      }
+      if (compositionScrollRafId !== null) {
+        cancelAnimationFrame(compositionScrollRafId);
+        compositionScrollRafId = null;
       }
       if (writeRafId !== null) {
         cancelAnimationFrame(writeRafId);
@@ -327,7 +371,7 @@ export function XTermTerminal({ sessionId, isActive = true, fontSize = 14, fontF
   return (
     <div
       ref={containerRef}
-      className="w-full h-full"
+      className="h-full w-full overflow-hidden"
       style={{ backgroundColor: getTerminalBackground(terminalThemeName, resolvedTheme, lightThemePalette, darkThemePalette) }}
     />
   );
