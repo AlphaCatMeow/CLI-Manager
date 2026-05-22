@@ -4,7 +4,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { resolveAutoTerminalThemeId } from "../lib/terminalThemes";
 
 export type ThemeMode = "dark" | "light" | "system";
-export type LightThemePalette = "warm-paper" | "cream-green" | "ink-red" | "saas-analytics-dashboard";
+export type LightThemePalette =
+  | "warm-paper"
+  | "cream-green"
+  | "ink-red"
+  | "saas-analytics-dashboard"
+  | "apple-pure"
+  | "apple-mist"
+  | "apple-warm"
+  | "apple-mono";
 export type DarkThemePalette = "night-indigo" | "forest-night" | "graphite-red" | "investment-platform";
 export type TerminalThemeMode = "follow-app" | "independent";
 export type SidebarDensity = "compact" | "comfortable";
@@ -19,6 +27,7 @@ interface Settings {
   darkThemePalette: DarkThemePalette;
   fontSize: number;
   fontFamily: string;
+  uiFontFamily: string;
   defaultShell: string;
   sidebarWidth: number;
   historySidebarWidth: number;
@@ -48,6 +57,8 @@ const DEFAULTS: Settings = {
   darkThemePalette: "night-indigo",
   fontSize: 14,
   fontFamily: "Cascadia Code, Consolas, monospace",
+  uiFontFamily:
+    "\"Segoe UI Variable\", \"Segoe UI\", -apple-system, BlinkMacSystemFont, \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
   defaultShell: "powershell.exe",
   sidebarWidth: 280,
   historySidebarWidth: 300,

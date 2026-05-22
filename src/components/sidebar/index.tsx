@@ -61,6 +61,8 @@ export function Sidebar({ onOpenStats, onOpenSettings, compactMode = false }: Si
   const renameGroup = useProjectStore((s) => s.renameGroup);
   const deleteGroup = useProjectStore((s) => s.deleteGroup);
   const reorderItems = useProjectStore((s) => s.reorderItems);
+  const moveGroupToParent = useProjectStore((s) => s.moveGroupToParent);
+  const moveProjectToGroup = useProjectStore((s) => s.moveProjectToGroup);
   const createSession = useTerminalStore((s) => s.createSession);
   const sessions = useTerminalStore((s) => s.sessions);
   const sessionStatuses = useTerminalStore((s) => s.sessionStatuses);
@@ -260,37 +262,65 @@ export function Sidebar({ onOpenStats, onOpenSettings, compactMode = false }: Si
   );
 
   const handleDragEnd = useCallback(
-    (parentId: string | null, event: DragEndEvent) => {
+    (event: DragEndEvent) => {
       const { active, over } = event;
       if (!over || active.id === over.id) return;
+      const activeId = active.id as string;
+      const overId = over.id as string;
+      const isGroup = (id: string) => groups.some((g) => g.id === id);
+      const isProject = (id: string) => projects.some((p) => p.id === id);
 
-      const findChildren = (pid: string | null): TNode[] => {
-        if (pid === null) return tree;
-        const findInTree = (nodes: TNode[]): TNode[] | null => {
-          for (const node of nodes) {
-            if (node.type === "group" && node.group.id === pid) return node.children;
-            if (node.type === "group") {
-              const found = findInTree(node.children);
-              if (found) return found;
-            }
+      // 1) 拖入指定分组
+      if (overId.startsWith("into:")) {
+        const targetGroupId = overId.slice("into:".length);
+        if (activeId === targetGroupId) return;
+        if (isGroup(activeId)) void moveGroupToParent(activeId, targetGroupId);
+        else if (isProject(activeId)) void moveProjectToGroup(activeId, targetGroupId);
+        return;
+      }
+
+      // 3) 拖到 sibling 节点：先定位 over 所在父级与同级列表
+      const findParentChildren = (
+        nodes: TNode[],
+        targetId: string,
+        parentId: string | null
+      ): { parentId: string | null; nodes: TNode[] } | null => {
+        const here = nodes.some((n) =>
+          n.type === "group" ? n.group.id === targetId : n.project.id === targetId
+        );
+        if (here) return { parentId, nodes };
+        for (const n of nodes) {
+          if (n.type === "group") {
+            const r = findParentChildren(n.children, targetId, n.group.id);
+            if (r) return r;
           }
-          return null;
-        };
-        return findInTree(tree) ?? [];
+        }
+        return null;
       };
 
-      const children = findChildren(parentId);
-      const ids = children.map((c) => (c.type === "group" ? c.group.id : c.project.id));
-      const oldIndex = ids.indexOf(active.id as string);
-      const newIndex = ids.indexOf(over.id as string);
-      if (oldIndex === -1 || newIndex === -1) return;
+      const overContext = findParentChildren(tree, overId, null);
+      if (!overContext) return;
 
+      const ids = overContext.nodes.map((c) => (c.type === "group" ? c.group.id : c.project.id));
+      const oldIndex = ids.indexOf(activeId);
+      const newIndex = ids.indexOf(overId);
+      if (newIndex === -1) return;
+
+      // active 不在同层 → 跨层移到 over 所在父级
+      if (oldIndex === -1) {
+        const targetParent = overContext.parentId;
+        if (isGroup(activeId)) void moveGroupToParent(activeId, targetParent);
+        else if (isProject(activeId)) void moveProjectToGroup(activeId, targetParent);
+        return;
+      }
+
+      // 同层 reorder
       const reordered = [...ids];
       reordered.splice(oldIndex, 1);
-      reordered.splice(newIndex, 0, active.id as string);
-      void reorderItems(parentId, reordered);
+      reordered.splice(newIndex, 0, activeId);
+      void reorderItems(overContext.parentId, reordered);
     },
-    [reorderItems, tree]
+    [groups, projects, tree, reorderItems, moveGroupToParent, moveProjectToGroup]
   );
 
   const loadProjects = useCallback(async () => {
@@ -332,19 +362,35 @@ export function Sidebar({ onOpenStats, onOpenSettings, compactMode = false }: Si
     };
   }, [contextMenu]);
 
+  // 把 sessions × statuses 预聚合成 Map<projectId, status>，从每节点 O(N) filter
+  // 变成 O(1) lookup。原方案在 TreeNodeItem 中每行调用一次，叠加项目树 + 状态变化
+  // 会触发 O(N·M) 全表扫描。
+  const projectStatusMap = useMemo(() => {
+    const map = new Map<string, SessionStatus>();
+    for (const session of sessions) {
+      const projectId = session.projectId;
+      if (!projectId) continue;
+      const status = (sessionStatuses[session.id] ?? "running") as SessionStatus;
+      const current = map.get(projectId);
+      // running 优先级最高，其次 error，最后 exited
+      if (status === "running") {
+        map.set(projectId, "running");
+        continue;
+      }
+      if (current === "running") continue;
+      if (status === "error") {
+        map.set(projectId, "error");
+        continue;
+      }
+      if (current === "error") continue;
+      map.set(projectId, "exited");
+    }
+    return map;
+  }, [sessions, sessionStatuses]);
+
   const getProjectStatus = useCallback(
-    (projectId: string): SessionStatus | null => {
-      const projectSessions = sessions.filter((s) => s.projectId === projectId);
-      if (projectSessions.length === 0) return null;
-      for (const s of projectSessions) {
-        if ((sessionStatuses[s.id] ?? "running") === "running") return "running";
-      }
-      for (const s of projectSessions) {
-        if (sessionStatuses[s.id] === "error") return "error";
-      }
-      return "exited";
-    },
-    [sessionStatuses, sessions]
+    (projectId: string): SessionStatus | null => projectStatusMap.get(projectId) ?? null,
+    [projectStatusMap]
   );
 
   const isPathInvalid = useCallback(
@@ -506,17 +552,24 @@ export function Sidebar({ onOpenStats, onOpenSettings, compactMode = false }: Si
       walk(groupId);
       await openProjects(projects.filter((p) => p.group_id && groupIds.has(p.group_id)));
     },
-    [groups, projects, openProjectExternally, compactMode, useExternalTerminal, createSession]
+    // 依赖只列函数体真正读取的值，避免无关 selector 变化引起整树重建。
+    [groups, projects]  // eslint-disable-line react-hooks/exhaustive-deps
   );
 
-  const filteredProjects = searchQuery
-    ? projects.filter(
-        (project) =>
-          project.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          project.cli_tool.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : [];
-  const selectedProjects = projects.filter((p) => selectedProjectIds.has(p.id));
+  const filteredProjects = useMemo(() => {
+    if (!searchQuery) return [];
+    const lower = searchQuery.toLowerCase();
+    return projects.filter(
+      (project) =>
+        project.name.toLowerCase().includes(lower) ||
+        project.cli_tool.toLowerCase().includes(lower)
+    );
+  }, [projects, searchQuery]);
+
+  const selectedProjects = useMemo(
+    () => projects.filter((p) => selectedProjectIds.has(p.id)),
+    [projects, selectedProjectIds]
+  );
 
   const treeActions = useMemo<TreeActions>(
     () => ({

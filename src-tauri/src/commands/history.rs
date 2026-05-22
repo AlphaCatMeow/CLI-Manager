@@ -1,4 +1,5 @@
 use log::debug;
+use memchr::memmem;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -8,6 +9,11 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// BufReader 容量；默认 8KB 对几 MB 的 jsonl 文件 syscall 次数偏多。
+const READ_BUF_CAPACITY: usize = 64 * 1024;
+/// collect_session_files 的 TTL：避免分析看板/搜索短时间内反复全树扫盘。
+const SESSION_FILES_TTL_MS: i64 = 5_000;
 
 #[derive(Clone)]
 struct SessionFileRef {
@@ -47,9 +53,21 @@ struct SessionStatsCache {
     entries: HashMap<String, CachedSessionComputation>,
 }
 
+#[derive(Clone)]
+struct CachedSessionFiles {
+    timestamp_ms: i64,
+    files: Vec<SessionFileRef>,
+}
+
+#[derive(Default)]
+struct SessionFilesCache {
+    by_source: HashMap<String, CachedSessionFiles>,
+}
+
 const HOUR_MS: i64 = 60 * 60 * 1000;
 const DAY_MS: i64 = 24 * HOUR_MS;
 static SESSION_STATS_CACHE: OnceLock<Mutex<SessionStatsCache>> = OnceLock::new();
+static SESSION_FILES_CACHE: OnceLock<Mutex<SessionFilesCache>> = OnceLock::new();
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -299,7 +317,7 @@ pub async fn history_search(
         let project_key = file_ref.project_key.clone();
         let mut local_full = false;
 
-        let scan_result = iter_session_messages(&file_ref.path, |_, msg| {
+        let scan_result = iter_session_messages_filtered(&file_ref.path, &normalized_query, |_, msg| {
             if !msg.content.to_lowercase().contains(&normalized_query) {
                 return true;
             }
@@ -672,6 +690,10 @@ fn get_stats_cache() -> &'static Mutex<SessionStatsCache> {
     SESSION_STATS_CACHE.get_or_init(|| Mutex::new(SessionStatsCache::default()))
 }
 
+fn get_files_cache() -> &'static Mutex<SessionFilesCache> {
+    SESSION_FILES_CACHE.get_or_init(|| Mutex::new(SessionFilesCache::default()))
+}
+
 fn summary_from_computation(
     file_ref: &SessionFileRef,
     computed: &CachedSessionComputation,
@@ -759,6 +781,35 @@ fn build_session_detail(file_ref: &SessionFileRef) -> Result<HistorySessionDetai
 }
 
 fn collect_session_files(source_filter: Option<&str>) -> Vec<SessionFileRef> {
+    let cache_key = source_filter
+        .map(|v| v.to_lowercase())
+        .unwrap_or_else(|| "*".to_string());
+    let now = now_millis();
+
+    if let Ok(cache) = get_files_cache().lock() {
+        if let Some(entry) = cache.by_source.get(&cache_key) {
+            if now - entry.timestamp_ms < SESSION_FILES_TTL_MS {
+                return entry.files.clone();
+            }
+        }
+    }
+
+    let files = scan_session_files(source_filter);
+
+    if let Ok(mut cache) = get_files_cache().lock() {
+        cache.by_source.insert(
+            cache_key,
+            CachedSessionFiles {
+                timestamp_ms: now,
+                files: files.clone(),
+            },
+        );
+    }
+
+    files
+}
+
+fn scan_session_files(source_filter: Option<&str>) -> Vec<SessionFileRef> {
     let Some(home) = detect_home_dir() else {
         return Vec::new();
     };
@@ -910,7 +961,7 @@ fn scan_session_combined(path: &Path) -> (SessionSummaryScan, SessionStatsScan) 
     let mut output_tokens = 0u64;
     let mut model_hits: HashMap<String, usize> = HashMap::new();
 
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
+    for line in BufReader::with_capacity(READ_BUF_CAPACITY, file).lines().map_while(Result::ok) {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -972,9 +1023,50 @@ where
 {
     let file = File::open(path).map_err(|err| err.to_string())?;
     let mut index = 0usize;
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
+    for line in BufReader::with_capacity(READ_BUF_CAPACITY, file).lines().map_while(Result::ok) {
         let trimmed = line.trim();
         if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        if let Some(msg) = parse_message(&value) {
+            if !callback(index, msg) {
+                return Ok(());
+            }
+            index += 1;
+        }
+    }
+    Ok(())
+}
+
+/// 同 `iter_session_messages`，但在 JSON 解析前先用 byte-level memmem 预筛 lower-case query。
+/// 适用于全文搜索热路径：可让大量"必然不命中"的行直接跳过昂贵的 `serde_json::from_str::<Value>`。
+fn iter_session_messages_filtered<F>(
+    path: &Path,
+    lowercase_query: &str,
+    mut callback: F,
+) -> Result<(), String>
+where
+    F: FnMut(usize, HistoryMessage) -> bool,
+{
+    let file = File::open(path).map_err(|err| err.to_string())?;
+    let mut index = 0usize;
+    let finder = memmem::Finder::new(lowercase_query.as_bytes());
+    for line in BufReader::with_capacity(READ_BUF_CAPACITY, file).lines().map_while(Result::ok) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Fast path: raw bytes 直接命中（绝大多数小写场景）
+        let mut maybe_match = finder.find(trimmed.as_bytes()).is_some();
+        // Slow path: lower-case 整行后再找一次（mixed case 场景兜底）
+        if !maybe_match {
+            let lower = trimmed.to_lowercase();
+            maybe_match = finder.find(lower.as_bytes()).is_some();
+        }
+        if !maybe_match {
             continue;
         }
         let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
@@ -1358,7 +1450,12 @@ fn extract_branch(value: &Value) -> Option<String> {
 }
 
 fn normalize_text(text: &str) -> String {
-    text.replace('\u{0000}', "").trim().to_string()
+    // 多数文本不含 \0，避免无意义的 replace 分配。
+    if text.contains('\u{0000}') {
+        text.replace('\u{0000}', "").trim().to_owned()
+    } else {
+        text.trim().to_owned()
+    }
 }
 
 fn looks_like_patch(text: &str) -> bool {
@@ -1369,7 +1466,8 @@ fn looks_like_patch(text: &str) -> bool {
 
 fn excerpt(text: &str, max_chars: usize) -> String {
     let trimmed = text.trim();
-    let mut out = String::new();
+    // 每字符最多 4 字节（UTF-8）；预留稍微宽松一些避免临界 realloc。
+    let mut out = String::with_capacity(max_chars.saturating_mul(4).saturating_add(4));
     for (idx, ch) in trimmed.chars().enumerate() {
         if idx >= max_chars {
             out.push_str("...");

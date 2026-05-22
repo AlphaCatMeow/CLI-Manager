@@ -47,6 +47,9 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 
+  --font-sans: var(--font-ui-sans);
+  --font-mono: var(--font-ui-mono);
+
   --font-size-app-title: 15px;
   --font-size-section-title: 13px;
   --font-size-body: 13px;
@@ -228,6 +231,70 @@
   --warning: #f97316;
 }
 
+/* Light theme - Apple Pure (纯白基底 + SF System Blue) */
+[data-theme="light"][data-light-palette="apple-pure"] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f5f5f7;
+  --bg-tertiary: #ebebf0;
+  --text-primary: #1d1d1f;
+  --text-secondary: #424245;
+  --text-muted: #6e6e73;
+  --accent: #007aff;
+  --accent-hover: #0a84ff;
+  --border: #d2d2d7;
+  --danger: #ff3b30;
+  --success: #34c759;
+  --warning: #ff9500;
+}
+
+/* Light theme - Apple Mist (微冷雾白) */
+[data-theme="light"][data-light-palette="apple-mist"] {
+  --bg-primary: #fcfcfd;
+  --bg-secondary: #f2f4f7;
+  --bg-tertiary: #e8ebef;
+  --text-primary: #1c1f23;
+  --text-secondary: #40454c;
+  --text-muted: #6b7179;
+  --accent: #0a84ff;
+  --accent-hover: #1f8eff;
+  --border: #dbdfe5;
+  --danger: #e5484d;
+  --success: #2db573;
+  --warning: #f5a524;
+}
+
+/* Light theme - Apple Warm (暖米白纸感) */
+[data-theme="light"][data-light-palette="apple-warm"] {
+  --bg-primary: #fdfcf9;
+  --bg-secondary: #f6f3ed;
+  --bg-tertiary: #eeeae1;
+  --text-primary: #1f1d1a;
+  --text-secondary: #4a4640;
+  --text-muted: #74706a;
+  --accent: #ff9f0a;
+  --accent-hover: #ffaf2e;
+  --border: #e1ddd3;
+  --danger: #d9402b;
+  --success: #2f9e6d;
+  --warning: #c4861a;
+}
+
+/* Light theme - Apple Mono (极简单色) */
+[data-theme="light"][data-light-palette="apple-mono"] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f7f7f8;
+  --bg-tertiary: #ededef;
+  --text-primary: #0f0f10;
+  --text-secondary: #3a3a3c;
+  --text-muted: #8a8a8e;
+  --accent: #1d1d1f;
+  --accent-hover: #2c2c2e;
+  --border: #d6d6da;
+  --danger: #c83a30;
+  --success: #2f8f5e;
+  --warning: #b6791d;
+}
+
 /* Digital Atelier semantic tokens (compat layer on top of existing vars) */
 :root,
 [data-theme="dark"],
@@ -312,11 +379,81 @@
   --interactive-shadow: 0 12px 24px color-mix(in srgb, var(--primary) 10%, transparent);
 }
 
+/* Apple 系列：纯白扁平、去阴影、focus 收敛 */
+[data-theme="light"][data-light-palette="apple-pure"] {
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #fbfbfd;
+  --surface-container-high: #f5f5f7;
+  --surface-container-highest: #ebebf0;
+  --primary-dim: color-mix(in srgb, var(--primary) 72%, #ffffff 28%);
+  --primary-gradient-start: color-mix(in srgb, var(--primary) 80%, #ffffff 20%);
+  --primary-gradient-end: color-mix(in srgb, var(--primary) 60%, #0a84ff 40%);
+  --interactive-focus-ring: color-mix(in srgb, var(--primary) 22%, transparent);
+  --interactive-hover-bg: color-mix(in srgb, var(--surface-container-high) 88%, var(--primary) 12%);
+  --interactive-active-bg: color-mix(in srgb, var(--surface-container-highest) 86%, var(--primary) 14%);
+  --interactive-selected-bg: color-mix(in srgb, var(--surface-container-highest) 70%, var(--primary) 30%);
+  --interactive-selected-border: color-mix(in srgb, var(--primary) 55%, var(--border) 45%);
+  --interactive-shadow: none;
+}
+
+[data-theme="light"][data-light-palette="apple-mist"] {
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #f7f9fc;
+  --surface-container-high: #f2f4f7;
+  --surface-container-highest: #e8ebef;
+  --primary-dim: color-mix(in srgb, var(--primary) 72%, #ffffff 28%);
+  --primary-gradient-start: color-mix(in srgb, var(--primary) 78%, #ffffff 22%);
+  --primary-gradient-end: color-mix(in srgb, var(--primary) 60%, #1f8eff 40%);
+  --interactive-focus-ring: color-mix(in srgb, var(--primary) 20%, transparent);
+  --interactive-hover-bg: color-mix(in srgb, var(--surface-container-high) 88%, var(--primary) 12%);
+  --interactive-active-bg: color-mix(in srgb, var(--surface-container-highest) 86%, var(--primary) 14%);
+  --interactive-selected-bg: color-mix(in srgb, var(--surface-container-highest) 70%, var(--primary) 30%);
+  --interactive-selected-border: color-mix(in srgb, var(--primary) 55%, var(--border) 45%);
+  --interactive-shadow: none;
+}
+
+[data-theme="light"][data-light-palette="apple-warm"] {
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #faf8f3;
+  --surface-container-high: #f6f3ed;
+  --surface-container-highest: #eeeae1;
+  --primary-dim: color-mix(in srgb, var(--primary) 70%, #fdfcf9 30%);
+  --primary-gradient-start: color-mix(in srgb, var(--primary) 80%, #ffffff 20%);
+  --primary-gradient-end: color-mix(in srgb, var(--primary) 60%, #c4861a 40%);
+  --interactive-focus-ring: color-mix(in srgb, var(--primary) 22%, transparent);
+  --interactive-hover-bg: color-mix(in srgb, var(--surface-container-high) 88%, var(--primary) 12%);
+  --interactive-active-bg: color-mix(in srgb, var(--surface-container-highest) 86%, var(--primary) 14%);
+  --interactive-selected-bg: color-mix(in srgb, var(--surface-container-highest) 70%, var(--primary) 30%);
+  --interactive-selected-border: color-mix(in srgb, var(--primary) 55%, var(--border) 45%);
+  --interactive-shadow: none;
+}
+
+[data-theme="light"][data-light-palette="apple-mono"] {
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #fbfbfc;
+  --surface-container-high: #f7f7f8;
+  --surface-container-highest: #ededef;
+  --primary-dim: color-mix(in srgb, var(--primary) 70%, #ffffff 30%);
+  --primary-gradient-start: color-mix(in srgb, var(--primary) 80%, #ffffff 20%);
+  --primary-gradient-end: color-mix(in srgb, var(--primary) 60%, #3a3a3c 40%);
+  --interactive-focus-ring: color-mix(in srgb, var(--primary) 18%, transparent);
+  --interactive-hover-bg: color-mix(in srgb, var(--surface-container-high) 90%, var(--primary) 10%);
+  --interactive-active-bg: color-mix(in srgb, var(--surface-container-highest) 88%, var(--primary) 12%);
+  --interactive-selected-bg: color-mix(in srgb, var(--surface-container-highest) 70%, var(--primary) 30%);
+  --interactive-selected-border: color-mix(in srgb, var(--primary) 55%, var(--border) 45%);
+  --interactive-shadow: none;
+}
+
 html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
   overflow: hidden;
+  font-family: var(--font-ui-sans);
+}
+
+button, input, select, textarea, optgroup {
+  font-family: inherit;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -703,6 +840,20 @@ samp,
 
 .ui-tree-group[data-open="true"] {
   border-color: color-mix(in srgb, var(--border) 18%, transparent);
+}
+
+.ui-tree-group[data-drop-target="true"] {
+  background-color: color-mix(in srgb, var(--primary) 14%, transparent);
+  border-color: color-mix(in srgb, var(--primary) 40%, transparent);
+}
+
+.ui-tree-root-drop {
+  min-height: 100%;
+}
+
+.ui-tree-root-drop[data-root-drop="true"] {
+  background-color: color-mix(in srgb, var(--primary) 8%, transparent);
+  border-radius: 12px;
 }
 
 .ui-tree-leading-icon {
@@ -1218,6 +1369,43 @@ samp,
 
 .ui-input::placeholder {
   color: var(--text-muted);
+}
+
+.ui-select-popover {
+  background-color: color-mix(in srgb, var(--surface) 92%, transparent);
+  border-color: color-mix(in srgb, var(--border) 32%, transparent);
+  box-shadow:
+    0 12px 32px color-mix(in srgb, var(--on-surface) 12%, transparent),
+    0 2px 8px color-mix(in srgb, var(--on-surface) 6%, transparent);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  color: var(--text-primary);
+  animation: slide-down var(--animate-duration-fast) var(--ease-standard);
+}
+
+.ui-select-popover [role="option"] {
+  border-radius: 8px;
+  margin: 2px 4px;
+  padding: 6px 10px;
+  font-size: var(--font-size-meta);
+  line-height: var(--line-height-meta);
+  color: var(--text-secondary);
+  transition:
+    background-color var(--animate-duration-fast),
+    color var(--animate-duration-fast);
+}
+
+.ui-select-popover [role="option"][data-highlighted="true"] {
+  background-color: var(--interactive-hover-bg);
+  color: var(--text-primary);
+}
+
+.ui-select-popover [role="option"][data-selected="true"] {
+  color: var(--primary);
+}
+
+.ui-select-popover [role="option"][data-selected="true"][data-highlighted="true"] {
+  background-color: var(--interactive-selected-bg);
 }
 
 .ui-list-row {

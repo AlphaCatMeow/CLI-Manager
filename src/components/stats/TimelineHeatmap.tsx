@@ -7,13 +7,16 @@ interface TimelineHeatmapProps {
   onSelectDay: (day: HistoryStatsHeatmapDay) => void;
 }
 
+// 模块级 formatter 单例：原代码在 N 个 cell 上各 toLocaleDateString，每次都新建 ICU formatter。
+const DAY_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
+  month: "2-digit",
+  day: "2-digit",
+  weekday: "short",
+});
+
 function formatDay(dayStartUtc: number): string {
   if (!Number.isFinite(dayStartUtc) || dayStartUtc <= 0) return "-";
-  return new Date(dayStartUtc).toLocaleDateString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    weekday: "short",
-  });
+  return DAY_FORMATTER.format(new Date(dayStartUtc));
 }
 
 function cellColor(level: number): string {

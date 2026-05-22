@@ -1,10 +1,11 @@
 import { create } from "zustand";
 import { Store } from "@tauri-apps/plugin-store";
 import { invoke } from "@tauri-apps/api/core";
-import { getDb } from "../lib/db";
+import { getDb, batchInsert } from "../lib/db";
 import { useProjectStore } from "./projectStore";
 
 export type SyncStatus = "idle" | "syncing" | "success" | "error" | "conflict";
+export type SyncMode = "cloud" | "local";
 
 interface SyncMeta {
   device_id: string;
@@ -44,6 +45,8 @@ interface SyncStore {
   conflictInfo: ConflictInfo | null;
   pendingRemoteData: SyncData | null;
   loaded: boolean;
+  syncMode: SyncMode;
+  localSyncDir: string;
 
   load: () => Promise<void>;
   setConfig: (url: string, username: string, password?: string) => Promise<void>;
@@ -53,6 +56,10 @@ interface SyncStore {
   download: (force?: boolean) => Promise<void>;
   resolveConflict: (keepLocal: boolean) => Promise<void>;
   clearConflict: () => void;
+  setSyncMode: (mode: SyncMode) => Promise<void>;
+  setLocalSyncDir: (dir: string) => Promise<void>;
+  localExport: () => Promise<string>;
+  localImport: (zipPath: string) => Promise<void>;
 }
 
 let store: Store | null = null;
@@ -75,12 +82,16 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
   conflictInfo: null,
   pendingRemoteData: null,
   loaded: false,
+  syncMode: "cloud",
+  localSyncDir: "",
 
   load: async () => {
     const s = await getStore();
     const url = (await s.get<string>("webdavUrl")) ?? "";
     const username = (await s.get<string>("webdavUsername")) ?? "";
     const hasPassword = (await s.get<boolean>("hasPassword")) ?? false;
+    const syncMode = ((await s.get<string>("syncMode")) as SyncMode | undefined) ?? "cloud";
+    const localSyncDir = (await s.get<string>("localSyncDir")) ?? "";
 
     const db = await getDb();
     const meta = await db.select<SyncMeta[]>(
@@ -96,6 +107,8 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
       hasPassword,
       deviceId,
       lastSyncAt,
+      syncMode,
+      localSyncDir,
       loaded: true,
     });
   },
@@ -281,6 +294,89 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
   clearConflict: () => {
     set({ status: "idle", conflictInfo: null, pendingRemoteData: null });
   },
+
+  setSyncMode: async (mode) => {
+    const s = await getStore();
+    await s.set("syncMode", mode);
+    set({ syncMode: mode });
+  },
+
+  setLocalSyncDir: async (dir) => {
+    const s = await getStore();
+    await s.set("localSyncDir", dir);
+    set({ localSyncDir: dir });
+  },
+
+  localExport: async () => {
+    const { localSyncDir, deviceId } = get();
+    if (!localSyncDir) {
+      throw new Error("请先选择本地同步目录");
+    }
+    set({ status: "syncing" });
+    try {
+      const db = await getDb();
+      const projects = await db.select<Record<string, unknown>[]>(
+        "SELECT id, name, path, group_id, sort_order, cli_tool, startup_cmd, env_vars, shell FROM projects ORDER BY sort_order"
+      );
+      const groups = await db.select<Record<string, unknown>[]>(
+        "SELECT id, name, parent_id, sort_order FROM groups ORDER BY sort_order"
+      );
+      const templates = await db.select<Record<string, unknown>[]>(
+        "SELECT id, project_id, name, command, description, sort_order FROM command_templates ORDER BY sort_order"
+      );
+
+      const now = new Date().toISOString();
+      const syncData: SyncData = {
+        version: SYNC_DATA_VERSION,
+        device_id: deviceId,
+        last_modified: now,
+        data: {
+          projects,
+          groups,
+          command_templates: templates,
+          settings: {},
+        },
+      };
+
+      const result = await invoke<{ success: boolean; path: string; message: string }>(
+        "sync_local_export",
+        { dir: localSyncDir, data: syncData }
+      );
+
+      await db.execute(
+        "INSERT OR REPLACE INTO sync_meta (id, device_id, last_sync_at, remote_version) VALUES ('singleton', ?, ?, ?)",
+        [deviceId, now, now]
+      );
+
+      set({ status: "success", lastSyncAt: now });
+      return result.path;
+    } catch (error) {
+      console.error("Local export failed:", error);
+      set({ status: "error" });
+      throw error;
+    }
+  },
+
+  localImport: async (zipPath) => {
+    const { deviceId } = get();
+    set({ status: "syncing" });
+    try {
+      const data = await invoke<SyncData>("sync_local_import", { zipPath });
+      const db = await getDb();
+      await applySyncData(db, data, deviceId);
+      useProjectStore.getState().fetchAll().catch(console.error);
+      set({
+        status: "success",
+        lastSyncAt: data.last_modified,
+        conflictInfo: null,
+        pendingRemoteData: null,
+      });
+    } catch (error) {
+      console.error("Local import failed:", error);
+      set({ status: "error" });
+      throw error;
+    }
+  },
 }));
 
 async function applySyncData(db: Awaited<ReturnType<typeof getDb>>, data: SyncData, deviceId: string) {
@@ -295,61 +391,64 @@ async function applySyncData(db: Awaited<ReturnType<typeof getDb>>, data: SyncDa
     "SELECT * FROM command_templates"
   );
 
+  const nowStr = Date.now().toString();
+
   try {
     // Clear existing data
     await db.execute("DELETE FROM command_templates");
     await db.execute("DELETE FROM projects");
     await db.execute("DELETE FROM groups");
 
-    // Insert groups first (no foreign key dependencies)
-    for (const group of data.data.groups) {
-      await db.execute(
-        "INSERT INTO groups (id, name, parent_id, sort_order, created_at) VALUES ($1, $2, $3, $4, $5)",
-        [
-          group.id as string,
-          group.name as string,
-          (group.parent_id as string | null) ?? null,
-          group.sort_order as number,
-          Date.now().toString(),
-        ]
-      );
-    }
+    // 多值 INSERT 合并：原先每行一次 execute（N 次 IPC + N 次 fsync），
+    // 现在按参数上限批量打包，单批一次 execute。
+    await batchInsert(
+      db,
+      "groups",
+      ["id", "name", "parent_id", "sort_order", "created_at"],
+      data.data.groups,
+      (group) => [
+        group.id as string,
+        group.name as string,
+        (group.parent_id as string | null) ?? null,
+        group.sort_order as number,
+        nowStr,
+      ],
+    );
 
-    // Insert projects
-    for (const project of data.data.projects) {
-      await db.execute(
-        `INSERT INTO projects (id, name, path, group_id, sort_order, cli_tool, startup_cmd, env_vars, shell, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-        [
-          project.id as string,
-          project.name as string,
-          project.path as string,
-          (project.group_id as string | null) ?? null,
-          project.sort_order as number,
-          (project.cli_tool as string) ?? "",
-          (project.startup_cmd as string) ?? "",
-          (project.env_vars as string) ?? "{}",
-          (project.shell as string) ?? "powershell",
-          Date.now().toString(),
-          Date.now().toString(),
-        ]
-      );
-    }
+    await batchInsert(
+      db,
+      "projects",
+      ["id", "name", "path", "group_id", "sort_order", "cli_tool", "startup_cmd", "env_vars", "shell", "created_at", "updated_at"],
+      data.data.projects,
+      (project) => [
+        project.id as string,
+        project.name as string,
+        project.path as string,
+        (project.group_id as string | null) ?? null,
+        project.sort_order as number,
+        (project.cli_tool as string) ?? "",
+        (project.startup_cmd as string) ?? "",
+        (project.env_vars as string) ?? "{}",
+        (project.shell as string) ?? "powershell",
+        nowStr,
+        nowStr,
+      ],
+    );
 
-    // Insert templates
-    for (const template of data.data.command_templates) {
-      await db.execute(
-        "INSERT INTO command_templates (id, project_id, name, command, description, sort_order) VALUES ($1, $2, $3, $4, $5, $6)",
-        [
-          template.id as string,
-          (template.project_id as string | null) ?? null,
-          template.name as string,
-          template.command as string,
-          (template.description as string) ?? "",
-          template.sort_order as number,
-        ]
-      );
-    }
+    await batchInsert(
+      db,
+      "command_templates",
+      ["id", "project_id", "name", "command", "description", "sort_order"],
+      data.data.command_templates,
+      (template) => [
+        template.id as string,
+        (template.project_id as string | null) ?? null,
+        template.name as string,
+        template.command as string,
+        (template.description as string) ?? "",
+        template.sort_order as number,
+      ],
+    );
 
     await db.execute(
       "INSERT OR REPLACE INTO sync_meta (id, device_id, last_sync_at, remote_version) VALUES ('singleton', ?, ?, ?)",
@@ -360,58 +459,60 @@ async function applySyncData(db: Awaited<ReturnType<typeof getDb>>, data: SyncDa
   } catch (error) {
     console.error("Failed to apply sync data, restoring backup:", error);
 
-    // Restore backup
+    // Restore backup（同样使用批量 insert）
     try {
       await db.execute("DELETE FROM command_templates");
       await db.execute("DELETE FROM projects");
       await db.execute("DELETE FROM groups");
 
-      for (const group of backupGroups) {
-        await db.execute(
-          "INSERT INTO groups (id, name, parent_id, sort_order, created_at) VALUES ($1, $2, $3, $4, $5)",
-          [
-            group.id as string,
-            group.name as string,
-            (group.parent_id as string | null) ?? null,
-            group.sort_order as number,
-            (group.created_at as string) ?? Date.now().toString(),
-          ]
-        );
-      }
+      await batchInsert(
+        db,
+        "groups",
+        ["id", "name", "parent_id", "sort_order", "created_at"],
+        backupGroups,
+        (group) => [
+          group.id as string,
+          group.name as string,
+          (group.parent_id as string | null) ?? null,
+          group.sort_order as number,
+          (group.created_at as string) ?? nowStr,
+        ],
+      );
 
-      for (const project of backupProjects) {
-        await db.execute(
-          `INSERT INTO projects (id, name, path, group_id, sort_order, cli_tool, startup_cmd, env_vars, shell, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-          [
-            project.id as string,
-            project.name as string,
-            project.path as string,
-            (project.group_id as string | null) ?? null,
-            project.sort_order as number,
-            (project.cli_tool as string) ?? "",
-            (project.startup_cmd as string) ?? "",
-            (project.env_vars as string) ?? "{}",
-            (project.shell as string) ?? "powershell",
-            (project.created_at as string) ?? Date.now().toString(),
-            (project.updated_at as string) ?? Date.now().toString(),
-          ]
-        );
-      }
+      await batchInsert(
+        db,
+        "projects",
+        ["id", "name", "path", "group_id", "sort_order", "cli_tool", "startup_cmd", "env_vars", "shell", "created_at", "updated_at"],
+        backupProjects,
+        (project) => [
+          project.id as string,
+          project.name as string,
+          project.path as string,
+          (project.group_id as string | null) ?? null,
+          project.sort_order as number,
+          (project.cli_tool as string) ?? "",
+          (project.startup_cmd as string) ?? "",
+          (project.env_vars as string) ?? "{}",
+          (project.shell as string) ?? "powershell",
+          (project.created_at as string) ?? nowStr,
+          (project.updated_at as string) ?? nowStr,
+        ],
+      );
 
-      for (const template of backupTemplates) {
-        await db.execute(
-          "INSERT INTO command_templates (id, project_id, name, command, description, sort_order) VALUES ($1, $2, $3, $4, $5, $6)",
-          [
-            template.id as string,
-            (template.project_id as string | null) ?? null,
-            template.name as string,
-            template.command as string,
-            (template.description as string) ?? "",
-            template.sort_order as number,
-          ]
-        );
-      }
+      await batchInsert(
+        db,
+        "command_templates",
+        ["id", "project_id", "name", "command", "description", "sort_order"],
+        backupTemplates,
+        (template) => [
+          template.id as string,
+          (template.project_id as string | null) ?? null,
+          template.name as string,
+          template.command as string,
+          (template.description as string) ?? "",
+          template.sort_order as number,
+        ],
+      );
 
       console.log("Backup restored successfully");
     } catch (restoreError) {

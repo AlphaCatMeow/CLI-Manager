@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from "react";
-import { DndContext, closestCenter, type DragEndEvent } from "@dnd-kit/core";
+import { useState, useEffect, useRef, memo } from "react";
+import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { TreeNode as TNode } from "../../lib/types";
@@ -61,7 +61,7 @@ interface TreeNodeItemProps {
   onFocusNode: (key: string) => void;
 }
 
-export function TreeNodeItem({ node, depth, density, focusedNodeKey, onFocusNode }: TreeNodeItemProps) {
+function TreeNodeItemImpl({ node, depth, density, focusedNodeKey, onFocusNode }: TreeNodeItemProps) {
   const actions = useTreeActions();
   const itemId = node.type === "project" ? node.project.id : node.group.id;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: itemId });
@@ -157,6 +157,7 @@ export function TreeNodeItem({ node, depth, density, focusedNodeKey, onFocusNode
   const treeKey = `g:${g.id}`;
   const isOpen = !actions.collapsedIds.has(g.id);
   const childCount = countDescendants(node);
+  const { setNodeRef: setIntoRef, isOver: isOverInto } = useDroppable({ id: `into:${g.id}` });
 
   if (actions.renamingGroupId === g.id) {
     return (
@@ -195,11 +196,13 @@ export function TreeNodeItem({ node, depth, density, focusedNodeKey, onFocusNode
     >
       <div className={`ui-tree-group-shell ${compact ? "my-0.5" : "my-1"}`} style={{ marginLeft: depth === 0 ? 0 : 2 }}>
         <div
+          ref={setIntoRef}
           className={`ui-tree-node ui-tree-group ui-focus-ring flex items-center rounded-xl font-semibold cursor-pointer group/grp ${
             compact ? "gap-1.5 py-1 text-[11px]" : "gap-2 py-1.5 text-[12px]"
           }`}
           data-selected="false"
           data-open={isOpen ? "true" : "false"}
+          data-drop-target={isOverInto ? "true" : "false"}
           style={{ paddingLeft, paddingRight: compact ? 8 : 10, color: "var(--on-surface-variant)" }}
           onClick={() => actions.toggleCollapsed(g.id)}
           onContextMenu={(e) => actions.onContextMenuGroup(e, g.id, g.name)}
@@ -233,22 +236,20 @@ export function TreeNodeItem({ node, depth, density, focusedNodeKey, onFocusNode
         {node.children.length > 0 && (
           <div className="tree-collapse" data-open={isOpen ? "true" : "false"}>
             <div className="tree-collapse-inner" role="group">
-              <DndContext sensors={[]} collisionDetection={closestCenter} onDragEnd={(event: DragEndEvent) => actions.onDragEnd(g.id, event)}>
-                <SortableContext items={node.children.map((c) => c.type === "group" ? c.group.id : c.project.id)} strategy={verticalListSortingStrategy}>
-                  <div className={`${compact ? "ml-2 space-y-0.5 pb-0.5" : "ml-2.5 space-y-0.5 pb-1"}`}>
-                    {node.children.map((child) => (
-                      <TreeNodeItem
-                        key={child.type === "group" ? `g:${child.group.id}` : `p:${child.project.id}`}
-                        node={child}
-                        depth={depth + 1}
-                        density={density}
-                        focusedNodeKey={focusedNodeKey}
-                        onFocusNode={onFocusNode}
-                      />
-                    ))}
-                  </div>
-                </SortableContext>
-              </DndContext>
+              <SortableContext items={node.children.map((c) => c.type === "group" ? c.group.id : c.project.id)} strategy={verticalListSortingStrategy}>
+                <div className={`${compact ? "ml-2 space-y-0.5 pb-0.5" : "ml-2.5 space-y-0.5 pb-1"}`}>
+                  {node.children.map((child) => (
+                    <TreeNodeItem
+                      key={child.type === "group" ? `g:${child.group.id}` : `p:${child.project.id}`}
+                      node={child}
+                      depth={depth + 1}
+                      density={density}
+                      focusedNodeKey={focusedNodeKey}
+                      onFocusNode={onFocusNode}
+                    />
+                  ))}
+                </div>
+              </SortableContext>
             </div>
           </div>
         )}
@@ -256,3 +257,7 @@ export function TreeNodeItem({ node, depth, density, focusedNodeKey, onFocusNode
     </div>
   );
 }
+
+// 整树 memo 化：递归子节点是新 React element 但 type 指向同一 memo 组件，
+// React 会按 props 浅比较跳过未变化分支的 render（绝大多数父组件刷新场景下 node 引用稳定）。
+export const TreeNodeItem = memo(TreeNodeItemImpl);

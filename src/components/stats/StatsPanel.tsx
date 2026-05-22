@@ -30,24 +30,28 @@ function formatCount(value: number): string {
   return new Intl.NumberFormat("zh-CN").format(value);
 }
 
+const DAY_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
+  month: "2-digit",
+  day: "2-digit",
+  weekday: "short",
+});
+
+const DATETIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
 function formatDay(dayStartUtc: number): string {
   if (!Number.isFinite(dayStartUtc) || dayStartUtc <= 0) return "-";
-  return new Date(dayStartUtc).toLocaleDateString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    weekday: "short",
-  });
+  return DAY_FORMATTER.format(new Date(dayStartUtc));
 }
 
 function formatDateTime(ts: number | null): string {
   if (!ts || !Number.isFinite(ts)) return "-";
-  return new Date(ts).toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  return DATETIME_FORMATTER.format(new Date(ts));
 }
 
 function makeSessionKey(summary: HistorySessionSummary): string {

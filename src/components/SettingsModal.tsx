@@ -6,6 +6,7 @@ import { ThemeSettingsPage } from "./settings/pages/ThemeSettingsPage";
 import { ShortcutSettingsPage } from "./settings/pages/ShortcutSettingsPage";
 import { TemplateSettingsPage } from "./settings/pages/TemplateSettingsPage";
 import { SyncSettingsPage } from "./settings/pages/SyncSettingsPage";
+import { useSettingsStore } from "../stores/settingsStore";
 
 type SettingsTab = "general" | "terminal-theme" | "shortcuts" | "templates" | "sync";
 
@@ -44,10 +45,10 @@ const SETTINGS_TAB_CONFIG: Record<SettingsTab, SettingsTabConfig> = {
     searchPlaceholder: "搜索命令模板（预留）",
   },
   sync: {
-    label: "云同步",
-    title: "云同步",
-    description: "通过 WebDAV 在多设备间同步配置。",
-    searchPlaceholder: "搜索云同步设置（预留）",
+    label: "同步",
+    title: "同步",
+    description: "选择云端（WebDAV）或本地目录方式同步配置。",
+    searchPlaceholder: "搜索同步设置（预留）",
   },
 };
 
@@ -62,6 +63,7 @@ export function SettingsModal({ open, onClose }: Props) {
   const [mounted, setMounted] = useState(open);
   const [closing, setClosing] = useState(false);
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  const uiFontFamily = useSettingsStore((s) => s.uiFontFamily);
   useFocusTrap(dialogRef, mounted && !closing);
 
   useEffect(() => {
@@ -112,6 +114,7 @@ export function SettingsModal({ open, onClose }: Props) {
       className={`fixed inset-x-0 bottom-0 top-9 z-50 ${
         closing ? "animate-fade-out" : "animate-fade-in"
       }`}
+      style={{ fontFamily: uiFontFamily }}
       onClick={onClose}
     >
       <div

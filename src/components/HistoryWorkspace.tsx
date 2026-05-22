@@ -1,7 +1,7 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { toast } from "sonner";
 import { useHistoryStore } from "../stores/historyStore";
-import type { HistorySearchHit, HistorySessionView, HistorySourceFilter } from "../lib/types";
+import type { HistoryMessage, HistorySearchHit, HistorySessionView, HistorySourceFilter } from "../lib/types";
 import { useSettingsStore } from "../stores/settingsStore";
 import { PromptLibrary } from "./prompts/PromptLibrary";
 import { DiffModal } from "./history/DiffModal";
@@ -12,6 +12,8 @@ import { toGroupLabel, type TimeGroupLabel } from "./history/historyViewUtils";
 const SESSION_PAGE_SIZE = 200;
 const MESSAGE_PAGE_SIZE = 160;
 const LOAD_MORE_THRESHOLD_PX = 220;
+// 稳定的空数组引用：避免每次 render 都用 `?? []` 生成新数组、击穿下游 memo。
+const EMPTY_MESSAGES: HistoryMessage[] = [];
 
 function makeHitKey(hit: HistorySearchHit): string {
   return `${hit.source}:${hit.session_id}:${hit.file_path}`;
@@ -229,7 +231,7 @@ export function HistoryWorkspace() {
   }, [activeSession?.session_id]);
 
   const visibleMessages = useMemo(
-    () => (activeSession?.messages ?? []).slice(0, visibleMessageCount),
+    () => (activeSession?.messages ?? EMPTY_MESSAGES).slice(0, visibleMessageCount),
     [activeSession?.messages, visibleMessageCount]
   );
 
@@ -431,7 +433,7 @@ export function HistoryWorkspace() {
 
         <DiffModal
           open={diffOpen}
-          messages={activeSession?.messages ?? []}
+          messages={activeSession?.messages ?? EMPTY_MESSAGES}
           onClose={() => setDiffOpen(false)}
           onJumpToMessage={(messageIndex) => {
             void jumpToMessage(messageIndex);

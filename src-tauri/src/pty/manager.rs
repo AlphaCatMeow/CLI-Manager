@@ -2,12 +2,17 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use tauri::{AppHandle, Emitter};
 use log::{debug, error, info};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+
+/// Reader 累积阈值：达到该阈值或下游显式没有更多数据时才 emit，避免高吞吐时
+/// 每次 read 都触发一次 IPC + Base64 编码。
+const READER_FLUSH_THRESHOLD: usize = 32 * 1024;
+const READER_BUF_SIZE: usize = 16 * 1024;
 
 pub struct PtySession {
     writer: Box<dyn Write + Send>,
@@ -23,14 +28,14 @@ pub struct PtyProcessStatus {
 }
 
 pub struct PtyManager {
-    sessions: Mutex<HashMap<String, Arc<Mutex<PtySession>>>>,
+    sessions: RwLock<HashMap<String, Arc<Mutex<PtySession>>>>,
     statuses: Arc<Mutex<HashMap<String, PtyProcessStatus>>>,
 }
 
 impl PtyManager {
     pub fn new() -> Self {
         Self {
-            sessions: Mutex::new(HashMap::new()),
+            sessions: RwLock::new(HashMap::new()),
             statuses: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -120,17 +125,30 @@ impl PtyManager {
         );
 
         let reader_handle = std::thread::spawn(move || {
-            let mut buf = [0u8; 16384];
+            let mut buf = [0u8; READER_BUF_SIZE];
+            let mut pending: Vec<u8> = Vec::with_capacity(READER_FLUSH_THRESHOLD * 2);
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        // Base64 encode raw bytes to preserve all control characters (including ESC)
-                        let encoded = STANDARD.encode(&buf[..n]);
-                        let _ = app_handle.emit(&output_event, encoded);
+                        pending.extend_from_slice(&buf[..n]);
+                        // 动态批量：buffer 被读满意味着可能还有更多数据，先累积；
+                        // 反之或累计已超阈值就立即 emit，避免延迟。
+                        let likely_more = n == buf.len();
+                        if !likely_more || pending.len() >= READER_FLUSH_THRESHOLD {
+                            let encoded = STANDARD.encode(&pending);
+                            let _ = app_handle.emit(&output_event, encoded);
+                            pending.clear();
+                        }
                     }
                     Err(_) => break,
                 }
+            }
+            // 进程退出，把剩余数据发出去
+            if !pending.is_empty() {
+                let encoded = STANDARD.encode(&pending);
+                let _ = app_handle.emit(&output_event, encoded);
+                pending.clear();
             }
 
             // Process exited — check exit status
@@ -169,7 +187,7 @@ impl PtyManager {
             reader_handle: Some(reader_handle),
         }));
         self.sessions
-            .lock()
+            .write()
             .unwrap()
             .insert(session_id.to_string(), session);
         info!("pty session ready: id={}", session_id);
@@ -178,7 +196,7 @@ impl PtyManager {
 
     pub fn write(&self, session_id: &str, data: &str) -> Result<(), String> {
         let session_arc = {
-            let sessions = self.sessions.lock().unwrap();
+            let sessions = self.sessions.read().unwrap();
             sessions.get(session_id).cloned()
         }
         .ok_or_else(|| {
@@ -203,7 +221,7 @@ impl PtyManager {
 
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
         let session_arc = {
-            let sessions = self.sessions.lock().unwrap();
+            let sessions = self.sessions.read().unwrap();
             sessions.get(session_id).cloned()
         }
         .ok_or_else(|| {
@@ -232,7 +250,7 @@ impl PtyManager {
 
     pub fn close(&self, session_id: &str) -> Result<(), String> {
         let session_arc = {
-            let mut sessions = self.sessions.lock().unwrap();
+            let mut sessions = self.sessions.write().unwrap();
             sessions.remove(session_id)
         };
         if let Some(session_arc) = session_arc {

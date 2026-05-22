@@ -1,4 +1,5 @@
 ﻿import { BookCopy, GitCompare, Star } from "lucide-react";
+import { useMemo } from "react";
 import type { HistoryMessage, HistorySessionDetail, HistorySessionView } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
 import { MetaEditor } from "./MetaEditor";
@@ -64,6 +65,10 @@ export function SessionDetailPane({
   onToggleStar,
   onLoadMoreMessages,
 }: SessionDetailPaneProps) {
+  // matchIndices.includes(idx) 在 visibleMessages.map 内对每个可见消息做 O(N) 扫描，
+  // 当匹配数 N 和可见消息数 M 都达到几百时累计 O(N·M)。改 Set 后是 O(1) lookup。
+  const matchSet = useMemo(() => new Set(matchIndices), [matchIndices]);
+
   if (!activeView) {
     return (
       <div className="row-span-2 flex min-h-0 items-center justify-center">
@@ -143,7 +148,7 @@ export function SessionDetailPane({
 
         {!loadingSessionDetail &&
           visibleMessages.map((msg, idx) => {
-            const isMatched = matchIndices.includes(idx);
+            const isMatched = matchSet.has(idx);
             const isFocused = focusedMessageIndex === idx;
             const badge = roleBadge(msg.role);
             return (

@@ -8,7 +8,15 @@ export interface TerminalThemePreset {
   tone?: "light" | "dark";
 }
 
-export type LightTerminalPalette = "warm-paper" | "cream-green" | "ink-red" | "saas-analytics-dashboard";
+export type LightTerminalPalette =
+  | "warm-paper"
+  | "cream-green"
+  | "ink-red"
+  | "saas-analytics-dashboard"
+  | "apple-pure"
+  | "apple-mist"
+  | "apple-warm"
+  | "apple-mono";
 export type DarkTerminalPalette = "night-indigo" | "forest-night" | "graphite-red" | "investment-platform";
 
 const tokyoNightDark: ITheme = {
@@ -428,6 +436,10 @@ function resolveAutoLightThemeId(lightPalette: LightTerminalPalette = "warm-pape
   if (lightPalette === "cream-green") return "creamGreenLight";
   if (lightPalette === "ink-red") return "inkRedLight";
   if (lightPalette === "saas-analytics-dashboard") return "saasAnalyticsDashboardLight";
+  if (lightPalette === "apple-pure") return "githubLight";
+  if (lightPalette === "apple-mist") return "githubLight";
+  if (lightPalette === "apple-warm") return "warmPaperLight";
+  if (lightPalette === "apple-mono") return "githubLight";
   return "warmPaperLight";
 }
 

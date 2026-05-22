@@ -1,6 +1,7 @@
 use reqwest::{Client, Method, Response, header};
 use serde::{Deserialize, Serialize};
 use log::{info, error, debug};
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebDavConfig {
@@ -23,28 +24,42 @@ impl std::fmt::Display for WebDavError {
 
 impl std::error::Error for WebDavError {}
 
+/// 进程级 HTTP client：连接池、DNS 缓存、HTTP/2 复用。
+/// 避免每个 upload/download/test_connection 重新构造一个 Client。
+static SHARED_CLIENT: OnceLock<Client> = OnceLock::new();
+
+fn shared_client() -> &'static Client {
+    SHARED_CLIENT.get_or_init(|| {
+        Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .danger_accept_invalid_certs(false)
+            .build()
+            .expect("Failed to create HTTP client")
+    })
+}
+
 pub struct WebDavClient {
-    client: Client,
+    client: &'static Client,
     config: WebDavConfig,
+    auth_header: String,
 }
 
 impl WebDavClient {
     pub fn new(config: WebDavConfig) -> Self {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .danger_accept_invalid_certs(false)
-            .build()
-            .expect("Failed to create HTTP client");
-
-        Self { client, config }
-    }
-
-    fn build_auth_header(&self) -> String {
         let encoded = base64::Engine::encode(
             &base64::engine::general_purpose::STANDARD,
-            format!("{}:{}", self.config.username, self.config.password),
+            format!("{}:{}", config.username, config.password),
         );
-        format!("Basic {}", encoded)
+        let auth_header = format!("Basic {encoded}");
+        Self {
+            client: shared_client(),
+            config,
+            auth_header,
+        }
+    }
+
+    fn auth_header(&self) -> &str {
+        &self.auth_header
     }
 
     async fn handle_response(response: Response) -> Result<Vec<u8>, WebDavError> {
@@ -72,7 +87,7 @@ impl WebDavClient {
         let response = self
             .client
             .request(Method::OPTIONS, url)
-            .header(header::AUTHORIZATION, self.build_auth_header())
+            .header(header::AUTHORIZATION, self.auth_header())
             .send()
             .await
             .map_err(|e| WebDavError {
@@ -93,7 +108,7 @@ impl WebDavClient {
         let response = self
             .client
             .head(&url)
-            .header(header::AUTHORIZATION, self.build_auth_header())
+            .header(header::AUTHORIZATION, self.auth_header())
             .send()
             .await
             .map_err(|e| WebDavError {
@@ -114,7 +129,7 @@ impl WebDavClient {
         let response = self
             .client
             .get(&url)
-            .header(header::AUTHORIZATION, self.build_auth_header())
+            .header(header::AUTHORIZATION, self.auth_header())
             .send()
             .await
             .map_err(|e| WebDavError {
@@ -137,7 +152,7 @@ impl WebDavClient {
         let response = self
             .client
             .put(&url)
-            .header(header::AUTHORIZATION, self.build_auth_header())
+            .header(header::AUTHORIZATION, self.auth_header())
             .header(header::CONTENT_TYPE, "application/json")
             .body(data)
             .send()
@@ -169,7 +184,7 @@ impl WebDavClient {
         let response = self
             .client
             .request(Method::from_bytes(b"MKCOL").unwrap(), &url)
-            .header(header::AUTHORIZATION, self.build_auth_header())
+            .header(header::AUTHORIZATION, self.auth_header())
             .send()
             .await
             .map_err(|e| {

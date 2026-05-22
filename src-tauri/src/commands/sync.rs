@@ -1,4 +1,7 @@
-use crate::sync::{detect_conflict, download, test_connection, upload, ConflictInfo, SyncData};
+use crate::sync::{
+    detect_conflict, download, local_export, local_import, test_connection, upload, ConflictInfo,
+    SyncData,
+};
 use crate::webdav::WebDavConfig;
 use chrono::{DateTime, Utc};
 use log::{info, error};
@@ -137,4 +140,33 @@ pub async fn sync_download(
         conflict_info: None,
         data: Some(remote_data),
     })
+}
+
+#[derive(serde::Serialize)]
+pub struct LocalExportResult {
+    pub success: bool,
+    pub path: String,
+    pub message: String,
+}
+
+#[tauri::command]
+pub async fn sync_local_export(dir: String, data: SyncData) -> Result<LocalExportResult, String> {
+    info!("Starting sync_local_export to {}", dir);
+    let path = tokio::task::spawn_blocking(move || local_export(&dir, &data))
+        .await
+        .map_err(|e| format!("内部错误: {}", e))??;
+    Ok(LocalExportResult {
+        success: true,
+        path,
+        message: "本地同步导出成功".to_string(),
+    })
+}
+
+#[tauri::command]
+pub async fn sync_local_import(zip_path: String) -> Result<SyncData, String> {
+    info!("Starting sync_local_import from {}", zip_path);
+    let data = tokio::task::spawn_blocking(move || local_import(&zip_path))
+        .await
+        .map_err(|e| format!("内部错误: {}", e))??;
+    Ok(data)
 }

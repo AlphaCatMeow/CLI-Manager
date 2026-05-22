@@ -50,6 +50,30 @@ const LIGHT_PALETTE_OPTIONS: {
     description: "冷静浅色，适合数据驾驶舱与 Bento 卡片层级",
     swatches: ["#f8fbff", "#1e293b", "#3b82f6"],
   },
+  {
+    value: "apple-pure",
+    label: "Apple Pure",
+    description: "纯白基底 + SF System Blue，最贴近 macOS 原生扁平",
+    swatches: ["#ffffff", "#1d1d1f", "#007aff"],
+  },
+  {
+    value: "apple-mist",
+    label: "Apple Mist",
+    description: "微冷雾白，长时间盯屏更柔和",
+    swatches: ["#fcfcfd", "#1c1f23", "#0a84ff"],
+  },
+  {
+    value: "apple-warm",
+    label: "Apple Warm",
+    description: "暖米白纸感，琥珀强调，低对比阅读友好",
+    swatches: ["#fdfcf9", "#1f1d1a", "#ff9f0a"],
+  },
+  {
+    value: "apple-mono",
+    label: "Apple Mono",
+    description: "极简单色，黑色强调，最克制的 Pro 工具气质",
+    swatches: ["#ffffff", "#1d1d1f", "#3a3a3c"],
+  },
 ];
 
 const DARK_PALETTE_OPTIONS: {
@@ -90,6 +114,58 @@ const FONT_FAMILY_OPTIONS: { value: string; label: string }[] = [
   { value: "\"Fira Code\", \"Cascadia Code\", Consolas, monospace", label: "Fira Code" },
   { value: "Consolas, monospace", label: "Consolas" },
   { value: "\"Courier New\", monospace", label: "Courier New" },
+];
+
+const UI_FONT_FAMILY_OPTIONS: { value: string; label: string }[] = [
+  {
+    value:
+      "\"Segoe UI Variable\", \"Segoe UI\", -apple-system, BlinkMacSystemFont, \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+    label: "系统默认（Segoe UI + 中文回退）",
+  },
+  {
+    value: "Inter, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+    label: "Inter",
+  },
+  {
+    value: "\"HarmonyOS Sans\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+    label: "HarmonyOS Sans",
+  },
+  {
+    value: "\"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+    label: "苹方 PingFang SC",
+  },
+  {
+    value: "\"Microsoft YaHei\", \"PingFang SC\", sans-serif",
+    label: "微软雅黑 Microsoft YaHei",
+  },
+  {
+    value: "\"Source Han Sans SC\", \"Noto Sans CJK SC\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+    label: "思源黑体 / Source Han Sans",
+  },
+  {
+    value: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+    label: "纯系统 UI 字体",
+  },
+  {
+    value: "\"Cascadia Code\", \"PingFang SC\", \"Microsoft YaHei\", monospace",
+    label: "Cascadia Code",
+  },
+  {
+    value: "\"JetBrains Mono\", \"PingFang SC\", \"Microsoft YaHei\", monospace",
+    label: "JetBrains Mono",
+  },
+  {
+    value: "\"Fira Code\", \"PingFang SC\", \"Microsoft YaHei\", monospace",
+    label: "Fira Code",
+  },
+  {
+    value: "Consolas, \"PingFang SC\", \"Microsoft YaHei\", monospace",
+    label: "Consolas",
+  },
+  {
+    value: "\"Courier New\", \"PingFang SC\", \"Microsoft YaHei\", monospace",
+    label: "Courier New",
+  },
 ];
 
 const SIDEBAR_DENSITY_OPTIONS: { value: SidebarDensity; label: string; description: string }[] = [
@@ -160,6 +236,7 @@ export function GeneralSettingsPage() {
   const darkThemePalette = useSettingsStore((s) => s.darkThemePalette);
   const fontSize = useSettingsStore((s) => s.fontSize);
   const fontFamily = useSettingsStore((s) => s.fontFamily);
+  const uiFontFamily = useSettingsStore((s) => s.uiFontFamily);
   const defaultShell = useSettingsStore((s) => s.defaultShell);
   const sidebarDensity = useSettingsStore((s) => s.sidebarDensity);
   const viewMode = useSettingsStore((s) => s.viewMode);
@@ -172,6 +249,10 @@ export function GeneralSettingsPage() {
   const isCustomFontFamily = useMemo(
     () => !FONT_FAMILY_OPTIONS.some((opt) => opt.value === fontFamily),
     [fontFamily]
+  );
+  const isCustomUiFontFamily = useMemo(
+    () => !UI_FONT_FAMILY_OPTIONS.some((opt) => opt.value === uiFontFamily),
+    [uiFontFamily]
   );
   const normalizedDefaultShell = normalizeShellKey(defaultShell);
   const shellSelectValue = normalizedDefaultShell ?? defaultShell;
@@ -232,6 +313,25 @@ export function GeneralSettingsPage() {
                   onClick={() => update("darkThemePalette", option.value)}
                 />
               ))}
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <label className="mb-1 block text-xs text-on-surface-variant">应用字体</label>
+            <Select
+              value={uiFontFamily}
+              onChange={(e) => update("uiFontFamily", e.target.value)}
+              aria-label="应用字体"
+            >
+              {isCustomUiFontFamily && <option value={uiFontFamily}>当前自定义（保留）</option>}
+              {UI_FONT_FAMILY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </Select>
+            <div className="mt-1 text-[11px] text-text-muted">
+              影响除终端外的应用整体界面字体；终端字体在下方"终端与侧栏"中单独设置。
             </div>
           </div>
         </Card>

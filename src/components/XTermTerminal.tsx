@@ -10,6 +10,9 @@ import { useSettingsStore, type LightThemePalette, type DarkThemePalette } from 
 
 const FONT_SIZE_MIN = 8;
 const FONT_SIZE_MAX = 32;
+// 模块级单例：每帧每会话都 new TextDecoder 在高吞吐场景下会成为 GC 热点，
+// 而 TextDecoder 本身是无状态可复用的（fatal=false, ignoreBOM=false 都是默认值）。
+const SHARED_TEXT_DECODER = new TextDecoder("utf-8");
 import { toast } from "sonner";
 import { logError } from "../lib/logger";
 
@@ -110,7 +113,7 @@ export function XTermTerminal({ sessionId, isActive = true, fontSize = 14, fontF
       cursorStyle: "block",
       fontSize,
       fontFamily,
-      scrollback: 1000,
+      scrollback: 5000,
       theme: getTerminalTheme(terminalThemeName, resolvedTheme, lightThemePalette, darkThemePalette),
     });
 
@@ -256,7 +259,7 @@ export function XTermTerminal({ sessionId, isActive = true, fontSize = 14, fontF
       if (cancelled) return;
       const binaryString = atob(event.payload);
       const bytes = Uint8Array.from(binaryString, (c) => c.charCodeAt(0));
-      const text = new TextDecoder("utf-8").decode(bytes);
+      const text = SHARED_TEXT_DECODER.decode(bytes);
       if (isActiveRef.current) {
         pendingChunks.push(text);
         if (writeRafId === null) {

@@ -133,6 +133,9 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     get().statusListeners[id]?.();
     await invoke("pty_close", { sessionId: id });
 
+    // 必须在 set sessions 之前记录原索引，否则后续 findIndex 永远返回 -1，
+    // 导致 persistedSplits 永远清不掉（历史 bug）。
+    const closedIndex = get().sessions.findIndex((s) => s.id === id);
     const remaining = get().sessions.filter((s) => s.id !== id);
     const newStatuses = { ...get().sessionStatuses };
     const newListeners = { ...get().statusListeners };
@@ -163,11 +166,13 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     await useSessionStore.getState().saveSessions(remaining);
     await useSessionStore.getState().saveActiveSessionId(newActiveId);
 
-    // 更新 splits（移除已关闭的主会话对应的 split）
-    const persistedSplits = useSessionStore.getState().splits.filter(
-      (s) => s.primarySessionIndex !== get().sessions.findIndex((sess) => sess.id === id)
-    );
-    await useSessionStore.getState().saveSplits(persistedSplits);
+    // 更新 splits（移除已关闭主会话对应的 split），使用关闭前记录的索引
+    if (closedIndex >= 0) {
+      const persistedSplits = useSessionStore.getState().splits.filter(
+        (s) => s.primarySessionIndex !== closedIndex
+      );
+      await useSessionStore.getState().saveSplits(persistedSplits);
+    }
   },
 
   setActive: (id) => {

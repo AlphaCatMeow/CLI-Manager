@@ -29,7 +29,7 @@ export interface TreeActions {
   toggleCollapsed: (id: string) => void;
   getProjectStatus: (projectId: string) => SessionStatus | null;
   isPathInvalid: (projectId: string) => boolean;
-  onDragEnd: (parentId: string | null, event: DragEndEvent) => void;
+  onDragEnd: (event: DragEndEvent) => void;
 }
 
 export const TreeContext = createContext<TreeActions | null>(null);

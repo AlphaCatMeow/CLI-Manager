@@ -1,4 +1,4 @@
-import { DndContext, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
+import { DndContext, DragOverlay, PointerSensor, closestCenter, useSensor, useSensors, type CollisionDetection, type DragStartEvent } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { TreeNode as TNode } from "../../lib/types";
@@ -43,6 +43,45 @@ interface VisibleTreeNode {
 function nodeKey(node: TNode): string {
   return node.type === "group" ? `g:${node.group.id}` : `p:${node.project.id}`;
 }
+
+// 指针在节点行的中部 40% → 命中 into:groupId（进入该分组）
+// 指针在边缘 30%（上/下） → 命中 group 节点本身（触发同层 reorder）
+// 这样可以让用户把分组内项目自然拖到根级（命中根级 group 边缘 = 同层 reorder）
+const treeCollisionDetection: CollisionDetection = (args) => {
+  const collisions = closestCenter(args);
+  const activeId = args.active.id;
+  const filtered = collisions.filter((c) => c.id !== activeId);
+  if (filtered.length === 0) return [];
+
+  const pointerY = args.pointerCoordinates?.y;
+  const intoIds = new Set<string>();
+  for (const c of filtered) {
+    if (typeof c.id === "string" && c.id.startsWith("into:")) intoIds.add(c.id);
+  }
+
+  // 找最近的非-into 命中（即 sibling 节点）
+  const sibling = filtered.find((c) => typeof c.id !== "string" || !c.id.startsWith("into:"));
+  if (sibling && pointerY != null) {
+    const rect = sibling.data?.droppableContainer?.rect?.current;
+    if (rect) {
+      const ratio = (pointerY - rect.top) / Math.max(1, rect.height);
+      const intoId = `into:${String(sibling.id)}`;
+      // 仅当节点本身是 group（有对应 into:）且指针在中部 30%~70% 时进入它
+      if (intoIds.has(intoId) && ratio >= 0.3 && ratio <= 0.7) {
+        const intoCollision = filtered.find((c) => c.id === intoId);
+        if (intoCollision) return [intoCollision];
+      }
+      return [sibling];
+    }
+  }
+
+  // 没拿到 rect 时，回退到「优先 into:groupId」
+  const intoNonRoot = filtered.find(
+    (c) => typeof c.id === "string" && c.id.startsWith("into:")
+  );
+  if (intoNonRoot) return [intoNonRoot];
+  return [filtered[0]];
+};
 
 function flattenTree(nodes: TNode[], out: CompactItem[] = []): CompactItem[] {
   for (const node of nodes) {
@@ -119,6 +158,7 @@ export function ProjectTree({
   const actions = useTreeActions();
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   const [focusedNodeKey, setFocusedNodeKey] = useState<string | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const visibleNodes = useMemo(
     () => flattenVisibleTree(tree, actions.collapsedIds),
     [actions.collapsedIds, tree]
@@ -363,8 +403,13 @@ export function ProjectTree({
 
       <DndContext
         sensors={sensors}
-        collisionDetection={closestCenter}
-        onDragEnd={(event) => actions.onDragEnd(null, event)}
+        collisionDetection={treeCollisionDetection}
+        onDragStart={(event: DragStartEvent) => setActiveId(String(event.active.id))}
+        onDragCancel={() => setActiveId(null)}
+        onDragEnd={(event) => {
+          setActiveId(null);
+          actions.onDragEnd(event);
+        }}
       >
         <SortableContext
           items={tree.map((n) => (n.type === "group" ? n.group.id : n.project.id))}
@@ -388,6 +433,9 @@ export function ProjectTree({
             ))}
           </div>
         </SortableContext>
+        <DragOverlay dropAnimation={null}>
+          {activeId ? <DragGhost activeId={activeId} tree={tree} /> : null}
+        </DragOverlay>
       </DndContext>
 
       {tree.length === 0 && loadError && (
@@ -407,6 +455,32 @@ export function ProjectTree({
           action={{ label: "快速添加项目", onClick: onQuickAddProject }}
         />
       )}
+    </div>
+  );
+}
+
+function findNodeById(nodes: TNode[], id: string): TNode | null {
+  for (const n of nodes) {
+    if (n.type === "group") {
+      if (n.group.id === id) return n;
+      const found = findNodeById(n.children, id);
+      if (found) return found;
+    } else if (n.project.id === id) {
+      return n;
+    }
+  }
+  return null;
+}
+
+function DragGhost({ activeId, tree }: { activeId: string; tree: TNode[] }) {
+  const node = findNodeById(tree, activeId);
+  if (!node) return null;
+  const label = node.type === "group" ? node.group.name : node.project.name;
+  const icon = node.type === "group" ? <Folder size={14} strokeWidth={1.5} /> : <Terminal size={14} strokeWidth={1.5} />;
+  return (
+    <div className="ui-tree-drag-ghost flex items-center gap-2 rounded-xl border border-border bg-surface-container-high px-3 py-1.5 text-[12px] font-medium shadow-lg">
+      <span className="text-on-surface-variant">{icon}</span>
+      <span className="truncate text-on-surface">{label}</span>
     </div>
   );
 }

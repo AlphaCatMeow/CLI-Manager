@@ -3,26 +3,45 @@ import type { HistorySessionView } from "../../lib/types";
 
 export type TimeGroupLabel = "Today" | "Yesterday" | "This Week" | "This Month" | "Earlier";
 
+// 模块级 formatter 单例：toLocaleString 每次创建 ICU formatter，对长会话/列表的开销可观。
+const TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
 export function formatTime(ts: number): string {
   if (!Number.isFinite(ts) || ts <= 0) return "-";
-  return new Date(ts).toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return TIME_FORMATTER.format(new Date(ts));
 }
 
 function escapeRegExp(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// 同会话搜索时 query 通常稳定，但 highlightText 会被每条可见消息调用一次，
+// 每次都 `new RegExp` 是浪费。用 1-entry cache 复用上次编译的 regex。
+let cachedQuery: string | null = null;
+let cachedRegex: RegExp | null = null;
+let cachedNormalized: string = "";
+
+function getHighlightRegex(trimmed: string): { regex: RegExp; normalized: string } {
+  if (cachedQuery === trimmed && cachedRegex) {
+    return { regex: cachedRegex, normalized: cachedNormalized };
+  }
+  const regex = new RegExp(`(${escapeRegExp(trimmed)})`, "ig");
+  cachedQuery = trimmed;
+  cachedRegex = regex;
+  cachedNormalized = trimmed.toLowerCase();
+  return { regex, normalized: cachedNormalized };
+}
+
 export function highlightText(text: string, query: string): ReactNode {
   const trimmed = query.trim();
   if (!trimmed) return text;
-  const regex = new RegExp(`(${escapeRegExp(trimmed)})`, "ig");
+  const { regex, normalized } = getHighlightRegex(trimmed);
   const parts = text.split(regex);
-  const normalized = trimmed.toLowerCase();
   return parts.map((part, idx) => {
     if (part.toLowerCase() === normalized) {
       return (

@@ -38,6 +38,7 @@ function App() {
   const resolvedTheme = useSettingsStore((s) => s.resolvedTheme);
   const lightThemePalette = useSettingsStore((s) => s.lightThemePalette);
   const darkThemePalette = useSettingsStore((s) => s.darkThemePalette);
+  const uiFontFamily = useSettingsStore((s) => s.uiFontFamily);
   const historySessions = useHistoryStore((s) => s.sessions);
   const loadHistorySessions = useHistoryStore((s) => s.loadSessions);
   const openHistoryWorkspace = useHistoryStore((s) => s.openHistory);
@@ -106,6 +107,40 @@ function App() {
     document.documentElement.setAttribute("data-light-palette", lightThemePalette);
     document.documentElement.setAttribute("data-dark-palette", darkThemePalette);
   }, [resolvedTheme, lightThemePalette, darkThemePalette]);
+
+  useEffect(() => {
+    if (uiFontFamily) {
+      document.documentElement.style.setProperty("--font-ui-sans", uiFontFamily);
+      document.documentElement.style.setProperty("--font-ui-mono", uiFontFamily);
+      document.documentElement.style.fontFamily = uiFontFamily;
+    } else {
+      document.documentElement.style.removeProperty("--font-ui-sans");
+      document.documentElement.style.removeProperty("--font-ui-mono");
+      document.documentElement.style.fontFamily = "";
+    }
+
+    const styleId = "ui-font-family-override";
+    let styleEl = document.getElementById(styleId) as HTMLStyleElement | null;
+    if (!styleEl) {
+      styleEl = document.createElement("style");
+      styleEl.id = styleId;
+      document.head.appendChild(styleEl);
+    }
+    if (uiFontFamily) {
+      styleEl.textContent = `
+        html, body, #root, button, input, select, textarea, optgroup,
+        [class*="font-sans"], [class*="font-mono"], code, pre, kbd, samp,
+        .ui-mono, .ui-dev-label {
+          font-family: ${uiFontFamily} !important;
+        }
+        .xterm, .xterm *, .xterm-helper-textarea {
+          font-family: revert !important;
+        }
+      `;
+    } else {
+      styleEl.textContent = "";
+    }
+  }, [uiFontFamily]);
 
   // 跟随系统主题：监听放在 effect 中，确保挂载/卸载严格成对，避免 store.load 中残留 listener
   useEffect(() => {

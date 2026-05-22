@@ -142,6 +142,15 @@ fn migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 9,
+            description: "add_path_and_session_indexes",
+            sql: "
+                CREATE INDEX IF NOT EXISTS idx_projects_path ON projects(path);
+                CREATE INDEX IF NOT EXISTS idx_session_meta_file ON session_meta(file_path);
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -255,6 +264,8 @@ pub fn run() {
             commands::sync::sync_test_connection,
             commands::sync::sync_upload,
             commands::sync::sync_download,
+            commands::sync::sync_local_export,
+            commands::sync::sync_local_import,
             commands::version::get_app_version,
         ])
         .run(tauri::generate_context!())
