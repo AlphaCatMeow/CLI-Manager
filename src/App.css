@@ -1443,12 +1443,14 @@ samp,
   cursor: not-allowed;
 }
 
-.switch[data-on="true"] {
+.switch[data-on="true"],
+.switch[data-state="checked"] {
   background-color: var(--interactive-selected-bg);
   border: 1px solid var(--interactive-selected-border);
 }
 
-.switch[data-on="true"]:hover {
+.switch[data-on="true"]:hover,
+.switch[data-state="checked"]:hover {
   background-color: color-mix(in srgb, var(--interactive-selected-bg) 86%, var(--primary) 14%);
 }
 
@@ -1464,7 +1466,8 @@ samp,
   transition: transform var(--animate-duration-fast), background-color var(--animate-duration-fast);
 }
 
-.switch[data-on="true"] .switch-thumb {
+.switch[data-on="true"] .switch-thumb,
+.switch[data-state="checked"] .switch-thumb {
   transform: translateX(20px);
 }
 

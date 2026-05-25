@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import {
   useSettingsStore,
   type CloseBehavior,
@@ -553,41 +554,30 @@ export function GeneralSettingsPage() {
                 <div className="text-xs text-on-surface-variant">精简模式</div>
                 <div className="mt-1 text-[11px] text-text-muted">隐藏内嵌终端，把项目列表作为启动器。</div>
               </div>
-              <button
-                className="switch ui-focus-ring shrink-0"
-                data-on={viewMode === "compact" ? "true" : "false"}
-                onClick={() => update("viewMode", viewMode === "compact" ? "standard" : "compact")}
+              <Switch
+                className="shrink-0"
+                checked={viewMode === "compact"}
+                onCheckedChange={() => update("viewMode", viewMode === "compact" ? "standard" : "compact")}
                 aria-label={viewMode === "compact" ? "关闭精简模式" : "开启精简模式"}
-                aria-pressed={viewMode === "compact"}
-              >
-                <span className="switch-thumb" />
-              </button>
+              />
             </div>
 
             <div className="flex items-center justify-between">
               <span className="text-xs text-on-surface-variant">外部 PowerShell</span>
-              <button
-                className="switch ui-focus-ring"
-                data-on={useExternalTerminal ? "true" : "false"}
-                onClick={() => update("useExternalTerminal", !useExternalTerminal)}
+              <Switch
+                checked={useExternalTerminal}
+                onCheckedChange={() => update("useExternalTerminal", !useExternalTerminal)}
                 aria-label={useExternalTerminal ? "关闭外部 PowerShell" : "开启外部 PowerShell"}
-                aria-pressed={useExternalTerminal}
-              >
-                <span className="switch-thumb" />
-              </button>
+              />
             </div>
 
             <div className="flex items-center justify-between">
               <span className="text-xs text-on-surface-variant">调试模式</span>
-              <button
-                className="switch ui-focus-ring"
-                data-on={debugMode ? "true" : "false"}
-                onClick={() => update("debugMode", !debugMode)}
+              <Switch
+                checked={debugMode}
+                onCheckedChange={() => update("debugMode", !debugMode)}
                 aria-label={debugMode ? "关闭调试模式" : "开启调试模式"}
-                aria-pressed={debugMode}
-              >
-                <span className="switch-thumb" />
-              </button>
+              />
             </div>
 
             <div>

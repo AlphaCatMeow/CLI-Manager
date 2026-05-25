@@ -63,6 +63,7 @@ export function HistoryWorkspace() {
   const [matchCursor, setMatchCursor] = useState(0);
   const [promptOpen, setPromptOpen] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
+  const [diffContainer, setDiffContainer] = useState<HTMLElement | null>(null);
   const [visibleSessionCount, setVisibleSessionCount] = useState(SESSION_PAGE_SIZE);
   const [visibleMessageCount, setVisibleMessageCount] = useState(MESSAGE_PAGE_SIZE);
   const [debouncedSessionQuery, setDebouncedSessionQuery] = useState(sessionQuery);
@@ -373,7 +374,12 @@ export function HistoryWorkspace() {
         onStartResize={startResize}
       />
 
-      <section className="ui-history-detail relative grid min-h-0 min-w-0 flex-1 grid-rows-[auto_1fr] overflow-hidden">
+      <section
+        ref={(el) => {
+          setDiffContainer(el);
+        }}
+        className="ui-history-detail relative grid min-h-0 min-w-0 flex-1 grid-rows-[auto_1fr] overflow-hidden"
+      >
         <SessionDetailPane
           activeView={activeView}
           activeSession={activeSession}
@@ -423,6 +429,7 @@ export function HistoryWorkspace() {
         <DiffModal
           open={diffOpen}
           messages={activeSession?.messages ?? EMPTY_MESSAGES}
+          container={diffContainer}
           onClose={() => setDiffOpen(false)}
           onJumpToMessage={(messageIndex) => {
             void jumpToMessage(messageIndex);

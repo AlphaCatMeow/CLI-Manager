@@ -1,12 +1,15 @@
 import { memo, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { FileCode2, GitCompareArrows, X } from "lucide-react";
 import type { HistoryMessage } from "../../lib/types";
 import DiffWorker from "../../lib/diffParser.worker.ts?worker";
 import type { ParsedDiffBlock } from "../../lib/diffParser.worker";
+import { cn } from "@/lib/utils";
 
 interface DiffModalProps {
   open: boolean;
   messages: HistoryMessage[];
+  container?: HTMLElement | null;
   onClose: () => void;
   onJumpToMessage: (messageIndex: number) => void;
 }
@@ -115,7 +118,7 @@ function isDiffCandidate(content: string): boolean {
   );
 }
 
-export function DiffModal({ open, messages, onClose, onJumpToMessage }: DiffModalProps) {
+export function DiffModal({ open, messages, container, onClose, onJumpToMessage }: DiffModalProps) {
   const workerRef = useRef<Worker | null>(null);
   const requestIdRef = useRef(0);
   const [blocks, setBlocks] = useState<ParsedDiffBlock[]>([]);
@@ -156,84 +159,101 @@ export function DiffModal({ open, messages, onClose, onJumpToMessage }: DiffModa
     };
   }, [open, messages]);
 
-  if (!open) return null;
-
   return (
-    <div
-      className="absolute inset-0 flex items-center justify-center p-4"
-      style={{ zIndex: 56, backgroundColor: "rgba(0, 0, 0, 0.45)" }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+    <DialogPrimitive.Root
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
       }}
     >
-      <div
-        className="w-full max-w-5xl h-[min(84vh,780px)] rounded-lg border overflow-hidden flex flex-col"
-        style={{ borderColor: "var(--border)", backgroundColor: "var(--bg-primary)" }}
-      >
-        <div
-          className="px-3 py-2 border-b flex items-center justify-between"
-          style={{ borderColor: "var(--border)" }}
+      <DialogPrimitive.Portal container={container ?? undefined}>
+        <DialogPrimitive.Overlay
+          className={cn(
+            "absolute inset-0 bg-black/45",
+            "data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out"
+          )}
+          style={{ zIndex: 56 }}
+        />
+        <DialogPrimitive.Content
+          className={cn(
+            "absolute inset-0 flex items-center justify-center p-4 outline-none",
+            "data-[state=open]:animate-scale-in data-[state=closed]:animate-scale-out"
+          )}
+          style={{ zIndex: 56 }}
         >
-          <div className="inline-flex items-center gap-1.5 text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-            <GitCompareArrows size={15} />
-            Diff 视图
-          </div>
-          <button
-            onClick={onClose}
-            className="inline-flex items-center justify-center rounded-md border w-7 h-7"
-            style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}
-            title="关闭"
+          <div
+            className="w-full max-w-5xl h-[min(84vh,780px)] rounded-lg border overflow-hidden flex flex-col"
+            style={{ borderColor: "var(--border)", backgroundColor: "var(--bg-primary)" }}
           >
-            <X size={14} />
-          </button>
-        </div>
-
-        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
-          {parsing && (
-            <div className="px-3 py-6 text-xs text-center" style={{ color: "var(--text-muted)" }}>
-              正在解析 diff...
-            </div>
-          )}
-
-          {!parsing && blocks.length === 0 && (
-            <div className="px-3 py-6 text-xs text-center" style={{ color: "var(--text-muted)" }}>
-              当前会话暂未解析到 unified diff
-            </div>
-          )}
-
-          {!parsing &&
-            blocks.map((block) => (
-              <div
-                key={block.id}
-                className="px-3 py-3 border-b min-w-0"
-                style={{ borderColor: "var(--border)" }}
+            <div
+              className="px-3 py-2 border-b flex items-center justify-between"
+              style={{ borderColor: "var(--border)" }}
+            >
+              <DialogPrimitive.Title
+                className="inline-flex items-center gap-1.5 text-sm font-semibold"
+                style={{ color: "var(--text-primary)" }}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="inline-flex items-center gap-1.5 text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
-                      <FileCode2 size={12} />
-                      <span className="truncate">{block.filePath}</span>
-                    </div>
-                    <div className="text-[11px] mt-0.5" style={{ color: "var(--text-muted)" }}>
-                      来自消息 #{block.messageIndex + 1} · {block.timestamp ?? "-"}
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => {
-                      onJumpToMessage(block.messageIndex);
-                      onClose();
-                    }}
-                    className="text-xs px-2 py-1 rounded-md shrink-0"
-                    style={{ backgroundColor: "var(--accent)", color: "#fff" }}
-                  >
-                    跳回消息
-                  </button>
+                <GitCompareArrows size={15} />
+                Diff 视图
+              </DialogPrimitive.Title>
+              <DialogPrimitive.Close
+                className="inline-flex items-center justify-center rounded-md border w-7 h-7"
+                style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}
+                title="关闭"
+                aria-label="关闭"
+              >
+                <X size={14} />
+              </DialogPrimitive.Close>
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+              {parsing && (
+                <div className="px-3 py-6 text-xs text-center" style={{ color: "var(--text-muted)" }}>
+                  正在解析 diff...
                 </div>
-                <DiffCodeViewer patch={block.patch} />
-              </div>
-            ))}
-        </div>
-      </div>
-    </div>
+              )}
+
+              {!parsing && blocks.length === 0 && (
+                <div className="px-3 py-6 text-xs text-center" style={{ color: "var(--text-muted)" }}>
+                  当前会话暂未解析到 unified diff
+                </div>
+              )}
+
+              {!parsing &&
+                blocks.map((block) => (
+                  <div
+                    key={block.id}
+                    className="px-3 py-3 border-b min-w-0"
+                    style={{ borderColor: "var(--border)" }}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="inline-flex items-center gap-1.5 text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
+                          <FileCode2 size={12} />
+                          <span className="truncate">{block.filePath}</span>
+                        </div>
+                        <div className="text-[11px] mt-0.5" style={{ color: "var(--text-muted)" }}>
+                          来自消息 #{block.messageIndex + 1} · {block.timestamp ?? "-"}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          onJumpToMessage(block.messageIndex);
+                          onClose();
+                        }}
+                        className="text-xs px-2 py-1 rounded-md shrink-0"
+                        style={{ backgroundColor: "var(--accent)", color: "#fff" }}
+                      >
+                        跳回消息
+                      </button>
+                    </div>
+                    <DiffCodeViewer patch={block.patch} />
+                  </div>
+                ))}
+            </div>
+          </div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 }

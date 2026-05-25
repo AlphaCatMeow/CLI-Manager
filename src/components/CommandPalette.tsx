@@ -1,11 +1,13 @@
 import { Fragment, useState, useEffect, useRef, useMemo } from "react";
 import { create } from "zustand";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { useProjectStore } from "../stores/projectStore";
 import { useTemplateStore } from "../stores/templateStore";
 import { useTerminalStore } from "../stores/terminalStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useHistoryStore } from "../stores/historyStore";
+import { Dialog } from "./ui/dialog";
 import { toast } from "sonner";
 import { logError } from "../lib/logger";
 import { openWindowsTerminal } from "../lib/externalTerminal";
@@ -69,7 +71,6 @@ export function CommandPalette() {
       setQuery("");
       setSelectedIndex(0);
       fetchTemplates();
-      setTimeout(() => inputRef.current?.focus(), 0);
     }
   }, [isOpen, fetchTemplates]);
 
@@ -231,72 +232,80 @@ export function CommandPalette() {
       e.preventDefault();
       const item = filtered[selectedIndex];
       if (item) { close(); item.action(); }
-    } else if (e.key === "Escape") {
-      close();
     }
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]"
-      style={{ backgroundColor: "rgba(0,0,0,0.4)", animation: "fade-in var(--animate-duration-fast) ease-out" }}
-      onClick={(e) => { if (e.target === e.currentTarget) close(); }}
+    <Dialog
+      open={isOpen}
+      onOpenChange={(next) => {
+        if (!next) close();
+      }}
     >
-      <div
-        className="w-full max-w-lg rounded-lg border shadow-2xl overflow-hidden"
-        style={{ backgroundColor: "var(--bg-secondary)", borderColor: "var(--border)", animation: "scale-in var(--animate-duration-normal) ease-out" }}
-      >
-        <div className="p-3 border-b" style={{ borderColor: "var(--border)" }}>
-          <input
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0); }}
-            onKeyDown={handleKeyDown}
-            placeholder="输入命令或搜索项目..."
-            className="w-full bg-transparent text-sm outline-none"
-            style={{ color: "var(--text-primary)" }}
-          />
-        </div>
-        <div ref={listRef} className="max-h-80 overflow-y-auto p-1">
-          {filtered.length === 0 && (
-            <div className="px-3 py-6 text-center text-xs" style={{ color: "var(--text-muted)" }}>
-              无匹配结果
-            </div>
-          )}
-          {filtered.map((item, i) => {
-            const showHeader = i === 0 || item.category !== filtered[i - 1].category;
-            return (
-              <Fragment key={item.id}>
-                {showHeader && (
-                  <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
-                    {item.category}
-                  </div>
-                )}
-                <div
-                  data-idx={i}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-md cursor-pointer text-xs"
-                  style={{
-                    backgroundColor: i === selectedIndex ? "var(--bg-tertiary)" : "transparent",
-                    color: i === selectedIndex ? "var(--text-primary)" : "var(--text-secondary)",
-                  }}
-                  onMouseEnter={() => setSelectedIndex(i)}
-                  onClick={() => { close(); item.action(); }}
-                >
-                  <span className="truncate font-medium">{item.label}</span>
-                  {item.description && (
-                    <span className="truncate ml-auto text-[10px]" style={{ color: "var(--text-muted)" }}>
-                      {item.description}
-                    </span>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay
+          className="fixed inset-0 z-50 data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out"
+          style={{ backgroundColor: "rgba(0,0,0,0.4)" }}
+        />
+        <DialogPrimitive.Content
+          className="fixed inset-x-0 top-[15vh] z-50 mx-auto w-full max-w-lg rounded-lg border shadow-2xl overflow-hidden outline-none data-[state=open]:animate-scale-in data-[state=closed]:animate-scale-out"
+          style={{ backgroundColor: "var(--bg-secondary)", borderColor: "var(--border)" }}
+          onOpenAutoFocus={(e) => {
+            e.preventDefault();
+            requestAnimationFrame(() => inputRef.current?.focus());
+          }}
+        >
+          <DialogPrimitive.Title className="sr-only">命令面板</DialogPrimitive.Title>
+          <div className="p-3 border-b" style={{ borderColor: "var(--border)" }}>
+            <input
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0); }}
+              onKeyDown={handleKeyDown}
+              placeholder="输入命令或搜索项目..."
+              className="w-full bg-transparent text-sm outline-none"
+              style={{ color: "var(--text-primary)" }}
+            />
+          </div>
+          <div ref={listRef} className="max-h-80 overflow-y-auto p-1">
+            {filtered.length === 0 && (
+              <div className="px-3 py-6 text-center text-xs" style={{ color: "var(--text-muted)" }}>
+                无匹配结果
+              </div>
+            )}
+            {filtered.map((item, i) => {
+              const showHeader = i === 0 || item.category !== filtered[i - 1].category;
+              return (
+                <Fragment key={item.id}>
+                  {showHeader && (
+                    <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+                      {item.category}
+                    </div>
                   )}
-                </div>
-              </Fragment>
-            );
-          })}
-        </div>
-      </div>
-    </div>
+                  <div
+                    data-idx={i}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-md cursor-pointer text-xs"
+                    style={{
+                      backgroundColor: i === selectedIndex ? "var(--bg-tertiary)" : "transparent",
+                      color: i === selectedIndex ? "var(--text-primary)" : "var(--text-secondary)",
+                    }}
+                    onMouseEnter={() => setSelectedIndex(i)}
+                    onClick={() => { close(); item.action(); }}
+                  >
+                    <span className="truncate font-medium">{item.label}</span>
+                    {item.description && (
+                      <span className="truncate ml-auto text-[10px]" style={{ color: "var(--text-muted)" }}>
+                        {item.description}
+                      </span>
+                    )}
+                  </div>
+                </Fragment>
+              );
+            })}
+          </div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </Dialog>
   );
 }
