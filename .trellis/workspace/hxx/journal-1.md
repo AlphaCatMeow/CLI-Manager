@@ -106,3 +106,36 @@ Implemented internal-terminal background image (JPEG/PNG/GIF) with opacity, fit,
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: fix font color coverage to derive secondary/muted tokens
+
+**Date**: 2026-05-25
+**Task**: fix font color coverage to derive secondary/muted tokens
+**Branch**: `master`
+
+### Summary
+
+Fixed uiTextColor only overriding --text-primary by also deriving --text-secondary (85% mix with bg) and --text-muted (60% mix) in App.tsx effect, so sidebar tree groups, command palette, settings subtitles and history panels follow the user-selected color. Updated PRD with Decision Amendment recording the scope expansion from PRD's original 'primary-only' assumption.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7cde1c6` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
