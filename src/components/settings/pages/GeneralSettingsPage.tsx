@@ -344,11 +344,7 @@ export function GeneralSettingsPage() {
 
           <div className="mt-4">
             <label className="mb-1 block text-xs text-on-surface-variant">应用字体</label>
-            <Select
-              value={uiFontFamily}
-              onChange={(e) => update("uiFontFamily", e.target.value)}
-              aria-label="应用字体"
-            >
+            <Select value={uiFontFamily} onChange={(e) => update("uiFontFamily", e.target.value)} aria-label="应用字体">
               {isCustomUiFontFamily && <option value={uiFontFamily}>当前自定义（保留）</option>}
               {UI_FONT_FAMILY_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>

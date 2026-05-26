@@ -20,8 +20,17 @@ export type SidebarDensity = "compact" | "comfortable";
 export type ViewMode = "standard" | "compact";
 export type CloseBehavior = "ask" | "minimize" | "exit";
 export type ShortcutAction = "newTerminal" | "closeTerminal" | "nextTab" | "prevTab" | "commandPalette";
+export type TabSwitchShortcutModifier = "Alt" | "Ctrl" | "Shift";
 export type KeyboardShortcutMap = Record<ShortcutAction, string>;
 export type TerminalNewlineShortcut = "Shift+Enter" | "Ctrl+Enter" | "Alt+Enter";
+
+export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcutMap = {
+  newTerminal: "Ctrl+Shift+T",
+  closeTerminal: "Ctrl+W",
+  nextTab: "Alt+ArrowRight",
+  prevTab: "Alt+ArrowLeft",
+  commandPalette: "Ctrl+P",
+};
 
 export type TerminalBackgroundFit = "cover" | "contain" | "center" | "tile";
 export type TerminalBackgroundPosition =
@@ -120,13 +129,7 @@ const DEFAULTS: Settings = {
   sidebarDensity: "comfortable",
   viewMode: "standard",
   closeBehavior: "ask",
-  keyboardShortcuts: {
-    newTerminal: "Ctrl+Shift+T",
-    closeTerminal: "Ctrl+W",
-    nextTab: "Ctrl+Tab",
-    prevTab: "Ctrl+Shift+Tab",
-    commandPalette: "Ctrl+P",
-  },
+  keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS,
   terminalNewlineShortcut: "Shift+Enter",
   terminalBackground: {
     enabled: false,
@@ -260,30 +263,21 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
     const storedLightThemePalette = entries.lightThemePalette;
     const lightThemePalette = migrateLightThemePalette(storedLightThemePalette) ?? DEFAULTS.lightThemePalette;
-    if (
-      typeof storedLightThemePalette === "string" &&
-      lightThemePalette !== storedLightThemePalette
-    ) {
+    if (typeof storedLightThemePalette === "string" && lightThemePalette !== storedLightThemePalette) {
       await s.set("lightThemePalette", lightThemePalette);
     }
     entries.lightThemePalette = lightThemePalette;
 
     const storedDarkThemePalette = entries.darkThemePalette;
     const darkThemePalette = migrateDarkThemePalette(storedDarkThemePalette) ?? DEFAULTS.darkThemePalette;
-    if (
-      typeof storedDarkThemePalette === "string" &&
-      darkThemePalette !== storedDarkThemePalette
-    ) {
+    if (typeof storedDarkThemePalette === "string" && darkThemePalette !== storedDarkThemePalette) {
       await s.set("darkThemePalette", darkThemePalette);
     }
     entries.darkThemePalette = darkThemePalette;
 
     const storedTerminalThemeName = entries.terminalThemeName;
     let terminalThemeName = migrateTerminalThemeName(storedTerminalThemeName) ?? DEFAULTS.terminalThemeName;
-    if (
-      typeof storedTerminalThemeName === "string" &&
-      terminalThemeName !== storedTerminalThemeName
-    ) {
+    if (typeof storedTerminalThemeName === "string" && terminalThemeName !== storedTerminalThemeName) {
       await s.set("terminalThemeName", terminalThemeName);
     }
 
