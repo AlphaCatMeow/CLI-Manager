@@ -743,18 +743,6 @@ samp,
     0 0 0 6px color-mix(in srgb, var(--primary) 16%, transparent);
 }
 
-.ui-selection-card[data-selected="true"]::after {
-  content: "\2713";
-  position: absolute;
-  top: 4px;
-  right: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--primary);
-  pointer-events: none;
-}
-
 .ui-tab-trigger {
   color: var(--on-surface-variant);
 }

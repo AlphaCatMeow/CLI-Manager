@@ -29,23 +29,30 @@
 4. **新增** `.ui-selection-card[data-selected="true"]::after`：右上角 ✓ 勾号（Unicode "✓"，颜色 `var(--primary)`，font-size 12px），保证一目了然。
 5. **9 宫格特例**：`TerminalBackgroundSection.tsx:342` 移除 `ui-selection-card` class（仅保留 `ui-interactive ui-focus-ring`），9 宫格回到 `ui-interactive` 默认 selected-bg 填充行为（无勾号），符合用户 Q2「整体填充背景色」选择。
 
+### Amendment（2026-05-26，实施后用户决定）
+
+* **取消** 右上角 ✓ 勾号角标：用户在 commit `bb25287` 实施后认为外发光 + border 加深 + 文字加深已足够清晰，不再需要 ✓。
+* 删除 `.ui-selection-card[data-selected="true"]::after` 整段规则。
+* `.ui-selection-card { position: relative; }` 防御性保留（对外形无影响，且避免反复改动），其余选中态样式（背景去染色、border、文字加深、外发光）全部按既定方案保留。
+* 9 宫格特例（移除 `ui-selection-card` class）继续保留，与本次撤销无关。
+
 ## Requirements
 
 * 应用主题、终端主题、PaletteCard、侧栏密度、视图模式、同步提供商按钮选中时：
   * 内部背景与未选中一致（不染主题色）
-  * 保留外发光 + border 加深 + 文字加深
-  * 右上角出现 ✓ 勾号
-* 9 宫格位置按钮选中时：保留整体填充背景色（不加勾号）
-* 浅色 / 暗色主题下 ✓ 与背景对比度可读
+  * 保留外发光 + border 加深 + 文字加深作为选中信号
+* 9 宫格位置按钮选中时：保留整体填充背景色
 
 ## Acceptance Criteria
 
-* [ ] 主题/终端主题/密度/视图/同步按钮选中态：内部背景与默认态一致，右上角有 ✓
-* [ ] PaletteCard 选中：色板 swatch 不被覆盖，右上角 ✓ 不遮挡 swatch
-* [ ] 9 宫格位置按钮选中：保留填充式选中（无勾号），布局未变
-* [ ] 暗色 / 浅色主题切换下 ✓ 颜色对比度可识别
+* [ ] 主题/终端主题/密度/视图/同步按钮选中态：内部背景与默认态一致，仅外发光 + border + 文字加深表示选中
+* [ ] PaletteCard 选中：色板 swatch 不被覆盖
+* [ ] 9 宫格位置按钮选中：保留填充式选中，布局未变
 * [ ] `npx tsc --noEmit` 通过
 * [ ] 未引入新依赖
+* [ ] ~~右上角有 ✓~~（Amendment：已取消）
+* [ ] ~~✓ 不遮挡 swatch~~（Amendment：已取消）
+* [ ] ~~✓ 颜色对比度可识别~~（Amendment：已取消）
 
 ## Out of Scope
 
@@ -56,7 +63,7 @@
 
 ## Technical Approach
 
-`App.css:730-742` 改为：
+`App.css:730-744` 改为（Amendment 后的最终状态，已删除 ::after 段）：
 
 ```css
 .ui-selection-card {
@@ -74,23 +81,11 @@
     inset 0 0 0 1px var(--interactive-selected-border),
     0 0 0 6px color-mix(in srgb, var(--primary) 16%, transparent);
 }
-
-.ui-selection-card[data-selected="true"]::after {
-  content: "✓";
-  position: absolute;
-  top: 4px;
-  right: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--primary);
-  pointer-events: none;
-}
 ```
 
 `TerminalBackgroundSection.tsx:342`：删除 `ui-selection-card`，保留 `ui-interactive ui-focus-ring`。
 
 ## Risk & Rollback
 
-* 风险：PaletteCard 右上角的 ✓ 可能压到 swatch 文字。手动验证后若有遮挡可以微调 top/right。
+* 风险：删除 ✓ 后，外发光 + border + 文字加深是否在所有主题下均可被肉眼识别——已由用户主观确认可接受。
 * 回滚：单文件 revert 即可恢复。
