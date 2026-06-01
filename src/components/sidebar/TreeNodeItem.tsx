@@ -137,7 +137,10 @@ function TreeNodeItemImpl({ node, depth, density, focusedNodeKey, onFocusNode }:
               </span>
             )}
           </span>
-          <span className="ui-tree-item-actions hidden shrink-0 items-center gap-0.5 group-hover/item:flex group-focus-within/item:flex">
+          <span
+            className="ui-tree-item-actions hidden shrink-0 items-center gap-0.5 group-hover/item:flex group-focus-within/item:flex"
+            onDoubleClick={(e) => e.stopPropagation()}
+          >
             <button onClick={(e) => { e.stopPropagation(); actions.onOpenProject(p); }} className="icon-btn" style={{ color: "var(--success)", opacity: 0.7 }} title="Open terminal">
               <Play size={14} strokeWidth={1.5} />
             </button>
