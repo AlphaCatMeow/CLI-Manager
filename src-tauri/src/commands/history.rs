@@ -37,6 +37,11 @@ struct SessionStatsScan {
     dominant_model: Option<String>,
 }
 
+#[derive(Clone, Default)]
+struct SessionProjectScan {
+    cwd: Option<String>,
+}
+
 #[derive(Clone)]
 struct CachedSessionComputation {
     created_at: i64,
@@ -267,12 +272,16 @@ struct HourStatsAggregate {
 #[tauri::command]
 pub async fn history_list_sessions(
     source: Option<String>,
+    project_path: Option<String>,
     query: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<Vec<HistorySessionSummary>, String> {
     tokio::task::spawn_blocking(move || {
         let source_filter = source.map(|v| v.to_lowercase());
+        let target_project_path = project_path
+            .map(|v| normalize_history_path(&v))
+            .filter(|v| !v.is_empty());
         let query_lower = query
             .map(|q| q.trim().to_lowercase())
             .filter(|q| !q.is_empty());
@@ -298,7 +307,21 @@ pub async fn history_list_sessions(
                     .then_with(|| a.0.path.cmp(&b.0.path))
             });
 
-            for (file_ref, _) in files.into_iter().skip(start_offset).take(max_sessions) {
+            let mut matched = 0usize;
+            for (file_ref, _) in files {
+                if let Some(project_path) = &target_project_path {
+                    if !session_matches_project_path(&file_ref, project_path) {
+                        continue;
+                    }
+                }
+                if matched < start_offset {
+                    matched += 1;
+                    continue;
+                }
+                if sessions.len() >= max_sessions {
+                    break;
+                }
+                matched += 1;
                 let computed = get_or_scan_session_computation(&file_ref);
                 sessions.push(summary_from_computation(&file_ref, &computed));
             }
@@ -308,6 +331,12 @@ pub async fn history_list_sessions(
         for entry in refresh_history_index() {
             if let Some(filter) = &source_filter {
                 if &entry.file_ref.source != filter {
+                    continue;
+                }
+            }
+
+            if let Some(project_path) = &target_project_path {
+                if !session_matches_project_path(&entry.file_ref, project_path) {
                     continue;
                 }
             }
@@ -429,9 +458,26 @@ fn resolve_session_file_ref(
 }
 
 #[tauri::command]
+pub async fn history_delete_session(
+    file_path: String,
+    source: String,
+    project_key: String,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let file_ref = validate_session_file_ref(&file_path, &source, &project_key)?;
+        fs::remove_file(&file_ref.path).map_err(|err| err.to_string())?;
+        invalidate_history_caches();
+        Ok(())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
 pub async fn history_search(
     query: String,
     source: Option<String>,
+    project_path: Option<String>,
     limit: Option<usize>,
 ) -> Result<Vec<HistorySearchResult>, String> {
     tokio::task::spawn_blocking(move || {
@@ -442,11 +488,19 @@ pub async fn history_search(
 
         let max_hits = limit.unwrap_or(100).max(1);
         let source_filter = source.map(|v| v.to_lowercase());
+        let target_project_path = project_path
+            .map(|v| normalize_history_path(&v))
+            .filter(|v| !v.is_empty());
         let mut hits: Vec<HistorySearchResult> = Vec::new();
 
         for entry in refresh_history_index() {
             if let Some(filter) = &source_filter {
                 if &entry.file_ref.source != filter {
+                    continue;
+                }
+            }
+            if let Some(project_path) = &target_project_path {
+                if !session_matches_project_path(&entry.file_ref, project_path) {
                     continue;
                 }
             }
@@ -860,6 +914,18 @@ fn get_history_index() -> &'static RwLock<HistorySessionIndex> {
     HISTORY_SESSION_INDEX.get_or_init(|| RwLock::new(HistorySessionIndex::default()))
 }
 
+fn invalidate_history_caches() {
+    if let Ok(mut cache) = get_files_cache().lock() {
+        cache.by_source.clear();
+    }
+    if let Ok(mut cache) = get_stats_cache().lock() {
+        cache.entries.clear();
+    }
+    if let Ok(mut index) = get_history_index().write() {
+        *index = HistorySessionIndex::default();
+    }
+}
+
 fn refresh_history_index() -> Vec<HistoryIndexEntry> {
     let now = now_millis();
     if let Ok(index) = get_history_index().read() {
@@ -1245,6 +1311,81 @@ fn detect_home_dir() -> Option<PathBuf> {
 
 fn path_to_key(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn normalize_history_path(path: &str) -> String {
+    path.trim()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_lowercase()
+}
+
+fn claude_project_key_from_path(path: &str) -> String {
+    path.trim()
+        .replace(':', "-")
+        .replace(['\\', '/'], "-")
+        .trim_end_matches('-')
+        .to_lowercase()
+}
+
+fn session_matches_project_path(file_ref: &SessionFileRef, target_project_path: &str) -> bool {
+    if file_ref.source == "claude" && file_ref.project_key.to_lowercase() == claude_project_key_from_path(target_project_path) {
+        return true;
+    }
+
+    let scan = scan_session_project(&file_ref.path);
+    scan.cwd
+        .as_deref()
+        .map(normalize_history_path)
+        .map(|cwd| cwd == target_project_path || cwd.starts_with(&format!("{target_project_path}/")))
+        .unwrap_or(false)
+}
+
+fn scan_session_project(path: &Path) -> SessionProjectScan {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(_) => return SessionProjectScan::default(),
+    };
+
+    for line in BufReader::with_capacity(READ_BUF_CAPACITY, file).lines().map_while(Result::ok) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.contains("cwd") {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        if let Some(cwd) = extract_cwd(&value) {
+            return SessionProjectScan { cwd: Some(cwd) };
+        }
+    }
+
+    SessionProjectScan::default()
+}
+
+fn extract_cwd(value: &Value) -> Option<String> {
+    let candidates = [
+        value.get("cwd"),
+        value.get("current_dir"),
+        value.get("currentDir"),
+        value.get("workdir"),
+        value.get("working_dir"),
+        value.get("workingDirectory"),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        let Some(path) = candidate.as_str().map(str::trim).filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        return Some(path.to_string());
+    }
+
+    for key in ["payload", "metadata", "environment_context"] {
+        if let Some(cwd) = value.get(key).and_then(extract_cwd) {
+            return Some(cwd);
+        }
+    }
+
+    None
 }
 
 /// Single-pass scan that yields both summary and stats from one read.

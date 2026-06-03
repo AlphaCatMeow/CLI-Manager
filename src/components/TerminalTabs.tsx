@@ -14,6 +14,7 @@ import { openWindowsTerminal } from "../lib/externalTerminal";
 import { ChevronDown, ChevronRight, Terminal, Plus, Search, X } from "./icons";
 import { EmptyState } from "./ui/EmptyState";
 import { useHistoryStore } from "../stores/historyStore";
+import type { HistorySourceFilter } from "../lib/types";
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -41,6 +42,16 @@ const TAB_NOTIFICATION_LABELS: Record<TabNotificationState, string> = {
 };
 
 const PULSING_TAB_STATES = new Set<TabNotificationState>(["running", "attention"]);
+const HISTORY_TAB_ID = "history-workspace-tab";
+const HISTORY_TAB_START_ANCHOR_ID = "history-workspace-tab-start";
+
+function resolveHistorySourceFilter(cliTool: string | null | undefined): HistorySourceFilter {
+  const normalized = cliTool?.trim().toLowerCase();
+  if (!normalized) return "all";
+  if (normalized.includes("claude")) return "claude";
+  if (normalized.includes("codex") || normalized === "code") return "codex";
+  return "all";
+}
 
 function formatTabStatusUpdatedAt(value: string | null | undefined): string {
   if (!value) return "无";
@@ -65,6 +76,7 @@ function SortableTab({ id, title, isActive, notification, statusUpdatedAt, onAct
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
   const statusLabel = TAB_NOTIFICATION_LABELS[notification];
   const statusTitle = `状态：${statusLabel}\n会话：${title}\n更新时间：${formatTabStatusUpdatedAt(statusUpdatedAt)}`;
+  const tabMinWidthClass = notification === "none" ? "min-w-[92px]" : "min-w-[118px]";
 
   const setTabRef = useCallback(
     (element: HTMLDivElement | null) => {
@@ -88,7 +100,7 @@ function SortableTab({ id, title, isActive, notification, statusUpdatedAt, onAct
         <div
           ref={setTabRef}
           style={style}
-          className="ui-interactive ui-tab-trigger mx-1 flex h-7 min-w-[118px] max-w-[180px] shrink-0 cursor-pointer items-center gap-2 rounded-lg px-3 text-[12px] font-medium"
+          className={`ui-interactive ui-tab-trigger mx-1 flex h-7 ${tabMinWidthClass} max-w-[180px] shrink-0 cursor-pointer items-center gap-2 rounded-lg px-3 text-[12px] font-medium`}
           data-selected={isActive ? "true" : "false"}
           onClick={onActivate}
           aria-selected={isActive}
@@ -103,7 +115,7 @@ function SortableTab({ id, title, isActive, notification, statusUpdatedAt, onAct
             aria-label={statusLabel}
             title={statusTitle}
           />
-          <span className="max-w-[140px] truncate tracking-[0.01em]" title={statusTitle}>{title}</span>
+          <span className="min-w-0 flex-1 truncate tracking-[0.01em]" title={statusTitle}>{title}</span>
           {notification !== "none" && (
             <span className="shrink-0 text-[10px] leading-none text-on-surface-variant" title={statusTitle}>
               {statusLabel}
@@ -121,6 +133,70 @@ function SortableTab({ id, title, isActive, notification, statusUpdatedAt, onAct
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>{menuContent}</ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
+interface SortableHistoryTabProps {
+  isActive: boolean;
+  onActivate: () => void;
+  onClose: () => void;
+  onNewTab: () => void;
+  onRegisterElement: (id: string, element: HTMLDivElement | null) => void;
+}
+
+function SortableHistoryTab({ isActive, onActivate, onClose, onNewTab, onRegisterElement }: SortableHistoryTabProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: HISTORY_TAB_ID });
+
+  const setTabRef = useCallback(
+    (element: HTMLDivElement | null) => {
+      setNodeRef(element);
+      onRegisterElement(HISTORY_TAB_ID, element);
+    },
+    [onRegisterElement, setNodeRef]
+  );
+
+  const horizontalTransform = transform ? { ...transform, y: 0 } : transform;
+  const style = {
+    transform: CSS.Transform.toString(horizontalTransform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 10 : undefined,
+  };
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          ref={setTabRef}
+          style={style}
+          className="ui-interactive ui-tab-trigger mx-1 flex h-7 min-w-[118px] max-w-[180px] shrink-0 cursor-pointer items-center gap-2 rounded-lg px-3 text-[12px] font-medium"
+          data-selected={isActive ? "true" : "false"}
+          onClick={onActivate}
+          aria-selected={isActive}
+          {...attributes}
+          {...listeners}
+        >
+          <Search size={13} strokeWidth={1.8} className="shrink-0" aria-hidden="true" />
+          <span className="max-w-[140px] truncate tracking-[0.01em]" title="会话历史">会话历史</span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose();
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            className="ui-terminal-tab-close ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-on-surface-variant transition-[background-color,color,opacity,box-shadow] hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--interactive-focus-ring)]"
+            aria-label="关闭会话历史"
+            title="关闭会话历史"
+          >
+            <X size={13} strokeWidth={2.2} aria-hidden="true" />
+          </button>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={onClose}>关闭会话历史</ContextMenuItem>
+        <ContextMenuItem onSelect={onNewTab}>新建终端</ContextMenuItem>
+      </ContextMenuContent>
     </ContextMenu>
   );
 }
@@ -156,17 +232,25 @@ export function TerminalTabs() {
   const terminalBackgroundEnabled = useSettingsStore((s) => s.terminalBackground.enabled);
   const terminalBackgroundImagePath = useSettingsStore((s) => s.terminalBackground.imagePath);
   const historyOpen = useHistoryStore((s) => s.isOpen);
-  const toggleHistory = useHistoryStore((s) => s.toggleHistory);
+  const openHistory = useHistoryStore((s) => s.openHistory);
+  const focusGlobalSearchSeq = useHistoryStore((s) => s.focusGlobalSearchSeq);
   const tabScrollRef = useRef<HTMLDivElement | null>(null);
   const tabElementsRef = useRef(new Map<string, HTMLDivElement>());
+  const activeSessionIdRef = useRef(activeSessionId);
   const [tabListOpen, setTabListOpen] = useState(false);
   const [tabScrollState, setTabScrollState] = useState({
     hasOverflow: false,
     canScrollLeft: false,
     canScrollRight: false,
   });
+  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<"terminal" | "history">("terminal");
+  const [historyTabAnchorId, setHistoryTabAnchorId] = useState<string | null>(null);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
 
   const updateTabScrollState = useCallback(() => {
     const element = tabScrollRef.current;
@@ -195,12 +279,26 @@ export function TerminalTabs() {
     }
   }, []);
 
-  const handleDragEnd = useCallback((event: DragEndEvent) => {
-    const { active, over } = event;
-    if (over && active.id !== over.id) {
-      reorderSessions(active.id as string, over.id as string);
-    }
-  }, [reorderSessions]);
+  const activateHistoryTab = useCallback(() => {
+    setActiveWorkspaceTab("history");
+  }, []);
+
+  const handleOpenHistoryTab = useCallback(() => {
+    const activeSession = sessions.find((session) => session.id === activeSessionId);
+    const project = activeSession?.projectId ? projects.find((item) => item.id === activeSession.projectId) : undefined;
+    setHistoryTabAnchorId((current) => current ?? activeSessionId);
+    setActiveWorkspaceTab("history");
+    void openHistory({
+      sourceFilter: resolveHistorySourceFilter(project?.cli_tool),
+      projectPath: project?.path ?? null,
+    });
+  }, [activeSessionId, openHistory, projects, sessions]);
+
+  const handleCloseHistoryTab = useCallback(() => {
+    setActiveWorkspaceTab("terminal");
+    setHistoryTabAnchorId(null);
+    useHistoryStore.getState().closeHistory();
+  }, []);
 
   const handleNewTab = useCallback(async () => {
     if (useExternalTerminal) {
@@ -208,12 +306,18 @@ export function TerminalTabs() {
       return;
     }
     await createSession(undefined, undefined, "Terminal");
+    setActiveWorkspaceTab("terminal");
   }, [useExternalTerminal, createSession]);
 
   const handleSelectFromList = useCallback((sessionId: string) => {
-    setActive(sessionId);
+    if (sessionId === HISTORY_TAB_ID) {
+      activateHistoryTab();
+    } else {
+      setActive(sessionId);
+      setActiveWorkspaceTab("terminal");
+    }
     setTabListOpen(false);
-  }, [setActive]);
+  }, [activateHistoryTab, setActive]);
 
   const scrollTabs = useCallback(
     (direction: "left" | "right") => {
@@ -246,7 +350,24 @@ export function TerminalTabs() {
     [sessions, projects, splitTerminal]
   );
 
+  const historyActive = historyOpen && activeWorkspaceTab === "history";
   const sessionIds = sessions.map((s) => s.id);
+  const historyTabItem = { id: HISTORY_TAB_ID, title: "会话历史" };
+  const historyAnchorIndex = historyTabAnchorId && historyTabAnchorId !== HISTORY_TAB_START_ANCHOR_ID
+    ? sessions.findIndex((s) => s.id === historyTabAnchorId)
+    : -1;
+  const tabListItems = historyOpen
+    ? historyTabAnchorId === HISTORY_TAB_START_ANCHOR_ID
+      ? [historyTabItem, ...sessions]
+      : historyAnchorIndex >= 0
+        ? [
+            ...sessions.slice(0, historyAnchorIndex + 1),
+            historyTabItem,
+            ...sessions.slice(historyAnchorIndex + 1),
+          ]
+        : [...sessions, historyTabItem]
+    : sessions;
+  const sortableTabIds = historyOpen ? tabListItems.map((item) => item.id) : sessionIds;
   const effectiveTerminalThemeName = terminalThemeMode === "follow-app" ? "auto" : terminalThemeName;
   const terminalBridgeColor = getTerminalBackground(
     effectiveTerminalThemeName,
@@ -257,6 +378,39 @@ export function TerminalTabs() {
   const terminalWellStyle: CSSProperties = {
     "--terminal-bridge-color": terminalBridgeColor,
   } as CSSProperties;
+  const historyTabNode = historyOpen ? (
+    <SortableHistoryTab
+      isActive={historyActive}
+      onActivate={activateHistoryTab}
+      onClose={handleCloseHistoryTab}
+      onNewTab={() => void handleNewTab()}
+      onRegisterElement={registerTabElement}
+    />
+  ) : null;
+
+  const handleDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const activeId = active.id as string;
+    const overId = over.id as string;
+
+    if (activeId === HISTORY_TAB_ID) {
+      const oldIndex = tabListItems.findIndex((item) => item.id === HISTORY_TAB_ID);
+      const overIndex = tabListItems.findIndex((item) => item.id === overId);
+      if (oldIndex < 0 || overIndex < 0) return;
+
+      const nextItems = [...tabListItems];
+      const [historyItem] = nextItems.splice(oldIndex, 1);
+      nextItems.splice(overIndex, 0, historyItem);
+      const nextIndex = nextItems.findIndex((item) => item.id === HISTORY_TAB_ID);
+      const previousItem = nextIndex > 0 ? nextItems[nextIndex - 1] : null;
+      setHistoryTabAnchorId(previousItem?.id ?? HISTORY_TAB_START_ANCHOR_ID);
+      return;
+    }
+
+    if (overId === HISTORY_TAB_ID) return;
+    reorderSessions(activeId, overId);
+  }, [reorderSessions, tabListItems]);
 
   useEffect(() => {
     const element = tabScrollRef.current;
@@ -276,16 +430,32 @@ export function TerminalTabs() {
 
   useEffect(() => {
     updateTabScrollState();
-  }, [sessions.length, updateTabScrollState]);
+  }, [sessions.length, historyOpen, updateTabScrollState]);
 
   useEffect(() => {
-    if (!activeSessionId) return;
-    const element = tabElementsRef.current.get(activeSessionId);
+    if (!historyOpen && activeWorkspaceTab === "history") {
+      setActiveWorkspaceTab("terminal");
+    }
+    if (!historyOpen && historyTabAnchorId !== null) {
+      setHistoryTabAnchorId(null);
+    }
+  }, [activeWorkspaceTab, historyOpen, historyTabAnchorId]);
+
+  useEffect(() => {
+    if (!historyOpen) return;
+    setHistoryTabAnchorId((current) => current ?? activeSessionIdRef.current);
+    setActiveWorkspaceTab("history");
+  }, [focusGlobalSearchSeq, historyOpen]);
+
+  useEffect(() => {
+    const activeTabId = historyActive ? HISTORY_TAB_ID : activeSessionId;
+    if (!activeTabId) return;
+    const element = tabElementsRef.current.get(activeTabId);
     if (!element) return;
 
     element.scrollIntoView({ block: "nearest", inline: "nearest" });
     window.requestAnimationFrame(updateTabScrollState);
-  }, [activeSessionId, sessions.length, updateTabScrollState]);
+  }, [activeSessionId, historyActive, sessions.length, updateTabScrollState]);
 
   useEffect(() => {
     if (!tabScrollState.hasOverflow && tabListOpen) setTabListOpen(false);
@@ -313,18 +483,26 @@ export function TerminalTabs() {
           data-can-scroll-right={tabScrollState.canScrollRight ? "true" : "false"}
         >
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-            <SortableContext items={sessionIds} strategy={horizontalListSortingStrategy}>
-              {sessions.map((s) => {
+            <SortableContext items={sortableTabIds} strategy={horizontalListSortingStrategy}>
+              {tabListItems.map((item) => {
+                if (item.id === HISTORY_TAB_ID) {
+                  return <div key={HISTORY_TAB_ID} className="contents">{historyTabNode}</div>;
+                }
+
+                const s = item;
                 const isSplit = !!splits[s.id];
                 return (
                   <SortableTab
                     key={s.id}
                     id={s.id}
                     title={s.title}
-                    isActive={s.id === activeSessionId}
+                    isActive={!historyActive && s.id === activeSessionId}
                     notification={tabNotifications[s.id] ?? "none"}
                     statusUpdatedAt={tabStatusDetails[s.id]?.updatedAt ?? null}
-                    onActivate={() => setActive(s.id)}
+                    onActivate={() => {
+                      setActiveWorkspaceTab("terminal");
+                      setActive(s.id);
+                    }}
                     onClose={() => closeSession(s.id)}
                     onRegisterElement={registerTabElement}
                     menuContent={
@@ -412,12 +590,13 @@ export function TerminalTabs() {
               <PopoverContent id="terminal-tab-list" align="end" className="w-72">
                 <div className="flex items-center justify-between px-3 py-2">
                   <span className="text-xs font-semibold text-on-surface">终端 Tab</span>
-                  <span className="text-[10px] text-on-surface-variant">{sessions.length}</span>
+                  <span className="text-[10px] text-on-surface-variant">{tabListItems.length}</span>
                 </div>
                 <div className="max-h-72 overflow-y-auto p-1.5">
-                  {sessions.map((session) => {
-                    const notification = tabNotifications[session.id] ?? "none";
-                    const isActive = session.id === activeSessionId;
+                  {tabListItems.map((session) => {
+                    const isHistoryTab = session.id === HISTORY_TAB_ID;
+                    const notification = isHistoryTab ? "none" : (tabNotifications[session.id] ?? "none");
+                    const isActive = isHistoryTab ? historyActive : !historyActive && session.id === activeSessionId;
                     return (
                       <button
                         key={session.id}
@@ -455,12 +634,10 @@ export function TerminalTabs() {
           <CommandTemplatePanel />
           <CommandHistoryPanel compact />
           <button
-            onClick={() => {
-              void toggleHistory();
-            }}
+            onClick={handleOpenHistoryTab}
             className={`ui-flat-action ui-toolbar-button ${historyOpen ? "ui-primary-action" : "ui-history-primary"}`}
-            title="历史会话（Ctrl+K）"
-            aria-label={historyOpen ? "关闭历史会话面板" : "打开历史会话面板"}
+            title="会话历史（Ctrl+K）"
+            aria-label="打开会话历史 Tab"
             aria-controls="history-workspace"
             aria-expanded={historyOpen}
           >
@@ -470,49 +647,48 @@ export function TerminalTabs() {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-hidden px-3 pb-3 pt-3">
-        {historyOpen ? (
-          <div className="ui-surface-card h-full min-h-0 overflow-hidden">
-            <HistoryWorkspace />
-          </div>
-        ) : (
-          <div
-            className="ui-terminal-well relative h-full min-h-0"
-            data-terminal-mode={terminalThemeMode}
-            style={terminalWellStyle}
-          >
-            {sessions.map((s) => (
-              <div
-                key={s.id}
-                className="absolute inset-0"
-                style={{ display: s.id === activeSessionId ? "block" : "none" }}
-              >
-                <SplitTerminalView
-                  sessionId={s.id}
-                  split={splits[s.id]}
-                  isActive={s.id === activeSessionId}
-                  fontSize={fontSize}
-                  fontFamily={fontFamily}
-                  resolvedTheme={resolvedTheme}
-                  terminalThemeName={effectiveTerminalThemeName}
-                  lightThemePalette={lightThemePalette}
-                  darkThemePalette={darkThemePalette}
-                />
-              </div>
-            ))}
-            {sessions.length === 0 && !useExternalTerminal && (
-              <div className="flex h-full items-center justify-center">
-                <EmptyState
-                  icon={<Terminal size={40} strokeWidth={1} />}
-                  title="无活跃终端"
-                  description="Ctrl+Shift+T 新建终端，或从左侧项目列表双击启动"
-                  tone="inverse"
-                  action={{ label: "打开终端", onClick: handleNewTab }}
-                />
-              </div>
-            )}
+      <div className="relative flex-1 min-h-0 overflow-hidden px-3 pb-3 pt-3">
+        {historyOpen && (
+          <div className="absolute inset-x-3 bottom-3 top-3 min-h-0 overflow-hidden" style={{ display: historyActive ? "block" : "none" }}>
+            <HistoryWorkspace active={historyActive} />
           </div>
         )}
+        <div
+          className="ui-terminal-well absolute inset-x-3 bottom-3 top-3 min-h-0"
+          data-terminal-mode={terminalThemeMode}
+          style={{ ...terminalWellStyle, display: historyActive ? "none" : "block" }}
+        >
+          {sessions.map((s) => (
+            <div
+              key={s.id}
+              className="absolute inset-0"
+              style={{ display: s.id === activeSessionId ? "block" : "none" }}
+            >
+              <SplitTerminalView
+                sessionId={s.id}
+                split={splits[s.id]}
+                isActive={!historyActive && s.id === activeSessionId}
+                fontSize={fontSize}
+                fontFamily={fontFamily}
+                resolvedTheme={resolvedTheme}
+                terminalThemeName={effectiveTerminalThemeName}
+                lightThemePalette={lightThemePalette}
+                darkThemePalette={darkThemePalette}
+              />
+            </div>
+          ))}
+          {sessions.length === 0 && !useExternalTerminal && (
+            <div className="flex h-full items-center justify-center">
+              <EmptyState
+                icon={<Terminal size={40} strokeWidth={1} />}
+                title="无活跃终端"
+                description="Ctrl+Shift+T 新建终端，或从左侧项目列表双击启动"
+                tone="inverse"
+                action={{ label: "打开终端", onClick: handleNewTab }}
+              />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -30,6 +30,11 @@ interface MetaPatchInput {
   tags?: string[];
 }
 
+interface OpenHistoryOptions {
+  sourceFilter?: HistorySourceFilter;
+  projectPath?: string | null;
+}
+
 interface HistoryStore {
   isOpen: boolean;
   loadingSessions: boolean;
@@ -41,6 +46,7 @@ interface HistoryStore {
   statsError: string | null;
   statsUpdatedAt: number | null;
   sourceFilter: HistorySourceFilter;
+  projectPathFilter: string | null;
   sessions: HistorySessionView[];
   hasMoreSessions: boolean;
   sessionListOffset: number;
@@ -57,14 +63,16 @@ interface HistoryStore {
   focusGlobalSearchSeq: number;
   focusSessionSearchSeq: number;
   ensureMetaTable: () => Promise<void>;
-  openHistory: () => Promise<void>;
+  openHistory: (options?: OpenHistoryOptions) => Promise<void>;
   closeHistory: () => void;
   toggleHistory: () => Promise<void>;
   setSourceFilter: (filter: HistorySourceFilter) => Promise<void>;
+  setProjectPathFilter: (projectPath: string | null) => Promise<void>;
   loadSessions: () => Promise<void>;
   loadMoreSessions: () => Promise<void>;
   openSession: (sessionKey: string) => Promise<void>;
   openSearchHit: (hit: HistorySearchHit) => Promise<void>;
+  deleteSession: (sessionKey: string) => Promise<void>;
   setGlobalQuery: (query: string) => void;
   runGlobalSearch: (query: string) => Promise<void>;
   setSessionQuery: (query: string) => void;
@@ -439,6 +447,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   statsError: null,
   statsUpdatedAt: null,
   sourceFilter: "all",
+  projectPathFilter: null,
   sessions: [],
   hasMoreSessions: false,
   sessionListOffset: 0,
@@ -478,15 +487,19 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     );
   },
 
-  openHistory: async () => {
+  openHistory: async (options) => {
+    const nextSourceFilter = options?.sourceFilter ?? get().sourceFilter;
+    const nextProjectPathFilter = options?.projectPath?.trim() || null;
+    const filterChanged = nextSourceFilter !== get().sourceFilter || nextProjectPathFilter !== get().projectPathFilter;
     const hasSessions = get().sessions.length > 0;
     const stopPerf = createPerfMarker("history.open", {
-      sourceFilter: get().sourceFilter,
-      fromCache: hasSessions,
+      sourceFilter: nextSourceFilter,
+      projectPathFilter: nextProjectPathFilter ?? "__all__",
+      fromCache: hasSessions && !filterChanged,
     });
-    set({ isOpen: true });
+    set({ isOpen: true, sourceFilter: nextSourceFilter, projectPathFilter: nextProjectPathFilter });
     try {
-      if (!hasSessions) {
+      if (!hasSessions || filterChanged) {
         await get().loadSessions();
       }
     } finally {
@@ -514,9 +527,18 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     }
   },
 
+  setProjectPathFilter: async (projectPath) => {
+    set({ projectPathFilter: projectPath?.trim() || null });
+    await get().loadSessions();
+    if (!get().globalQuery.trim()) {
+      set({ searchHits: [] });
+    }
+  },
+
   loadSessions: async () => {
     const stopPerf = createPerfMarker("history.sessions.load", {
       sourceFilter: get().sourceFilter,
+      projectPathFilter: get().projectPathFilter ?? "__all__",
     });
     set({ loadingSessions: true, loadingMoreSessions: false, hasMoreSessions: false, sessionListOffset: 0 });
     try {
@@ -524,6 +546,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       const source = normalizeSourceFilter(get().sourceFilter);
       const summariesRaw = await invoke<unknown[]>("history_list_sessions", {
         source,
+        projectPath: get().projectPathFilter,
         query: null,
         limit: SESSION_PAGE_FETCH_LIMIT,
         offset: 0,
@@ -564,6 +587,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     const offset = get().sessionListOffset;
     const stopPerf = createPerfMarker("history.sessions.load", {
       sourceFilter: get().sourceFilter,
+      projectPathFilter: get().projectPathFilter ?? "__all__",
       mode: "loadMore",
       offset,
     });
@@ -573,6 +597,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       const source = normalizeSourceFilter(get().sourceFilter);
       const summariesRaw = await invoke<unknown[]>("history_list_sessions", {
         source,
+        projectPath: get().projectPathFilter,
         query: null,
         limit: SESSION_PAGE_FETCH_LIMIT,
         offset,
@@ -669,6 +694,37 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     }
   },
 
+  deleteSession: async (sessionKey) => {
+    const target = get().sessions.find((item) => item.sessionKey === sessionKey);
+    if (!target) return;
+
+    await invoke("history_delete_session", {
+      filePath: target.file_path,
+      source: target.source,
+      projectKey: target.project_key,
+    });
+
+    const db = await getDb();
+    await db.execute("DELETE FROM session_meta WHERE session_key = $1", [sessionKey]);
+
+    const sessions = get().sessions.filter((item) => item.sessionKey !== sessionKey);
+    const metaMap = { ...get().metaMap };
+    delete metaMap[sessionKey];
+    const activeWasDeleted = get().activeSessionKey === sessionKey;
+    const nextActiveKey = activeWasDeleted ? sessions[0]?.sessionKey ?? null : get().activeSessionKey;
+    set({
+      sessions,
+      metaMap,
+      activeSessionKey: nextActiveKey,
+      activeSession: activeWasDeleted ? null : get().activeSession,
+      searchHits: get().searchHits.filter((hit) => makeSessionKey(hit.source, hit.session_id, hit.file_path) !== sessionKey),
+      focusedMessageIndex: null,
+    });
+    if (nextActiveKey && activeWasDeleted) {
+      await get().openSession(nextActiveKey);
+    }
+  },
+
   setGlobalQuery: (query) => {
     set({ globalQuery: query });
   },
@@ -687,6 +743,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       const hitsRaw = await invoke<unknown[]>("history_search", {
         query: normalized,
         source,
+        projectPath: get().projectPathFilter,
         limit: DEFAULT_SEARCH_LIMIT,
       });
       const hits = (hitsRaw ?? []).map((item) => normalizeHit(item));

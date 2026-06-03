@@ -3,10 +3,12 @@ import { toast } from "sonner";
 import { useHistoryStore } from "../stores/historyStore";
 import type { HistoryMessage, HistorySearchHit, HistorySessionView, HistorySourceFilter } from "../lib/types";
 import { useSettingsStore } from "../stores/settingsStore";
+import { useProjectStore } from "../stores/projectStore";
 import { PromptLibrary } from "./prompts/PromptLibrary";
 import { DiffModal } from "./history/DiffModal";
 import { HistoryListPane } from "./history/HistoryListPane";
 import { SessionDetailPane } from "./history/SessionDetailPane";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { toGroupLabel, type TimeGroupLabel } from "./history/historyViewUtils";
 
 const SESSION_PAGE_SIZE = 100;
@@ -19,12 +21,17 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function HistoryWorkspace() {
+interface HistoryWorkspaceProps {
+  active?: boolean;
+}
+
+export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
   const loadingSessions = useHistoryStore((s) => s.loadingSessions);
   const loadingMoreSessions = useHistoryStore((s) => s.loadingMoreSessions);
   const loadingSessionDetail = useHistoryStore((s) => s.loadingSessionDetail);
   const searching = useHistoryStore((s) => s.searching);
   const sourceFilter = useHistoryStore((s) => s.sourceFilter);
+  const projectPathFilter = useHistoryStore((s) => s.projectPathFilter);
   const sessions = useHistoryStore((s) => s.sessions);
   const activeSessionKey = useHistoryStore((s) => s.activeSessionKey);
   const activeSession = useHistoryStore((s) => s.activeSession);
@@ -38,9 +45,11 @@ export function HistoryWorkspace() {
   const focusSessionSearchSeq = useHistoryStore((s) => s.focusSessionSearchSeq);
   const closeHistory = useHistoryStore((s) => s.closeHistory);
   const setSourceFilter = useHistoryStore((s) => s.setSourceFilter);
+  const setProjectPathFilter = useHistoryStore((s) => s.setProjectPathFilter);
   const loadSessions = useHistoryStore((s) => s.loadSessions);
   const loadMoreSessions = useHistoryStore((s) => s.loadMoreSessions);
   const openSession = useHistoryStore((s) => s.openSession);
+  const deleteSession = useHistoryStore((s) => s.deleteSession);
   const openSearchHit = useHistoryStore((s) => s.openSearchHit);
   const setGlobalQuery = useHistoryStore((s) => s.setGlobalQuery);
   const runGlobalSearch = useHistoryStore((s) => s.runGlobalSearch);
@@ -50,6 +59,7 @@ export function HistoryWorkspace() {
   const updateMeta = useHistoryStore((s) => s.updateMeta);
   const historySidebarWidth = useSettingsStore((s) => s.historySidebarWidth);
   const updateSetting = useSettingsStore((s) => s.update);
+  const projects = useProjectStore((s) => s.projects);
 
   const globalSearchRef = useRef<HTMLInputElement | null>(null);
   const sessionSearchRef = useRef<HTMLInputElement | null>(null);
@@ -71,6 +81,7 @@ export function HistoryWorkspace() {
   const [visibleSessionCount, setVisibleSessionCount] = useState(SESSION_PAGE_SIZE);
   const [visibleMessageCount, setVisibleMessageCount] = useState(MESSAGE_PAGE_SIZE);
   const [debouncedSessionQuery, setDebouncedSessionQuery] = useState(sessionQuery);
+  const [deleteTarget, setDeleteTarget] = useState<HistorySessionView | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSessionQuery(sessionQuery), 150);
@@ -78,6 +89,7 @@ export function HistoryWorkspace() {
   }, [sessionQuery]);
 
   useEffect(() => {
+    if (!active) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.isComposing) return;
       event.preventDefault();
@@ -95,7 +107,7 @@ export function HistoryWorkspace() {
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [closeHistory, diffOpen, promptOpen]);
+  }, [active, closeHistory, diffOpen, promptOpen]);
 
   const activeView = useMemo(
     () => sessions.find((item) => item.sessionKey === activeSessionKey) ?? null,
@@ -147,10 +159,11 @@ export function HistoryWorkspace() {
   );
 
   useEffect(() => {
+    if (sessions.length > 0 || loadingSessions) return;
     void loadSessions().catch((err) => {
       toast.error("加载历史会话失败", { description: String(err) });
     });
-  }, [loadSessions]);
+  }, [loadSessions, loadingSessions, sessions.length]);
 
   useEffect(() => {
     setAliasDraft(activeView?.alias ?? "");
@@ -162,17 +175,19 @@ export function HistoryWorkspace() {
       void runGlobalSearch(globalQuery);
     }, 220);
     return () => clearTimeout(timer);
-  }, [globalQuery, runGlobalSearch, sourceFilter]);
+  }, [globalQuery, projectPathFilter, runGlobalSearch, sourceFilter]);
 
   useEffect(() => {
+    if (!active) return;
     globalSearchRef.current?.focus();
     globalSearchRef.current?.select();
-  }, [focusGlobalSearchSeq]);
+  }, [active, focusGlobalSearchSeq]);
 
   useEffect(() => {
+    if (!active) return;
     sessionSearchRef.current?.focus();
     sessionSearchRef.current?.select();
-  }, [focusSessionSearchSeq]);
+  }, [active, focusSessionSearchSeq]);
 
   const normalizedGlobal = globalQuery.trim().toLowerCase();
 
@@ -190,7 +205,7 @@ export function HistoryWorkspace() {
 
   useEffect(() => {
     setVisibleSessionCount(SESSION_PAGE_SIZE);
-  }, [normalizedGlobal, sourceFilter, loadingSessions]);
+  }, [normalizedGlobal, projectPathFilter, sourceFilter, loadingSessions]);
 
   const visibleFilteredSessions = useMemo(
     () => filteredSessions.slice(0, visibleSessionCount),
@@ -370,6 +385,20 @@ export function HistoryWorkspace() {
     [openSession]
   );
 
+  const confirmDeleteSession = useCallback(() => {
+    if (!deleteTarget) return;
+    void deleteSession(deleteTarget.sessionKey)
+      .then(() => {
+        toast.success("历史会话已删除");
+      })
+      .catch((err) => {
+        toast.error("删除历史会话失败", { description: String(err) });
+      })
+      .finally(() => {
+        setDeleteTarget(null);
+      });
+  }, [deleteSession, deleteTarget]);
+
   const jumpToMessage = async (messageIndex: number) => {
     if (!activeView) return;
     try {
@@ -390,41 +419,47 @@ export function HistoryWorkspace() {
   };
 
   return (
-    <div id="history-workspace" className="ui-history-shell flex h-full min-h-0 min-w-0 overflow-hidden rounded-2xl">
-      <HistoryListPane
-        historySidebarWidth={historySidebarWidth}
-        sidebarRef={sidebarRef}
-        sessionListRef={sessionListRef}
-        sourceFilter={sourceFilter}
-        globalQuery={globalQuery}
-        activeSessionKey={activeSessionKey}
-        loadingSessions={loadingSessions}
-        loadingMoreSessions={loadingMoreSessions}
-        searching={searching}
-        normalizedGlobal={normalizedGlobal}
-        groupedSessions={groupedSessions}
-        filteredSessionCount={filteredSessions.length}
-        hasMoreSessions={hasMoreSessions}
-        loadMoreSessionMode={loadMoreSessionMode}
-        visibleSessionCount={Math.min(visibleSessionCount, filteredSessions.length)}
-        searchHits={searchHits}
-        globalSearchRef={globalSearchRef}
-        onClose={closeHistory}
-        onRefresh={handleRefreshSessions}
-        onSourceFilterChange={(value) => {
-          void setSourceFilter(value as HistorySourceFilter);
-        }}
-        onGlobalQueryChange={setGlobalQuery}
-        onOpenSession={openSessionSafe}
-        onOpenHit={(hit) => {
-          void openByHit(hit);
-        }}
-        onLoadMoreSessions={handleLoadMoreSessions}
-        onSessionListScroll={handleSessionListScroll}
-        onStartResize={startResize}
-      />
+    <>
+      <div id="history-workspace" className="ui-history-shell flex h-full min-h-0 min-w-0 overflow-hidden rounded-2xl">
+        <HistoryListPane
+          historySidebarWidth={historySidebarWidth}
+          sidebarRef={sidebarRef}
+          sessionListRef={sessionListRef}
+          sourceFilter={sourceFilter}
+          projectPathFilter={projectPathFilter}
+          projects={projects}
+          globalQuery={globalQuery}
+          activeSessionKey={activeSessionKey}
+          loadingSessions={loadingSessions}
+          loadingMoreSessions={loadingMoreSessions}
+          searching={searching}
+          normalizedGlobal={normalizedGlobal}
+          groupedSessions={groupedSessions}
+          filteredSessionCount={filteredSessions.length}
+          hasMoreSessions={hasMoreSessions}
+          loadMoreSessionMode={loadMoreSessionMode}
+          visibleSessionCount={Math.min(visibleSessionCount, filteredSessions.length)}
+          searchHits={searchHits}
+          globalSearchRef={globalSearchRef}
+          onRefresh={handleRefreshSessions}
+          onSourceFilterChange={(value) => {
+            void setSourceFilter(value as HistorySourceFilter);
+          }}
+          onProjectPathFilterChange={(value) => {
+            void setProjectPathFilter(value);
+          }}
+          onGlobalQueryChange={setGlobalQuery}
+          onOpenSession={openSessionSafe}
+          onDeleteSession={setDeleteTarget}
+          onOpenHit={(hit) => {
+            void openByHit(hit);
+          }}
+          onLoadMoreSessions={handleLoadMoreSessions}
+          onSessionListScroll={handleSessionListScroll}
+          onStartResize={startResize}
+        />
 
-      <section
+        <section
         ref={(el) => {
           setDiffContainer(el);
         }}
@@ -488,5 +523,17 @@ export function HistoryWorkspace() {
         />
       </section>
     </div>
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="删除历史会话"
+        message={`将删除本地历史文件：${deleteTarget?.displayTitle ?? ""}。此操作不可恢复。`}
+        confirmText="删除"
+        cancelText="取消"
+        danger
+        onConfirm={confirmDeleteSession}
+        onClose={() => setDeleteTarget(null)}
+      />
+    </>
   );
 }
