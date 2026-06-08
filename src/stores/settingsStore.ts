@@ -25,11 +25,22 @@ export type ShortcutAction =
   | "nextTab"
   | "prevTab"
   | "commandPalette"
+  | "sessionHistory"
   | "toggleTerminalFullscreen";
 export type TabSwitchShortcutModifier = "Alt" | "Ctrl" | "Shift";
 export type KeyboardShortcutMap = Record<ShortcutAction, string>;
 export type TerminalNewlineShortcut = "Shift+Enter" | "Ctrl+Enter" | "Alt+Enter";
 export type UnsplitBehavior = "merge" | "close";
+
+const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
+  "newTerminal",
+  "closeTerminal",
+  "nextTab",
+  "prevTab",
+  "commandPalette",
+  "sessionHistory",
+  "toggleTerminalFullscreen",
+];
 
 export interface TerminalToolbarVisibilitySettings {
   templates: boolean;
@@ -45,6 +56,7 @@ export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcutMap = {
   nextTab: "Alt+ArrowRight",
   prevTab: "Alt+ArrowLeft",
   commandPalette: "Ctrl+P",
+  sessionHistory: "Ctrl+K",
   toggleTerminalFullscreen: "F11",
 };
 
@@ -228,6 +240,20 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
   return value;
 }
 
+function migrateKeyboardShortcuts(value: unknown): KeyboardShortcutMap {
+  if (typeof value !== "object" || value === null) {
+    return { ...DEFAULT_KEYBOARD_SHORTCUTS };
+  }
+
+  const raw = value as Partial<Record<ShortcutAction, unknown>>;
+  const next: KeyboardShortcutMap = { ...DEFAULT_KEYBOARD_SHORTCUTS };
+  for (const action of SHORTCUT_ACTIONS) {
+    const shortcut = raw[action];
+    if (typeof shortcut === "string") next[action] = shortcut.trim();
+  }
+  return next;
+}
+
 export function migrateTerminalToolbarVisibility(value: unknown): TerminalToolbarVisibilitySettings {
   const defaults = DEFAULTS.terminalToolbarVisibility;
   if (typeof value !== "object" || value === null) {
@@ -362,9 +388,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       await s.set("uiTextColor", DEFAULTS.uiTextColor);
     }
 
-    if (entries.keyboardShortcuts) {
-      entries.keyboardShortcuts = { ...DEFAULTS.keyboardShortcuts, ...entries.keyboardShortcuts };
-    }
+    entries.keyboardShortcuts = migrateKeyboardShortcuts(entries.keyboardShortcuts);
 
     entries.terminalToolbarVisibility = migrateTerminalToolbarVisibility(entries.terminalToolbarVisibility);
     entries.unsplitBehavior = migrateUnsplitBehavior(entries.unsplitBehavior);

@@ -22,6 +22,10 @@ export function eventToCombo(e: KeyboardEvent): string {
   return parts.join("+");
 }
 
+function isShortcutMatch(combo: string, shortcut: string): boolean {
+  return shortcut.trim() !== "" && combo === shortcut;
+}
+
 interface KeyboardShortcutOptions {
   onToggleTerminalFullscreen?: () => void;
 }
@@ -46,20 +50,19 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions = {}) {
       const viewMode = viewModeRef.current;
 
       // Command palette toggle works regardless of focus context
-      if (combo === shortcuts.commandPalette) {
+      if (isShortcutMatch(combo, shortcuts.commandPalette)) {
         e.preventDefault();
         useCommandPaletteStore.getState().toggle();
         return;
       }
 
-      if (combo === shortcuts.toggleTerminalFullscreen) {
+      if (isShortcutMatch(combo, shortcuts.toggleTerminalFullscreen)) {
         e.preventDefault();
         onToggleTerminalFullscreenRef.current?.();
         return;
       }
 
-      // Global history search
-      if (combo === "Ctrl+K") {
+      if (isShortcutMatch(combo, shortcuts.sessionHistory)) {
         e.preventDefault();
         void useHistoryStore.getState().openHistory();
         useHistoryStore.getState().triggerGlobalSearchFocus();
@@ -89,11 +92,11 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions = {}) {
       const terminalState = useTerminalStore.getState();
       const { sessions, activeSessionId, setActive, closeSession, createSession } = terminalState;
 
-      if (combo === shortcuts.nextTab || combo === shortcuts.prevTab) {
+      if (isShortcutMatch(combo, shortcuts.nextTab) || isShortcutMatch(combo, shortcuts.prevTab)) {
         if (viewMode === "compact" || (isEditingTarget && !isXtermTarget)) return;
         e.preventDefault();
         if (sessions.length < 2) return;
-        const delta = combo === shortcuts.nextTab ? 1 : -1;
+        const delta = isShortcutMatch(combo, shortcuts.nextTab) ? 1 : -1;
         const nextSessionId = terminalState.getNextSessionIdForShortcut(delta);
         if (nextSessionId) setActive(nextSessionId);
         return;
@@ -104,14 +107,14 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions = {}) {
         return;
       }
 
-      if (combo === shortcuts.newTerminal) {
+      if (isShortcutMatch(combo, shortcuts.newTerminal)) {
         if (viewMode === "compact") return;
         e.preventDefault();
         createSession(undefined, undefined, "Terminal");
         return;
       }
 
-      if (combo === shortcuts.closeTerminal) {
+      if (isShortcutMatch(combo, shortcuts.closeTerminal)) {
         if (viewMode === "compact") return;
         e.preventDefault();
         if (activeSessionId) closeSession(activeSessionId);

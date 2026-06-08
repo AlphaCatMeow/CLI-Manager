@@ -953,8 +953,11 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
   const terminalBackgroundEnabled = useSettingsStore((s) => s.terminalBackground.enabled);
   const terminalBackgroundImagePath = useSettingsStore((s) => s.terminalBackground.imagePath);
   const terminalToolbarVisibility = useSettingsStore((s) => s.terminalToolbarVisibility);
+  const sessionHistoryShortcut = useSettingsStore((s) => s.keyboardShortcuts.sessionHistory);
+  const sessionHistoryShortcutHint = sessionHistoryShortcut.trim() || "未设置快捷键";
   const historyOpen = useHistoryStore((s) => s.isOpen);
   const openHistory = useHistoryStore((s) => s.openHistory);
+  const closeHistory = useHistoryStore((s) => s.closeHistory);
   const focusGlobalSearchSeq = useHistoryStore((s) => s.focusGlobalSearchSeq);
   const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<"terminal" | "history">("terminal");
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -1039,6 +1042,11 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
   }, [setActive]);
 
   const handleOpenHistoryTab = useCallback(() => {
+    if (historyOpen) {
+      closeHistory();
+      return;
+    }
+
     const activeSession = sessions.find((session) => session.id === activeSessionId);
     const project = activeSession?.projectId ? projects.find((item) => item.id === activeSession.projectId) : undefined;
     setActiveWorkspaceTab("history");
@@ -1046,7 +1054,7 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
       sourceFilter: resolveHistorySourceFilter(project?.cli_tool),
       projectPath: project?.path ?? null,
     });
-  }, [activeSessionId, openHistory, projects, sessions]);
+  }, [activeSessionId, closeHistory, historyOpen, openHistory, projects, sessions]);
 
   const handleOpenSplitPicker = useCallback((sessionId: string, direction: TerminalPaneSplitDirection, anchor?: DOMRect) => {
     clearSplitPickerOpenSchedule();
@@ -1187,8 +1195,8 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
               : "ui-focus-ring ui-icon-action"
           }
           data-active={historyOpen ? "true" : "false"}
-          title="会话历史（Ctrl+K）"
-          aria-label="打开会话历史"
+          title={`会话历史（${sessionHistoryShortcutHint}）`}
+          aria-label={historyOpen ? "关闭会话历史" : "打开会话历史"}
           aria-controls="history-workspace"
           aria-expanded={historyOpen}
         >
@@ -1203,6 +1211,7 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
     handleOpenHistoryTab,
     historyOpen,
     onToggleFullscreen,
+    sessionHistoryShortcut,
     showToolbarText,
     terminalToolbarVisibility.commandHistory,
     terminalToolbarVisibility.fullscreen,

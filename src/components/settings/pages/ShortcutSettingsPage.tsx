@@ -15,6 +15,7 @@ const SHORTCUT_LABELS: Record<ShortcutAction, string> = {
   nextTab: "下一个标签",
   prevTab: "上一个标签",
   commandPalette: "命令面板",
+  sessionHistory: "会话历史",
   toggleTerminalFullscreen: "终端全屏",
 };
 
@@ -84,6 +85,14 @@ export function ShortcutSettingsPage({ searchValue }: ShortcutSettingsPageProps)
     setRecording(null);
   };
 
+  const clearShortcut = useCallback(
+    (action: ShortcutAction) => {
+      void update("keyboardShortcuts", { ...shortcuts, [action]: "" });
+      setRecording(null);
+    },
+    [shortcuts, update]
+  );
+
   const keyword = searchValue.trim().toLowerCase();
   const visibleActions = useMemo(() => {
     const all = Object.keys(SHORTCUT_LABELS) as ShortcutAction[];
@@ -95,6 +104,7 @@ export function ShortcutSettingsPage({ searchValue }: ShortcutSettingsPageProps)
     const comboToActions = new Map<string, ShortcutAction[]>();
     (Object.keys(SHORTCUT_LABELS) as ShortcutAction[]).forEach((action) => {
       const key = shortcuts[action].trim().toLowerCase();
+      if (!key) return;
       const group = comboToActions.get(key) ?? [];
       group.push(action);
       comboToActions.set(key, group);
@@ -211,31 +221,47 @@ export function ShortcutSettingsPage({ searchValue }: ShortcutSettingsPageProps)
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     {isRecording ? (
-                      <span
-                        className="animate-pulse rounded-md px-2 py-1 text-xs"
-                        style={{ backgroundColor: "var(--primary)", color: "var(--on-primary)" }}
-                      >
-                        请按下快捷键...
-                      </span>
+                      <>
+                        <span
+                          className="animate-pulse rounded-md px-2 py-1 text-xs"
+                          style={{ backgroundColor: "var(--primary)", color: "var(--on-primary)" }}
+                        >
+                          请按下快捷键...
+                        </span>
+                        <button
+                          onClick={() => clearShortcut(action)}
+                          className="ui-interactive rounded-md border border-border px-2 py-1 text-[11px] text-on-surface-variant"
+                        >
+                          清空
+                        </button>
+                        <button
+                          onClick={() => setRecording(null)}
+                          className="ui-interactive rounded-md border border-border px-2 py-1 text-[11px] text-primary"
+                        >
+                          取消
+                        </button>
+                      </>
                     ) : (
-                      <kbd
-                        className="min-w-[108px] rounded-md border px-2 py-1 text-center text-[11px] font-medium"
-                        style={{
-                          backgroundColor: "var(--surface-container-lowest)",
-                          borderColor: "var(--border)",
-                          color: "var(--on-surface)",
-                          boxShadow: "0 1px 0 color-mix(in srgb, var(--surface-container-lowest) 78%, var(--border) 22%)",
-                        }}
-                      >
-                        {shortcuts[action]}
-                      </kbd>
+                      <>
+                        <kbd
+                          className="min-w-[108px] rounded-md border px-2 py-1 text-center text-[11px] font-medium"
+                          style={{
+                            backgroundColor: "var(--surface-container-lowest)",
+                            borderColor: "var(--border)",
+                            color: shortcuts[action].trim() ? "var(--on-surface)" : "var(--on-surface-variant)",
+                            boxShadow: "0 1px 0 color-mix(in srgb, var(--surface-container-lowest) 78%, var(--border) 22%)",
+                          }}
+                        >
+                          {shortcuts[action].trim() || "未设置"}
+                        </kbd>
+                        <button
+                          onClick={() => setRecording(action)}
+                          className="ui-interactive rounded-md border border-border px-2 py-1 text-[11px] text-primary"
+                        >
+                          修改
+                        </button>
+                      </>
                     )}
-                    <button
-                      onClick={() => setRecording(isRecording ? null : action)}
-                      className="ui-interactive rounded-md border border-border px-2 py-1 text-[11px] text-primary"
-                    >
-                      {isRecording ? "取消" : "修改"}
-                    </button>
                   </div>
                 </div>
               </div>

@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import { create } from "zustand";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -52,7 +51,6 @@ export function CommandPalette() {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
 
   const projects = useProjectStore((s) => s.projects);
   const getTemplatesForContext = useTemplateStore((s) => s.getForContext);
@@ -65,6 +63,10 @@ export function CommandPalette() {
   const setTheme = useSettingsStore((s) => s.setTheme);
   const resolvedTheme = useSettingsStore((s) => s.resolvedTheme);
   const viewMode = useSettingsStore((s) => s.viewMode);
+  const commandPaletteShortcut = useSettingsStore((s) => s.keyboardShortcuts.commandPalette);
+  const sessionHistoryShortcut = useSettingsStore((s) => s.keyboardShortcuts.sessionHistory);
+  const commandPaletteShortcutHint = commandPaletteShortcut.trim() || "未设置快捷键";
+  const sessionHistoryShortcutHint = sessionHistoryShortcut.trim() || "未设置快捷键";
 
   const activeProjectId =
     sessions.find((item) => item.id === activeSessionId)?.projectId ?? null;
@@ -94,7 +96,7 @@ export function CommandPalette() {
     result.push({
       id: "action:open-history",
       label: "打开历史会话",
-      description: "查看 Claude / Codex 会话历史",
+      description: `${sessionHistoryShortcutHint} · 查看 Claude / Codex 会话历史`,
       category: "操作",
       action: () => {
         void useHistoryStore.getState().openHistory();
@@ -196,7 +198,7 @@ export function CommandPalette() {
     }
 
     return result;
-  }, [projects, templates, activeSessionId, resolvedTheme, createSession, splitTerminal, unsplitTerminal, setTheme, viewMode]);
+  }, [projects, templates, activeSessionId, resolvedTheme, createSession, splitTerminal, unsplitTerminal, setTheme, viewMode, sessionHistoryShortcut]);
 
   const queryLower = useMemo(() => query.trim().toLowerCase(), [query]);
 
@@ -220,26 +222,9 @@ export function CommandPalette() {
     return rows;
   }, [filtered]);
 
-  const selectedRowIndex = useMemo(
-    () => paletteRows.findIndex((row) => row.type === "item" && row.itemIndex === selectedIndex),
-    [paletteRows, selectedIndex]
-  );
-
-  const rowVirtualizer = useVirtualizer({
-    count: paletteRows.length,
-    getScrollElement: () => listRef.current,
-    estimateSize: (index) => (paletteRows[index]?.type === "header" ? 36 : 40),
-    overscan: 8,
-    getItemKey: (index) => paletteRows[index]?.id ?? index,
-  });
-
   useEffect(() => {
     if (selectedIndex >= filtered.length) setSelectedIndex(Math.max(0, filtered.length - 1));
   }, [filtered.length, selectedIndex]);
-
-  useEffect(() => {
-    if (selectedRowIndex >= 0) rowVirtualizer.scrollToIndex(selectedRowIndex, { align: "auto" });
-  }, [rowVirtualizer, selectedRowIndex]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowDown") {
@@ -283,51 +268,46 @@ export function CommandPalette() {
               className="h-9 text-sm"
             />
           </div>
-          <div ref={listRef} className="max-h-80 overflow-y-auto p-2">
+          <div className="max-h-80 overflow-y-auto p-2">
             {filtered.length === 0 && (
               <div className="px-3 py-8 text-center text-xs text-on-surface-variant">
                 无匹配结果
               </div>
             )}
             {filtered.length > 0 && (
-              <div className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
-                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                  const row = paletteRows[virtualRow.index];
-                  if (!row) return null;
-                  return (
+              <div className="space-y-1">
+                {paletteRows.map((row) => (
+                  row.type === "header" ? (
                     <div
-                      key={virtualRow.key}
-                      className="absolute left-0 top-0 w-full"
-                      style={{
-                        height: virtualRow.size,
-                        transform: `translateY(${virtualRow.start}px)`,
-                      }}
+                      key={row.id}
+                      className="rounded-md border border-border/60 bg-surface-container-high px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-on-surface"
                     >
-                      {row.type === "header" ? (
-                        <div className="rounded-md border border-border/60 bg-surface-container-high px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-on-surface">
-                          {row.category}
-                        </div>
-                      ) : (
-                        <div
-                          data-idx={row.itemIndex}
-                          data-selected={row.itemIndex === selectedIndex}
-                          className="ui-interactive flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs text-on-surface-variant"
-                          onMouseEnter={() => setSelectedIndex(row.itemIndex)}
-                          onClick={() => { close(); row.item.action(); }}
-                        >
-                          <span className="min-w-0 flex-1 truncate font-medium text-on-surface">{row.item.label}</span>
-                          {row.item.description && (
-                            <span className="ml-auto max-w-[45%] truncate text-[10px] text-on-surface-variant">
-                              {row.item.description}
-                            </span>
-                          )}
-                        </div>
+                      {row.category}
+                    </div>
+                  ) : (
+                    <div
+                      key={row.id}
+                      data-idx={row.itemIndex}
+                      data-selected={row.itemIndex === selectedIndex}
+                      className="ui-interactive flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs text-on-surface-variant"
+                      onMouseEnter={() => setSelectedIndex(row.itemIndex)}
+                      onClick={() => { close(); row.item.action(); }}
+                    >
+                      <span className="min-w-0 flex-1 truncate font-medium text-on-surface">{row.item.label}</span>
+                      {row.item.description && (
+                        <span className="ml-auto max-w-[45%] truncate text-[10px] text-on-surface-variant">
+                          {row.item.description}
+                        </span>
                       )}
                     </div>
-                  );
-                })}
+                  )
+                ))}
               </div>
             )}
+          </div>
+          <div className="flex items-center justify-between border-t border-border px-3 py-2 text-[11px] text-on-surface-variant">
+            <span>{commandPaletteShortcutHint} 打开命令面板</span>
+            <span>↑↓ 选择 · Enter 执行 · Esc 关闭</span>
           </div>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>

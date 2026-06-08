@@ -3,6 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { RefreshCw, Search, Star, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
 import type { HistorySearchHit, HistorySessionView, HistorySourceFilter, Project } from "../../lib/types";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { Portal } from "../ui/Portal";
 import { formatTime, makeSessionLabel } from "./historyViewUtils";
 
@@ -99,6 +100,8 @@ export function HistoryListPane({
   onSessionListScroll,
   onStartResize,
 }: HistoryListPaneProps) {
+  const sessionHistoryShortcut = useSettingsStore((s) => s.keyboardShortcuts.sessionHistory);
+  const sessionHistoryShortcutHint = sessionHistoryShortcut.trim() || "未设置快捷键";
   const [contextMenu, setContextMenu] = useState<SessionContextMenu | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -235,7 +238,7 @@ export function HistoryListPane({
           />
         </div>
 
-        <div className="mt-1 text-[12px] text-text-muted">Ctrl+K 打开全局搜索</div>
+        <div className="mt-1 text-[12px] text-text-muted">{sessionHistoryShortcutHint} 打开全局搜索</div>
       </div>
 
       <div ref={sessionListRef} onScroll={onSessionListScroll} className="flex-1 overflow-y-auto">
