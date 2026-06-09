@@ -106,6 +106,7 @@ export interface CommandHistoryEntry {
 
 export type HistorySource = "claude" | "codex";
 export type HistorySourceFilter = "all" | HistorySource;
+export type CcusageSource = "all" | "claude" | "codex";
 
 export interface HistorySessionSummary {
   session_id: string;

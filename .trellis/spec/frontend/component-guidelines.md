@@ -35,6 +35,30 @@ type SettingsTab = "general" | "terminal-settings" | "shortcuts";
 
 **Tests**: After changing settings page labels or layout, assert that existing callers can still open the page through the old `SettingsTab` literal and run `npx tsc --noEmit`.
 
+### Convention: Settings top search appears only for tabs with real filtering
+
+**What**: In `SettingsModal`, set `searchPlaceholder` only for tabs whose page consumes `searchValue` to filter visible content. For tabs without filtering, omit `searchPlaceholder` and let `SettingsTopBar` render only the close button.
+
+**Why**: A placeholder like "搜索通用设置（预留）" makes an unfinished feature look interactive. Optional `searchPlaceholder` keeps real search working for pages such as shortcuts/templates without showing dead controls on static settings pages.
+
+**Example**:
+
+```tsx
+// Good: only pages with real filtering expose search
+const SETTINGS_TAB_CONFIG = {
+  shortcuts: { label: "快捷键", searchPlaceholder: "搜索快捷键" },
+  hooks: { label: "Hook 设置" },
+};
+
+// Good: top bar treats search as optional
+{searchPlaceholder && <Input value={searchValue} placeholder={searchPlaceholder} />}
+
+// Bad: reserved search that does not filter anything
+const hooks = { label: "Hook 设置", searchPlaceholder: "搜索 Hook 设置（预留）" };
+```
+
+**Tests**: After changing settings search behavior, run `npx tsc --noEmit` and manually verify searchable tabs still filter while static tabs do not show a search input.
+
 ### Convention: Terminal tab drag uses overlay plus explicit pane drop zones
 
 **What**: Terminal tab drag interactions use dnd-kit `DragOverlay` for the cursor-following tab, while pane movement/splitting is driven by explicit drop ids:

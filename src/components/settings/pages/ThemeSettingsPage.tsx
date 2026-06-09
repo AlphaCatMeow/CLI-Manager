@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
+  TERMINAL_THEME_GROUPS,
   TERMINAL_THEME_PRESETS,
   getTerminalTheme,
   resolveAutoTerminalThemeId,
@@ -63,6 +64,15 @@ export function ThemeSettingsPage() {
     return TERMINAL_THEME_PRESETS.filter((preset) => preset.name.toLowerCase().includes(keyword));
   }, [query]);
 
+  const groupedThemes = useMemo(
+    () =>
+      TERMINAL_THEME_GROUPS.map((group) => ({
+        ...group,
+        presets: filtered.filter((preset) => preset.group === group.id),
+      })).filter((group) => group.presets.length > 0),
+    [filtered]
+  );
+
   const selectedTheme = useMemo(() => {
     const effective = getTerminalTheme(effectiveThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
     const selectedPreset =
@@ -93,7 +103,7 @@ export function ThemeSettingsPage() {
   };
 
   const terminalPreview = (
-    <Card className="p-4 xl:col-start-2 xl:row-span-2 xl:row-start-1">
+    <Card className="p-4 xl:col-start-2 xl:row-span-2 xl:row-start-1 xl:sticky xl:top-5 xl:self-start">
       <div className="text-sm font-semibold text-on-surface">终端预览</div>
       <div className="mt-2 text-xs text-on-surface-variant">{selectedTheme.label}</div>
       <div
@@ -292,39 +302,58 @@ export function ThemeSettingsPage() {
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-2 xl:grid-cols-3">
-            {filtered.map((preset) => {
-              const active = terminalThemeMode === "independent" && terminalThemeName === preset.id;
-              return (
-                <button
-                  key={preset.id}
-                  onClick={() => {
-                    void update("terminalThemeName", preset.id);
-                  }}
-                  className="ui-interactive ui-focus-ring ui-selection-card rounded-xl border p-2 text-left"
-                  data-selected={active ? "true" : "false"}
-                  disabled={terminalThemeMode !== "independent"}
-                  aria-pressed={active}
-                >
-                  <div className="truncate text-xs font-semibold text-on-surface">{preset.name}</div>
-                  <div className="mt-2 flex gap-1">
-                    {SWATCH_KEYS.map((key) => (
-                      <span
-                        key={key}
-                        className="h-3.5 w-3.5 rounded-[4px] border"
-                        style={{
-                          backgroundColor:
-                            (preset.theme as Record<string, string | undefined>)[key] ?? "var(--surface-container-lowest)",
-                          borderColor: "var(--border)",
+          <div className="space-y-4">
+            {groupedThemes.map((group) => (
+              <section key={group.id}>
+                <div className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                  <div className="text-xs font-semibold text-on-surface">{group.name}</div>
+                  <div className="text-[11px] text-text-muted">{group.description}</div>
+                </div>
+                <div className="grid grid-cols-2 gap-2 xl:grid-cols-3">
+                  {group.presets.map((preset) => {
+                    const active = terminalThemeMode === "independent" && terminalThemeName === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        onClick={() => {
+                          void update("terminalThemeName", preset.id);
                         }}
-                      />
-                    ))}
-                  </div>
-                </button>
-              );
-            })}
+                        className="ui-interactive ui-focus-ring ui-selection-card relative overflow-hidden rounded-xl border p-3 text-left transition-[transform,box-shadow,border-color,background-color]"
+                        data-selected={active ? "true" : "false"}
+                        disabled={terminalThemeMode !== "independent"}
+                        aria-pressed={active}
+                      >
+                        {active && (
+                          <span className="ui-primary-gradient absolute right-2 top-2 rounded-full px-2 py-0.5 text-[10px] font-semibold">
+                            当前
+                          </span>
+                        )}
+                        <div className="truncate pr-10 text-sm font-semibold text-on-surface">{preset.name}</div>
+                        <div className="mt-1 text-xs leading-5 text-text-muted">
+                          {preset.tone === "light" ? "浅色" : "深色"}{preset.family ? ` · ${preset.family}` : ""}
+                        </div>
+                        <div className="mt-2 flex gap-1.5">
+                          {SWATCH_KEYS.map((key) => (
+                            <span
+                              key={key}
+                              className="h-4 w-4 rounded-[4px] border"
+                              style={{
+                                backgroundColor:
+                                  (preset.theme as Record<string, string | undefined>)[key] ??
+                                  "var(--surface-container-lowest)",
+                                borderColor: active ? "color-mix(in srgb, var(--primary) 65%, var(--border))" : "var(--border)",
+                              }}
+                            />
+                          ))}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
             {filtered.length === 0 && (
-              <div className="col-span-full rounded-xl border border-dashed border-border px-3 py-6 text-center text-xs text-on-surface-variant">
+              <div className="rounded-xl border border-dashed border-border px-3 py-6 text-center text-xs text-on-surface-variant">
                 未找到匹配主题
               </div>
             )}

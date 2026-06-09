@@ -9,7 +9,7 @@ interface SettingsLayoutProps<T extends string> {
   title: string;
   description: string;
   searchValue: string;
-  searchPlaceholder: string;
+  searchPlaceholder?: string;
   onSearchChange: (nextValue: string) => void;
   onClose: () => void;
   children: ReactNode;

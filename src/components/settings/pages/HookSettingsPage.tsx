@@ -52,21 +52,28 @@ function getErrorMessage(error: unknown): string {
 }
 
 function PathRow({ label, value }: { label: string; value: string | null }) {
+  const formatted = formatPath(value);
+  const hasValue = Boolean(value && value.trim());
+
   return (
-    <div>
-      <div className="mb-1 text-xs text-on-surface-variant">{label}</div>
-      <div className="rounded-lg border border-border bg-surface-container-low px-3 py-2 font-mono text-xs text-on-surface break-all">
-        {formatPath(value)}
-      </div>
+    <div className="flex min-w-0 gap-3 rounded-md bg-surface-container-lowest/70 px-3 py-2 text-xs">
+      <div className="w-24 shrink-0 text-text-muted">{label}</div>
+      <code
+        className={`min-w-0 flex-1 break-all font-mono leading-5 ${hasValue ? "text-on-surface" : "text-text-muted"}`}
+        title={formatted}
+      >
+        {formatted}
+      </code>
     </div>
   );
 }
 
 function CheckRow({ label, checked }: { label: string; checked: boolean }) {
   return (
-    <div className="flex min-h-11 items-center justify-between gap-3 rounded-lg border border-border bg-surface-container-low px-3 py-2 text-sm">
-      <span className="min-w-0 truncate text-on-surface-variant">{label}</span>
-      <span className={`shrink-0 ${checked ? "text-green-600 dark:text-green-400" : "text-text-muted"}`}>
+    <div className="flex min-w-0 items-center gap-2 rounded-md bg-surface-container-lowest/70 px-2.5 py-1.5 text-xs">
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${checked ? "bg-green-500" : "bg-text-muted"}`} />
+      <span className="min-w-0 flex-1 truncate text-on-surface-variant" title={label}>{label}</span>
+      <span className={`shrink-0 font-medium ${checked ? "text-green-600 dark:text-green-400" : "text-text-muted"}`}>
         {checked ? "已安装" : "未完整"}
       </span>
     </div>
@@ -330,20 +337,24 @@ export function HookSettingsPage() {
             <StatusPill status={claudeStatus} />
           </div>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3 md:grid-cols-3">
-            <PathRow label="Claude 配置目录" value={claude?.configDir ?? selectedDir} />
-            <PathRow label="hooks 目录" value={claude?.hooksDir ?? null} />
-            <PathRow label="settings.json" value={claude?.configPath ?? null} />
+        <CardContent className="space-y-3">
+          <div className="rounded-xl bg-surface-container-low p-2">
+            <div className="grid gap-1.5 lg:grid-cols-2">
+              <PathRow label="Claude 配置目录" value={claude?.configDir ?? selectedDir} />
+              <PathRow label="hooks 目录" value={claude?.hooksDir ?? null} />
+              <PathRow label="settings.json" value={claude?.configPath ?? null} />
+            </div>
           </div>
 
-          <div className="grid gap-2 md:grid-cols-3">
-            <CheckRow label="运行中 Hook（UserPromptSubmit）" checked={claudeRunningInstalled} />
-            <CheckRow label="待审批 Hook（Notification）" checked={claudeAttentionInstalled} />
-            <CheckRow label="完成/异常 Hook（Stop / StopFailure）" checked={claudeFinishedInstalled} />
+          <div className="rounded-xl bg-surface-container-low p-2">
+            <div className="grid gap-1.5 lg:grid-cols-2">
+              <CheckRow label="运行中 Hook（UserPromptSubmit）" checked={claudeRunningInstalled} />
+              <CheckRow label="待审批 Hook（Notification）" checked={claudeAttentionInstalled} />
+              <CheckRow label="完成/异常 Hook（Stop / StopFailure）" checked={claudeFinishedInstalled} />
+            </div>
           </div>
 
-          <div className="rounded-lg border border-border bg-surface-container-low px-3 py-2 text-xs leading-5 text-on-surface-variant">
+          <div className="rounded-lg bg-surface-container-low px-3 py-2 text-xs leading-5 text-on-surface-variant">
             安装只会写入 <span className="font-mono">notify-cli-manager-approval.ps1</span> 和{" "}
             <span className="font-mono">notify-cli-manager-finished.ps1</span>，并合并修改 Claude 的{" "}
             <span className="font-mono">settings.json</span>。删除时不会移除用户自己的 hooks，也不会删除旧的{" "}
@@ -379,22 +390,26 @@ export function HookSettingsPage() {
             <StatusPill status={codexStatus} />
           </div>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3 md:grid-cols-4">
-            <PathRow label="Codex 配置目录" value={codex?.configDir ?? codexSelectedDir} />
-            <PathRow label="hooks 目录" value={codex?.hooksDir ?? null} />
-            <PathRow label="hooks.json" value={codex?.configPath ?? null} />
-            <PathRow label="config.toml" value={codex?.featureConfigPath ?? null} />
+        <CardContent className="space-y-3">
+          <div className="rounded-xl bg-surface-container-low p-2">
+            <div className="grid gap-1.5 lg:grid-cols-2">
+              <PathRow label="Codex 配置目录" value={codex?.configDir ?? codexSelectedDir} />
+              <PathRow label="hooks 目录" value={codex?.hooksDir ?? null} />
+              <PathRow label="hooks.json" value={codex?.configPath ?? null} />
+              <PathRow label="config.toml" value={codex?.featureConfigPath ?? null} />
+            </div>
           </div>
 
-          <div className="grid gap-2 md:grid-cols-4">
-            <CheckRow label="运行中 Hook（UserPromptSubmit）" checked={codexRunningInstalled} />
-            <CheckRow label="待审批 Hook（PermissionRequest）" checked={codexAttentionInstalled} />
-            <CheckRow label="完成 Hook（Stop）" checked={codexFinishedInstalled} />
-            <CheckRow label="Hooks 功能（[features].hooks）" checked={Boolean(codex?.hooksFeatureInstalled)} />
+          <div className="rounded-xl bg-surface-container-low p-2">
+            <div className="grid gap-1.5 lg:grid-cols-2">
+              <CheckRow label="运行中 Hook（UserPromptSubmit）" checked={codexRunningInstalled} />
+              <CheckRow label="待审批 Hook（PermissionRequest）" checked={codexAttentionInstalled} />
+              <CheckRow label="完成 Hook（Stop）" checked={codexFinishedInstalled} />
+              <CheckRow label="Hooks 功能（[features].hooks）" checked={Boolean(codex?.hooksFeatureInstalled)} />
+            </div>
           </div>
 
-          <div className="rounded-lg border border-border bg-surface-container-low px-3 py-2 text-xs leading-5 text-on-surface-variant">
+          <div className="rounded-lg bg-surface-container-low px-3 py-2 text-xs leading-5 text-on-surface-variant">
             安装会写入用户级 <span className="font-mono">~/.codex/hooks.json</span> 和{" "}
             <span className="font-mono">~/.codex/hooks/</span> 下的 CLI-Manager 脚本，不修改项目{" "}
             <span className="font-mono">.codex/hooks.json</span>。安装会自动写入{" "}

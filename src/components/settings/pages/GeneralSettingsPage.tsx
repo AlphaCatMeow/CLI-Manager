@@ -1,8 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import {
+  Badge,
+  Box,
+  Button,
+  Card,
+  Group,
+  SegmentedControl,
+  Select,
+  SimpleGrid,
+  Stack,
+  Switch,
+  Text,
+  TextInput,
+  UnstyledButton,
+} from "@mantine/core";
 import {
   useSettingsStore,
   type CloseBehavior,
@@ -106,6 +117,36 @@ const DARK_PALETTE_OPTIONS: {
     description: "深海军蓝与琥珀金，克制的专业金融终端气质",
     swatches: ["#0f172a", "#f8fafc", "#f59e0b"],
   },
+  {
+    value: "github-dark",
+    label: "GitHub Dark",
+    description: "中性深灰，蓝色强调，适合长时间阅读代码",
+    swatches: ["#24292f", "#f0f3f6", "#58a6ff"],
+  },
+  {
+    value: "catppuccin-mocha",
+    label: "Catppuccin Mocha",
+    description: "柔和紫黑，粉蓝强调，低刺激暗色",
+    swatches: ["#1e1e2e", "#cdd6f4", "#89b4fa"],
+  },
+  {
+    value: "nord-night",
+    label: "Nord Night",
+    description: "极地蓝灰，冷静克制，层级清晰",
+    swatches: ["#2e3440", "#d8dee9", "#88c0d0"],
+  },
+  {
+    value: "dracula-purple",
+    label: "Dracula Purple",
+    description: "经典紫黑，高辨识度，强调色更鲜明",
+    swatches: ["#282a36", "#f8f8f2", "#bd93f9"],
+  },
+  {
+    value: "carbon-black",
+    label: "Carbon Black",
+    description: "近黑碳色，高对比蓝紫强调，适合沉浸工作",
+    swatches: ["#161616", "#f2f4f8", "#78a9ff"],
+  },
 ];
 
 const SIDEBAR_DENSITY_OPTIONS: { value: SidebarDensity; label: string; description: string }[] = [
@@ -119,14 +160,14 @@ const CLOSE_BEHAVIOR_OPTIONS: { value: CloseBehavior; label: string }[] = [
   { value: "exit", label: "直接退出" },
 ];
 
-type TerminalToolbarOptionKey = Exclude<keyof TerminalToolbarVisibilitySettings, "showText">;
-
 const TERMINAL_TOOLBAR_OPTIONS: { key: TerminalToolbarOptionKey; label: string }[] = [
   { key: "templates", label: "Templates" },
   { key: "commandHistory", label: "历史命令" },
   { key: "fullscreen", label: "全屏" },
   { key: "sessionHistory", label: "历史会话" },
 ];
+
+type TerminalToolbarOptionKey = Exclude<keyof TerminalToolbarVisibilitySettings, "showText">;
 
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
@@ -146,6 +187,11 @@ const DARK_TEXT_COLORS: Record<DarkThemePalette, string> = {
   "forest-night": "#d8e5dc",
   "graphite-red": "#e6dfdb",
   "investment-platform": "#f8fafc",
+  "github-dark": "#f0f3f6",
+  "catppuccin-mocha": "#cdd6f4",
+  "nord-night": "#d8dee9",
+  "dracula-purple": "#f8f8f2",
+  "carbon-black": "#f2f4f8",
 };
 
 function getDefaultUiTextColor(
@@ -222,25 +268,39 @@ function PaletteCard({
   onClick: () => void;
 }) {
   return (
-    <button
+    <UnstyledButton
+      type="button"
       onClick={onClick}
-      className="ui-interactive ui-focus-ring ui-selection-card relative overflow-hidden rounded-xl border p-3 text-left transition-[transform,box-shadow,border-color,background-color]"
+      className="ui-interactive ui-focus-ring ui-selection-card relative rounded-xl border p-3 text-left transition-[transform,box-shadow,border-color,background-color]"
       data-selected={active ? "true" : "false"}
       aria-pressed={active}
+      w="100%"
+      style={{
+        background: active
+          ? "linear-gradient(180deg, color-mix(in srgb, var(--surface-container-lowest) 88%, var(--primary) 12%), var(--surface-container-low))"
+          : "linear-gradient(180deg, var(--surface-container-lowest), var(--surface-container-low))",
+        boxShadow: active
+          ? "0 10px 24px color-mix(in srgb, var(--primary) 14%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--primary) 36%, transparent)"
+          : "0 8px 18px color-mix(in srgb, var(--on-surface) 7%, transparent), inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent)",
+      }}
     >
       {active && (
-        <span className="ui-primary-gradient absolute right-2 top-2 rounded-full px-2 py-0.5 text-[10px] font-semibold">
+        <Badge className="ui-primary-gradient absolute right-2 top-2" size="xs" variant="filled">
           当前
-        </span>
+        </Badge>
       )}
-      <div className="flex items-center gap-1.5">
+      <Group gap={7} ml={8} mt={4} pr={40}>
         {swatches.map((color, index) => (
-          <span
+          <Box
             key={`${color}-${index}`}
-            className="h-4 w-4 rounded-full border"
+            component="span"
+            w={16}
+            h={16}
             style={{
               backgroundColor: color,
+              border: "1px solid var(--border)",
               borderColor: active ? "color-mix(in srgb, var(--primary) 65%, var(--border))" : "var(--border)",
+              borderRadius: 4,
               boxShadow:
                 active && index === swatches.length - 1
                   ? "0 0 0 2px color-mix(in srgb, var(--primary) 30%, transparent)"
@@ -248,14 +308,14 @@ function PaletteCard({
             }}
           />
         ))}
-      </div>
-      <div className={`mt-2 text-sm font-semibold ${active ? "text-on-surface" : "text-on-surface-variant"}`}>
+      </Group>
+      <Text mt="xs" pr={40} size="sm" fw={600} c={active ? "var(--on-surface)" : "var(--on-surface-variant)"}>
         {label}
-      </div>
-      <div className={`mt-1 text-xs leading-5 ${active ? "text-on-surface-variant" : "text-text-muted"}`}>
+      </Text>
+      <Text mt={4} size="xs" lh={1.55} c={active ? "var(--on-surface-variant)" : "var(--text-muted)"}>
         {description}
-      </div>
-    </button>
+      </Text>
+    </UnstyledButton>
   );
 }
 
@@ -270,6 +330,7 @@ export function GeneralSettingsPage() {
   const viewMode = useSettingsStore((s) => s.viewMode);
   const closeBehavior = useSettingsStore((s) => s.closeBehavior);
   const debugMode = useSettingsStore((s) => s.debugMode);
+  const ccusageAnalyticsEnabled = useSettingsStore((s) => s.ccusageAnalyticsEnabled);
   const terminalToolbarVisibility = useSettingsStore((s) => s.terminalToolbarVisibility);
   const showProjectTreeBadges = useSettingsStore((s) => s.showProjectTreeBadges);
   const setTheme = useSettingsStore((s) => s.setTheme);
@@ -295,255 +356,340 @@ export function GeneralSettingsPage() {
     () => !UI_FONT_FAMILY_OPTIONS.some((opt) => opt.value === uiFontFamily),
     [uiFontFamily]
   );
+  const uiFontFamilyOptions = useMemo(
+    () => [
+      ...(isCustomUiFontFamily ? [{ value: uiFontFamily, label: "当前自定义（保留）" }] : []),
+      ...UI_FONT_FAMILY_OPTIONS,
+    ],
+    [isCustomUiFontFamily, uiFontFamily]
+  );
   const updateToolbarVisibility = (key: keyof TerminalToolbarVisibilitySettings, checked: boolean) => {
     void update("terminalToolbarVisibility", { ...terminalToolbarVisibility, [key]: checked });
   };
 
   return (
-    <div className="space-y-4">
+    <Stack gap="md">
       <section>
-        <Card className="p-4">
-          <div className="text-sm font-semibold text-on-surface">外观</div>
+        <Card className="ui-surface-card" p="md">
+          <Stack gap="md">
+            <Text size="sm" fw={600} c="var(--on-surface)">
+              外观
+            </Text>
 
-          <div className="mt-3">
-            <label className="mb-1 block text-xs text-on-surface-variant">应用主题</label>
-            <div className="grid grid-cols-3 gap-2">
-              {THEME_OPTIONS.map((opt) => {
-                const active = theme === opt.value;
-                return (
-                  <button
-                    key={opt.value}
-                    onClick={() => setTheme(opt.value)}
-                    className="ui-interactive ui-focus-ring ui-selection-card rounded-xl border px-3 py-2 text-sm"
-                    data-selected={active ? "true" : "false"}
-                    aria-pressed={active}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+            <Stack gap={6}>
+              <Text size="xs" c="var(--on-surface-variant)">
+                应用主题
+              </Text>
+              <SegmentedControl<ThemeMode>
+                value={theme}
+                onChange={(value) => void setTheme(value)}
+                data={THEME_OPTIONS}
+                color="cliPrimary"
+                fullWidth
+                aria-label="应用主题"
+              />
+            </Stack>
 
-          <div className="mt-4">
-            <label className="mb-1 block text-xs text-on-surface-variant">浅色配色</label>
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
-              {LIGHT_PALETTE_OPTIONS.map((option) => (
-                <PaletteCard
-                  key={option.value}
-                  active={lightThemePalette === option.value}
-                  label={option.label}
-                  description={option.description}
-                  swatches={option.swatches}
-                  onClick={() => update("lightThemePalette", option.value)}
+            <Stack gap="xs">
+              <Text size="xs" c="var(--on-surface-variant)">
+                浅色配色
+              </Text>
+              <SimpleGrid cols={{ base: 1, md: 3 }} spacing="xs">
+                {LIGHT_PALETTE_OPTIONS.map((option) => (
+                  <PaletteCard
+                    key={option.value}
+                    active={lightThemePalette === option.value}
+                    label={option.label}
+                    description={option.description}
+                    swatches={option.swatches}
+                    onClick={() => void update("lightThemePalette", option.value)}
+                  />
+                ))}
+              </SimpleGrid>
+            </Stack>
+
+            <Stack gap="xs">
+              <Text size="xs" c="var(--on-surface-variant)">
+                暗色配色
+              </Text>
+              <SimpleGrid cols={{ base: 1, md: 3 }} spacing="xs">
+                {DARK_PALETTE_OPTIONS.map((option) => (
+                  <PaletteCard
+                    key={option.value}
+                    active={darkThemePalette === option.value}
+                    label={option.label}
+                    description={option.description}
+                    swatches={option.swatches}
+                    onClick={() => void update("darkThemePalette", option.value)}
+                  />
+                ))}
+              </SimpleGrid>
+            </Stack>
+
+            <Select<string>
+              label="应用字体"
+              value={uiFontFamily}
+              onChange={(value) => {
+                if (value) void update("uiFontFamily", value);
+              }}
+              data={uiFontFamilyOptions}
+              allowDeselect={false}
+              size="xs"
+              aria-label="应用字体"
+              description="影响除终端外的应用整体界面字体；终端字体在「终端设置」中单独配置。"
+            />
+
+            <Stack gap={6}>
+              <Text size="xs" c="var(--on-surface-variant)">
+                应用字体颜色
+              </Text>
+              <Group gap="xs" align="flex-start" wrap="nowrap">
+                <TextInput
+                  type="color"
+                  value={colorPickerValue}
+                  onChange={(event) => {
+                    setUiTextColorDraft(event.currentTarget.value);
+                  }}
+                  onBlur={() => commitUiTextColor()}
+                  w={52}
+                  size="xs"
+                  aria-label="应用字体颜色选择器"
+                  styles={{ input: { cursor: "pointer", padding: 4 } }}
                 />
-              ))}
-            </div>
-          </div>
-
-          <div className="mt-4">
-            <label className="mb-1 block text-xs text-on-surface-variant">暗色配色</label>
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
-              {DARK_PALETTE_OPTIONS.map((option) => (
-                <PaletteCard
-                  key={option.value}
-                  active={darkThemePalette === option.value}
-                  label={option.label}
-                  description={option.description}
-                  swatches={option.swatches}
-                  onClick={() => update("darkThemePalette", option.value)}
+                <TextInput
+                  value={uiTextColorDraft}
+                  onChange={(event) => {
+                    setUiTextColorDraft(event.currentTarget.value.trim());
+                  }}
+                  onBlur={() => commitUiTextColor()}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      commitUiTextColor();
+                    }
+                  }}
+                  placeholder={defaultUiTextColor}
+                  size="xs"
+                  className="flex-1"
+                  aria-label="应用字体颜色十六进制值"
+                  aria-invalid={uiTextColorDraftInvalid}
+                  styles={{ input: { fontFamily: "var(--font-ui-mono)", fontSize: 12 } }}
                 />
-              ))}
-            </div>
-          </div>
-
-          <div className="mt-4">
-            <label className="mb-1 block text-xs text-on-surface-variant">应用字体</label>
-            <Select value={uiFontFamily} onChange={(e) => update("uiFontFamily", e.target.value)} aria-label="应用字体">
-              {isCustomUiFontFamily && <option value={uiFontFamily}>当前自定义（保留）</option>}
-              {UI_FONT_FAMILY_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </Select>
-            <div className="mt-1 text-[11px] text-text-muted">
-              影响除终端外的应用整体界面字体；终端字体在「终端设置」中单独配置。
-            </div>
-          </div>
-
-          <div className="mt-4">
-            <label className="mb-1 block text-xs text-on-surface-variant">应用字体颜色</label>
-            <div className="flex items-center gap-2">
-              <Input
-                type="color"
-                value={colorPickerValue}
-                onChange={(e) => {
-                  setUiTextColorDraft(e.target.value);
-                }}
-                onBlur={() => commitUiTextColor()}
-                className="h-8 w-12 shrink-0 cursor-pointer p-1"
-                aria-label="应用字体颜色选择器"
-              />
-              <Input
-                type="text"
-                value={uiTextColorDraft}
-                onChange={(e) => {
-                  setUiTextColorDraft(e.target.value.trim());
-                }}
-                onBlur={() => commitUiTextColor()}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    commitUiTextColor();
-                  }
-                }}
-                placeholder={defaultUiTextColor}
-                className="font-mono text-xs"
-                aria-label="应用字体颜色十六进制值"
-                aria-invalid={uiTextColorDraftInvalid}
-              />
-              <button
-                type="button"
-                className="ui-flat-action ui-focus-ring h-8 shrink-0 px-3 text-xs"
-                onClick={() => {
-                  setUiTextColorDraft("");
-                  void update("uiTextColor", "");
-                }}
-                disabled={!uiTextColor && uiTextColorDraft === ""}
-              >
-                跟随主题
-              </button>
-            </div>
-            <div className="mt-2 flex items-center gap-2 text-[11px] text-text-muted">
-              <span
-                className="h-4 w-4 rounded-full border border-border"
-                style={{ backgroundColor: uiTextColor || defaultUiTextColor }}
-              />
-              <span>{uiTextColor ? `当前自定义 ${uiTextColor}` : `当前跟随主题 ${defaultUiTextColor}`}</span>
-            </div>
-            <div className={`mt-1 text-[11px] ${uiTextColorDraftInvalid ? "text-danger" : "text-text-muted"}`}>
-              {uiTextColorDraftInvalid
-                ? "请输入 #RRGGBB 格式，例如 #c0caf5。"
-                : "仅影响除终端外的应用主文字颜色；留空时跟随当前主题。"}
-            </div>
-          </div>
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="light"
+                  color="cliPrimary"
+                  onClick={() => {
+                    setUiTextColorDraft("");
+                    void update("uiTextColor", "");
+                  }}
+                  disabled={!uiTextColor && uiTextColorDraft === ""}
+                  className="shrink-0"
+                >
+                  跟随主题
+                </Button>
+              </Group>
+              <Group gap="xs" c="var(--text-muted)">
+                <Box
+                  w={16}
+                  h={16}
+                  style={{
+                    backgroundColor: uiTextColor || defaultUiTextColor,
+                    border: "1px solid var(--border)",
+                    borderRadius: 999,
+                  }}
+                />
+                <Text size="xs">
+                  {uiTextColor ? `当前自定义 ${uiTextColor}` : `当前跟随主题 ${defaultUiTextColor}`}
+                </Text>
+              </Group>
+              <Text size="xs" c={uiTextColorDraftInvalid ? "var(--danger)" : "var(--text-muted)"}>
+                {uiTextColorDraftInvalid
+                  ? "请输入 #RRGGBB 格式，例如 #c0caf5。"
+                  : "仅影响除终端外的应用主文字颜色；留空时跟随当前主题。"}
+              </Text>
+            </Stack>
+          </Stack>
         </Card>
       </section>
 
       <section>
-        <Card className="p-4">
-          <div className="text-sm font-semibold text-on-surface">侧栏与行为</div>
-          <div className="mt-3 space-y-4">
-            <div className="flex items-center justify-between gap-4 rounded-2xl border border-primary bg-surface-container-low px-4 py-3">
-              <div>
-                <div className="text-sm font-semibold text-on-surface">精简模式</div>
-                <div className="mt-1 text-[11px] text-text-muted">隐藏内嵌终端，把项目列表作为启动器。</div>
-              </div>
-              <Switch
-                className="shrink-0"
-                checked={viewMode === "compact"}
-                onCheckedChange={() => update("viewMode", viewMode === "compact" ? "standard" : "compact")}
-                aria-label={viewMode === "compact" ? "关闭精简模式" : "开启精简模式"}
-              />
-            </div>
+        <Card className="ui-surface-card" p="md">
+          <Stack gap="md">
+            <Text size="sm" fw={600} c="var(--on-surface)">
+              侧栏与行为
+            </Text>
+            <Card className="border border-primary bg-surface-container-low" p="md" radius="lg">
+              <Group justify="space-between" align="center" gap="md" wrap="nowrap">
+                <Box>
+                  <Text size="sm" fw={600} c="var(--on-surface)">
+                    精简模式
+                  </Text>
+                  <Text mt={4} size="xs" c="var(--text-muted)">
+                    隐藏内嵌终端，把项目列表作为启动器。
+                  </Text>
+                </Box>
+                <Switch
+                  color="cliPrimary"
+                  checked={viewMode === "compact"}
+                  onChange={(event) =>
+                    void update("viewMode", event.currentTarget.checked ? "compact" : "standard")
+                  }
+                  aria-label={viewMode === "compact" ? "关闭精简模式" : "开启精简模式"}
+                />
+              </Group>
+            </Card>
 
-            <div>
-              <label className="mb-1 block text-xs text-on-surface-variant">侧栏密度</label>
-              <div className="grid grid-cols-2 gap-2">
+            <Stack gap="xs">
+              <Text size="xs" c="var(--on-surface-variant)">
+                侧栏密度
+              </Text>
+              <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
                 {SIDEBAR_DENSITY_OPTIONS.map((opt) => {
                   const active = sidebarDensity === opt.value;
                   return (
-                    <button
+                    <UnstyledButton
                       key={opt.value}
-                      onClick={() => update("sidebarDensity", opt.value)}
+                      type="button"
+                      onClick={() => void update("sidebarDensity", opt.value)}
                       className="ui-interactive ui-focus-ring ui-selection-card rounded-xl border px-3 py-2 text-left"
                       data-selected={active ? "true" : "false"}
                       aria-pressed={active}
                     >
-                      <div className="text-sm font-semibold">{opt.label}</div>
-                      <div className="mt-0.5 text-[11px] leading-4 text-on-surface-variant">{opt.description}</div>
-                    </button>
+                      <Text size="sm" fw={600} c="var(--on-surface)">
+                        {opt.label}
+                      </Text>
+                      <Text mt={2} size="xs" lh={1.45} c="var(--on-surface-variant)">
+                        {opt.description}
+                      </Text>
+                    </UnstyledButton>
                   );
                 })}
-              </div>
-            </div>
+              </SimpleGrid>
+            </Stack>
 
-            <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-surface-container-lowest px-3 py-2">
-              <div>
-                <div className="text-xs text-on-surface-variant">项目树徽章</div>
-                <div className="mt-1 text-[11px] text-text-muted">显示项目工具、路径异常和分组数量标记。</div>
-              </div>
+            <Card className="border border-border bg-surface-container-lowest" p="sm" radius="lg">
+              <Group justify="space-between" align="center" gap="md" wrap="nowrap">
+                <Box>
+                  <Text size="xs" c="var(--on-surface-variant)">
+                    项目树徽章
+                  </Text>
+                  <Text mt={4} size="xs" c="var(--text-muted)">
+                    显示项目工具、路径异常和分组数量标记。
+                  </Text>
+                </Box>
+                <Switch
+                  color="cliPrimary"
+                  checked={showProjectTreeBadges}
+                  onChange={(event) => void update("showProjectTreeBadges", event.currentTarget.checked)}
+                  aria-label={showProjectTreeBadges ? "隐藏项目树徽章" : "显示项目树徽章"}
+                />
+              </Group>
+            </Card>
+
+            <Select<CloseBehavior>
+              label="关闭按钮行为"
+              value={closeBehavior}
+              onChange={(value) => {
+                if (value) void update("closeBehavior", value);
+              }}
+              data={CLOSE_BEHAVIOR_OPTIONS}
+              allowDeselect={false}
+              size="xs"
+              aria-label="关闭按钮行为"
+              description="控制点击窗口关闭按钮时的动作。"
+            />
+
+            <Group justify="space-between" align="center" gap="md" wrap="nowrap">
+              <Text size="xs" c="var(--on-surface-variant)">
+                调试模式
+              </Text>
               <Switch
-                className="shrink-0"
-                checked={showProjectTreeBadges}
-                onCheckedChange={(checked) => update("showProjectTreeBadges", checked)}
-                aria-label={showProjectTreeBadges ? "隐藏项目树徽章" : "显示项目树徽章"}
-              />
-            </div>
-
-            <div>
-              <label className="mb-1 block text-xs text-on-surface-variant">关闭按钮行为</label>
-              <Select
-                value={closeBehavior}
-                onChange={(e) => update("closeBehavior", e.target.value as CloseBehavior)}
-                aria-label="关闭按钮行为"
-              >
-                {CLOSE_BEHAVIOR_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </Select>
-              <div className="mt-1 text-[11px] text-text-muted">控制点击窗口关闭按钮时的动作。</div>
-            </div>
-
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-xs text-on-surface-variant">调试模式</span>
-              <Switch
+                color="cliPrimary"
                 checked={debugMode}
-                onCheckedChange={() => update("debugMode", !debugMode)}
+                onChange={(event) => void update("debugMode", event.currentTarget.checked)}
                 aria-label={debugMode ? "关闭调试模式" : "开启调试模式"}
               />
-            </div>
-          </div>
+            </Group>
+          </Stack>
         </Card>
       </section>
 
       <section>
-        <Card className="p-4">
-          <div className="text-sm font-semibold text-on-surface">工具栏</div>
-          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {TERMINAL_TOOLBAR_OPTIONS.map((option) => (
-              <div
-                key={option.key}
-                className="flex items-center justify-between gap-4 rounded-xl border border-border bg-surface-container-lowest px-3 py-2"
-              >
-                <div className="text-xs text-on-surface-variant">{option.label}</div>
+        <Card className="ui-surface-card" p="md">
+          <Stack gap="sm">
+            <Text size="sm" fw={600} c="var(--on-surface)">
+              工具栏
+            </Text>
+            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
+              {TERMINAL_TOOLBAR_OPTIONS.map((option) => (
+                <Card key={option.key} className="border border-border bg-surface-container-lowest" p="sm" radius="lg">
+                  <Group justify="space-between" align="center" gap="md" wrap="nowrap">
+                    <Text size="xs" c="var(--on-surface-variant)">
+                      {option.label}
+                    </Text>
+                    <Switch
+                      color="cliPrimary"
+                      checked={terminalToolbarVisibility[option.key]}
+                      onChange={(event) => updateToolbarVisibility(option.key, event.currentTarget.checked)}
+                      aria-label={`${terminalToolbarVisibility[option.key] ? "隐藏" : "显示"}${option.label}`}
+                    />
+                  </Group>
+                </Card>
+              ))}
+            </SimpleGrid>
+            <Card className="border border-border bg-surface-container-lowest" p="sm" radius="lg">
+              <Group justify="space-between" align="center" gap="md" wrap="nowrap">
+                <Box>
+                  <Text size="xs" c="var(--on-surface-variant)">
+                    显示工具栏文字
+                  </Text>
+                  <Text mt={4} size="xs" c="var(--text-muted)">
+                    关闭后除“新建”外只显示图标。
+                  </Text>
+                </Box>
                 <Switch
-                  className="shrink-0"
-                  checked={terminalToolbarVisibility[option.key]}
-                  onCheckedChange={(checked) => updateToolbarVisibility(option.key, checked)}
-                  aria-label={`${terminalToolbarVisibility[option.key] ? "隐藏" : "显示"}${option.label}`}
+                  color="cliPrimary"
+                  checked={terminalToolbarVisibility.showText}
+                  onChange={(event) => updateToolbarVisibility("showText", event.currentTarget.checked)}
+                  aria-label={terminalToolbarVisibility.showText ? "隐藏工具栏文字" : "显示工具栏文字"}
                 />
-              </div>
-            ))}
-          </div>
-          <div className="mt-3 flex items-center justify-between gap-4 rounded-xl border border-border bg-surface-container-lowest px-3 py-2">
-            <div>
-              <div className="text-xs text-on-surface-variant">显示工具栏文字</div>
-              <div className="mt-1 text-[11px] text-text-muted">关闭后除“新建”外只显示图标。</div>
-            </div>
-            <Switch
-              className="shrink-0"
-              checked={terminalToolbarVisibility.showText}
-              onCheckedChange={(checked) => updateToolbarVisibility("showText", checked)}
-              aria-label={terminalToolbarVisibility.showText ? "隐藏工具栏文字" : "显示工具栏文字"}
-            />
-          </div>
+              </Group>
+            </Card>
+          </Stack>
+        </Card>
+      </section>
+
+      <section>
+        <Card className="ui-surface-card" p="md">
+          <Stack gap="sm">
+            <Text size="sm" fw={600} c="var(--on-surface)">
+              用量分析
+            </Text>
+            <Card className="border border-border bg-surface-container-lowest" p="sm" radius="lg">
+              <Group justify="space-between" align="center" gap="md" wrap="nowrap">
+                <Box>
+                  <Text size="xs" c="var(--on-surface-variant)">
+                    使用 ccusage 看板
+                  </Text>
+                  <Text mt={4} size="xs" lh={1.55} c="var(--text-muted)">
+                    默认关闭。开启后侧栏分析入口切换到独立 ccusage 看板，支持 Claude / Codex /
+                    全部来源；缺少 Bun/bunx 时会先二次确认再安装。
+                  </Text>
+                </Box>
+                <Switch
+                  color="cliPrimary"
+                  checked={ccusageAnalyticsEnabled}
+                  onChange={(event) => void update("ccusageAnalyticsEnabled", event.currentTarget.checked)}
+                  aria-label={ccusageAnalyticsEnabled ? "关闭 ccusage 看板" : "开启 ccusage 看板"}
+                />
+              </Group>
+            </Card>
+          </Stack>
         </Card>
       </section>
 
       <AboutSection />
-    </div>
+    </Stack>
   );
 }

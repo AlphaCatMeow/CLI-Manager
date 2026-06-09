@@ -153,6 +153,21 @@ fn migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 10,
+            description: "create_ccusage_cache_table",
+            sql: "
+                CREATE TABLE IF NOT EXISTS ccusage_cache (
+                    cache_key   TEXT PRIMARY KEY,
+                    source      TEXT NOT NULL,
+                    report_kind TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    updated_at  INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_ccusage_cache_source ON ccusage_cache(source, report_kind);
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -292,6 +307,9 @@ pub fn run() {
             commands::hook_settings::hook_settings_install_codex,
             commands::hook_settings::hook_settings_uninstall_codex,
             commands::hook_settings::hook_settings_select_dir,
+            commands::ccusage::ccusage_get_status,
+            commands::ccusage::ccusage_install_tools,
+            commands::ccusage::ccusage_refresh_report,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

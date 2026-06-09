@@ -14,7 +14,16 @@ export type LightThemePalette =
   | "apple-mist"
   | "apple-warm"
   | "apple-mono";
-export type DarkThemePalette = "night-indigo" | "forest-night" | "graphite-red" | "investment-platform";
+export type DarkThemePalette =
+  | "night-indigo"
+  | "forest-night"
+  | "graphite-red"
+  | "investment-platform"
+  | "github-dark"
+  | "catppuccin-mocha"
+  | "nord-night"
+  | "dracula-purple"
+  | "carbon-black";
 export type TerminalThemeMode = "follow-app" | "independent";
 export type SidebarDensity = "compact" | "comfortable";
 export type ViewMode = "standard" | "compact";
@@ -126,6 +135,7 @@ interface Settings {
   unsplitBehavior: UnsplitBehavior;
   terminalToolbarVisibility: TerminalToolbarVisibilitySettings;
   shellRuntimeMonitoringEnabled: boolean;
+  ccusageAnalyticsEnabled: boolean;
   terminalBackground: TerminalBackgroundSettings;
   hookPopupNotificationsEnabled: boolean;
   hookPopupAutoCloseEnabled: boolean;
@@ -178,6 +188,7 @@ const DEFAULTS: Settings = {
     showText: false,
   },
   shellRuntimeMonitoringEnabled: true,
+  ccusageAnalyticsEnabled: false,
   terminalBackground: {
     enabled: false,
     imagePath: null,
@@ -402,6 +413,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       typeof entries.shellRuntimeMonitoringEnabled === "boolean"
         ? entries.shellRuntimeMonitoringEnabled
         : DEFAULTS.shellRuntimeMonitoringEnabled;
+    entries.ccusageAnalyticsEnabled =
+      typeof entries.ccusageAnalyticsEnabled === "boolean"
+        ? entries.ccusageAnalyticsEnabled
+        : DEFAULTS.ccusageAnalyticsEnabled;
 
     entries.hookPopupNotificationsEnabled =
       typeof entries.hookPopupNotificationsEnabled === "boolean"

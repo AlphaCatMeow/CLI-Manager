@@ -9,6 +9,7 @@ import { TerminalTabs } from "./components/TerminalTabs";
 import { CommandPalette } from "./components/CommandPalette";
 import { SettingsModal, type SettingsTab } from "./components/SettingsModal";
 import { StatsPanel } from "./components/stats/StatsPanel";
+import { CcusageStatsPanel } from "./components/stats/CcusageStatsPanel";
 import { WindowTitleBar } from "./components/WindowTitleBar";
 import { CloseConfirmDialog } from "./components/CloseConfirmDialog";
 import { AlertTriangle, Check, X } from "./components/icons";
@@ -36,9 +37,16 @@ const COMPACT_WINDOW_WIDTH = 350;
 const WINDOW_MIN_HEIGHT = 600;
 const IN_TAURI = isTauri();
 const CLAUDE_HOOK_TOAST_PREFIX = "claude-hook-notification";
+const MIN_UI_TEXT_CONTRAST_RATIO = 4.5;
 let claudeHookToastSequence = 0;
 
 type ClaudeHookToastVariant = "attention" | "approval" | "finished" | "failed";
+
+interface RgbColor {
+  r: number;
+  g: number;
+  b: number;
+}
 
 interface ClaudeHookToastStyle {
   variant: ClaudeHookToastVariant;
@@ -53,6 +61,39 @@ interface ClaudeHookToastItem {
   message?: string;
   tabTitle: string;
   style: ClaudeHookToastStyle;
+}
+
+function parseHexColor(value: string): RgbColor | null {
+  const match = /^#([0-9a-fA-F]{6})$/.exec(value.trim());
+  if (!match) return null;
+
+  const hex = match[1];
+  return {
+    r: Number.parseInt(hex.slice(0, 2), 16),
+    g: Number.parseInt(hex.slice(2, 4), 16),
+    b: Number.parseInt(hex.slice(4, 6), 16),
+  };
+}
+
+function getRelativeLuminance(color: RgbColor): number {
+  const [r, g, b] = [color.r, color.g, color.b].map((channel) => {
+    const value = channel / 255;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function getContrastRatio(foreground: RgbColor, background: RgbColor): number {
+  const lighter = Math.max(getRelativeLuminance(foreground), getRelativeLuminance(background));
+  const darker = Math.min(getRelativeLuminance(foreground), getRelativeLuminance(background));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function canUseUiTextColor(textColor: string, backgroundColor: string): boolean {
+  const foreground = parseHexColor(textColor);
+  const background = parseHexColor(backgroundColor);
+  if (!foreground || !background) return false;
+  return getContrastRatio(foreground, background) >= MIN_UI_TEXT_CONTRAST_RATIO;
 }
 
 function createClaudeHookToastId(tabId: string): string {
@@ -197,6 +238,7 @@ function App() {
   const uiTextColor = useSettingsStore((s) => s.uiTextColor);
   const viewMode = useSettingsStore((s) => s.viewMode);
   const closeBehavior = useSettingsStore((s) => s.closeBehavior);
+  const ccusageAnalyticsEnabled = useSettingsStore((s) => s.ccusageAnalyticsEnabled);
   const updateSetting = useSettingsStore((s) => s.update);
   const openHistory = useHistoryStore((s) => s.openHistory);
   const openHistorySession = useHistoryStore((s) => s.openSession);
@@ -298,22 +340,20 @@ function App() {
 
   useEffect(() => {
     const root = document.documentElement.style;
-    if (uiTextColor) {
+    const computedStyle = getComputedStyle(document.documentElement);
+    const canApplyUiTextColor =
+      uiTextColor !== "" && canUseUiTextColor(uiTextColor, computedStyle.getPropertyValue("--bg-primary"));
+
+    if (canApplyUiTextColor) {
       root.setProperty("--text-primary", uiTextColor);
-      root.setProperty(
-        "--text-secondary",
-        `color-mix(in srgb, ${uiTextColor} 85%, var(--bg-primary))`
-      );
-      root.setProperty(
-        "--text-muted",
-        `color-mix(in srgb, ${uiTextColor} 60%, var(--bg-primary))`
-      );
+      root.setProperty("--text-secondary", `color-mix(in srgb, ${uiTextColor} 85%, var(--bg-primary))`);
+      root.setProperty("--text-muted", `color-mix(in srgb, ${uiTextColor} 60%, var(--bg-primary))`);
     } else {
       root.removeProperty("--text-primary");
       root.removeProperty("--text-secondary");
       root.removeProperty("--text-muted");
     }
-  }, [uiTextColor]);
+  }, [darkThemePalette, lightThemePalette, resolvedTheme, uiTextColor]);
 
   useEffect(() => {
     if (uiFontFamily) {
@@ -561,11 +601,15 @@ function App() {
       )}
       <CommandPalette />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} initialTab={settingsInitialTab} />
-      <StatsPanel
-        open={statsOpen}
-        onClose={() => setStatsOpen(false)}
-        onOpenSession={handleOpenStatsSession}
-      />
+      {ccusageAnalyticsEnabled ? (
+        <CcusageStatsPanel open={statsOpen} onClose={() => setStatsOpen(false)} />
+      ) : (
+        <StatsPanel
+          open={statsOpen}
+          onClose={() => setStatsOpen(false)}
+          onOpenSession={handleOpenStatsSession}
+        />
+      )}
       <CloseConfirmDialog
         open={closeDialogOpen}
         onMinimize={handleCloseDialogMinimize}

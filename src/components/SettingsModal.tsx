@@ -15,7 +15,7 @@ interface SettingsTabConfig {
   label: string;
   title: string;
   description: string;
-  searchPlaceholder: string;
+  searchPlaceholder?: string;
 }
 
 const SETTINGS_TAB_ORDER: SettingsTab[] = ["general", "terminal-theme", "shortcuts", "templates", "sync", "hooks"];
@@ -25,37 +25,33 @@ const SETTINGS_TAB_CONFIG: Record<SettingsTab, SettingsTabConfig> = {
     label: "通用",
     title: "通用设置",
     description: "配置应用主题、配色、界面字体、侧栏与行为偏好。",
-    searchPlaceholder: "搜索通用设置（预留）",
   },
   "terminal-theme": {
     label: "终端设置",
     title: "终端设置",
     description: "配置终端行为、主题、字体、Shell、背景与实时预览。",
-    searchPlaceholder: "搜索终端设置（预留）",
   },
   shortcuts: {
     label: "快捷键",
     title: "快捷键",
     description: "录制、取消和恢复默认快捷键绑定。",
-    searchPlaceholder: "搜索快捷键（预留）",
+    searchPlaceholder: "搜索快捷键",
   },
   templates: {
     label: "命令模板",
     title: "命令模板",
     description: "管理全局模板与项目模板的新增、编辑与删除。",
-    searchPlaceholder: "搜索命令模板（预留）",
+    searchPlaceholder: "搜索命令模板",
   },
   sync: {
     label: "同步",
     title: "同步",
     description: "选择云端（WebDAV）或本地目录方式同步配置。",
-    searchPlaceholder: "搜索同步设置（预留）",
   },
   hooks: {
     label: "Hook 设置",
     title: "Hook 设置",
     description: "安装或移除 Claude Code 到 CLI-Manager 标签通知的桥接脚本。",
-    searchPlaceholder: "搜索 Hook 设置（预留）",
   },
 };
 
