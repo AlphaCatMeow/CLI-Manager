@@ -38,6 +38,8 @@ sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 memchr = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 [dev-dependencies]
 tempfile = "3"
