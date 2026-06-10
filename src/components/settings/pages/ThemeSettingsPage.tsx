@@ -134,7 +134,7 @@ export function ThemeSettingsPage() {
   };
 
   const terminalPreview = (
-    <Card className="ui-surface-card sticky top-5 z-10 self-start xl:col-start-2 xl:row-span-2 xl:row-start-1" p="md">
+    <Card className="ui-surface-card sticky top-5 z-10 self-start xl:col-start-2 xl:row-span-3 xl:row-start-1" p="md">
       <Stack gap="sm">
         <Box>
           <Text size="sm" fw={600} c="var(--on-surface)">
@@ -467,9 +467,11 @@ export function ThemeSettingsPage() {
           )}
           </Stack>
         </Card>
-      </section>
 
-      <TerminalBackgroundSection />
+        <div className="min-w-0 xl:col-start-1 xl:row-start-3">
+          <TerminalBackgroundSection />
+        </div>
+      </section>
     </Stack>
   );
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Badge, Box, Button, Card, Group, Kbd, SegmentedControl, Stack, Text } from "@mantine/core";
+import { Badge, Box, Button, Card, Group, Kbd, Stack, Text } from "@mantine/core";
 import {
   DEFAULT_KEYBOARD_SHORTCUTS,
   useSettingsStore,
@@ -135,13 +135,26 @@ export function ShortcutSettingsPage({ searchValue }: ShortcutSettingsPageProps)
               在终端中按下该组合键时，向 PTY 发送换行符 <code>\n</code>（适配 Claude Code、Codex 等 AI CLI 的“换行不提交”）。单按 Enter 行为不变。
             </Text>
           </Box>
-          <SegmentedControl<TerminalNewlineShortcut>
-            value={terminalNewlineShortcut}
-            onChange={(value) => void update("terminalNewlineShortcut", value)}
-            data={TERMINAL_NEWLINE_OPTIONS}
-            color="cliPrimary"
-            aria-label="终端换行快捷键"
-          />
+          <Group gap="xs" aria-label="终端换行快捷键">
+            {TERMINAL_NEWLINE_OPTIONS.map((opt) => {
+              const active = terminalNewlineShortcut === opt.value;
+              return (
+                <Button
+                  key={opt.value}
+                  type="button"
+                  size="xs"
+                  variant={active ? "light" : "default"}
+                  color={active ? "cliPrimary" : "gray"}
+                  onClick={() => {
+                    if (!active) void update("terminalNewlineShortcut", opt.value);
+                  }}
+                  aria-pressed={active}
+                >
+                  {opt.label}
+                </Button>
+              );
+            })}
+          </Group>
         </Stack>
       </Card>
 

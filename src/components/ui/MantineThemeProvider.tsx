@@ -1,4 +1,4 @@
-import { MantineProvider, colorsTuple, createTheme } from "@mantine/core";
+import { MantineProvider, createTheme, type MantineColorsTuple } from "@mantine/core";
 import { useMemo, type ReactNode } from "react";
 import {
   useSettingsStore,
@@ -33,6 +33,31 @@ interface AppMantineThemeProviderProps {
   children: ReactNode;
 }
 
+function mixHex(hex: string, target: string, ratio: number): string {
+  const parse = (value: string) => {
+    const normalized = value.replace("#", "");
+    return [0, 2, 4].map((i) => parseInt(normalized.slice(i, i + 2), 16));
+  };
+  const [r1, g1, b1] = parse(hex);
+  const [r2, g2, b2] = parse(target);
+  const mix = (a: number, b: number) => Math.round(a + (b - a) * ratio);
+  return `#${[mix(r1, r2), mix(g1, g2), mix(b1, b2)]
+    .map((channel) => channel.toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+// Mantine 的 light/subtle 变体依赖完整色阶（浅色背景取 1、文字取 9）。
+// 基色放在索引 6，配合 primaryShade=6 保证 filled 变体仍是用户选择的主色。
+function buildPrimaryShades(base: string): MantineColorsTuple {
+  const WHITE_MIX = [0.93, 0.85, 0.75, 0.6, 0.4, 0.2];
+  const BLACK_MIX = [0.12, 0.24, 0.38];
+  return [
+    ...WHITE_MIX.map((ratio) => mixHex(base, "#ffffff", ratio)),
+    base,
+    ...BLACK_MIX.map((ratio) => mixHex(base, "#000000", ratio)),
+  ] as unknown as MantineColorsTuple;
+}
+
 export function AppMantineThemeProvider({ children }: AppMantineThemeProviderProps) {
   const resolvedTheme = useSettingsStore((s) => s.resolvedTheme);
   const lightThemePalette = useSettingsStore((s) => s.lightThemePalette);
@@ -45,9 +70,10 @@ export function AppMantineThemeProvider({ children }: AppMantineThemeProviderPro
     () =>
       createTheme({
         colors: {
-          cliPrimary: colorsTuple(primaryColor),
+          cliPrimary: buildPrimaryShades(primaryColor),
         },
         primaryColor: "cliPrimary",
+        primaryShade: 6,
         fontFamily: uiFontFamily,
         fontFamilyMonospace: uiFontFamily,
         headings: {
