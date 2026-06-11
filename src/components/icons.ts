@@ -1,5 +1,6 @@
 export {
   AlertTriangle,
+  ArrowLeftRight,
   BarChart3,
   Check,
   ChevronDown,

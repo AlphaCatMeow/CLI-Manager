@@ -8,3 +8,4 @@ pub mod version;
 pub mod background;
 pub mod hook_settings;
 pub mod ccusage;
+pub mod ccswitch;

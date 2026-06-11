@@ -8,6 +8,7 @@ import type { TerminalPaneSplitDirection } from "../../stores/terminalPaneTree";
 import type { Project, TreeNode as TNode, Group } from "../../lib/types";
 import { ConfigModal } from "../ConfigModal";
 import { ConfirmDialog } from "../ConfirmDialog";
+import { ProviderSwitchModal } from "../ProviderSwitchModal";
 import { openWindowsTerminal } from "../../lib/externalTerminal";
 import { TreeContext, type TreeActions } from "./TreeContext";
 import { Portal } from "../ui/Portal";
@@ -18,6 +19,7 @@ import { SidebarSearch } from "./SidebarSearch";
 import { ProjectTree } from "./ProjectTree";
 import { SidebarFooter } from "./SidebarFooter";
 import {
+  ArrowLeftRight,
   Check,
   Copy,
   FolderOpen,
@@ -131,6 +133,7 @@ export function Sidebar({ onOpenSettings, onOpenStats, compactMode = false }: Si
 
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [cloningProject, setCloningProject] = useState<Project | null>(null);
+  const [switchingProviderProject, setSwitchingProviderProject] = useState<Project | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [addToGroupId, setAddToGroupId] = useState<string | null>(null);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(
@@ -937,6 +940,19 @@ export function Sidebar({ onOpenSettings, onOpenStats, compactMode = false }: Si
                   <FolderOpen size={14} strokeWidth={1.5} />
                   打开所在目录
                 </button>
+                {contextMenu.project.cli_tool.toLowerCase().includes("claude") && (
+                  <button
+                    className="context-menu-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setSwitchingProviderProject(contextMenu.project);
+                      setContextMenu(null);
+                    }}
+                  >
+                    <ArrowLeftRight size={14} strokeWidth={1.5} />
+                    切换供应商
+                  </button>
+                )}
                 <button
                   className="context-menu-item"
                   role="menuitem"
@@ -1044,6 +1060,12 @@ export function Sidebar({ onOpenSettings, onOpenStats, compactMode = false }: Si
         />
       )}
       {editingProject && <ConfigModal project={editingProject} onClose={() => setEditingProject(null)} />}
+      {switchingProviderProject && (
+        <ProviderSwitchModal
+          project={switchingProviderProject}
+          onClose={() => setSwitchingProviderProject(null)}
+        />
+      )}
       <ConfirmDialog
         open={!!confirmDialog}
         title={confirmDialog?.title ?? ""}
