@@ -6,6 +6,7 @@ import type { TreeNode as TNode } from "../../lib/types";
 import type { SessionStatus } from "../../stores/terminalStore";
 import { useTreeActions } from "./TreeContext";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { useProjectStore } from "../../stores/projectStore";
 import { Folder, Terminal, Play, ChevronRight, AlertTriangle } from "../icons";
 
 const STATUS_COLORS: Record<SessionStatus, string> = {
@@ -65,6 +66,9 @@ interface TreeNodeItemProps {
 function TreeNodeItemImpl({ node, depth, density, focusedNodeKey, onFocusNode }: TreeNodeItemProps) {
   const actions = useTreeActions();
   const showProjectTreeBadges = useSettingsStore((s) => s.showProjectTreeBadges);
+  const providerBadge = useProjectStore((s) =>
+    node.type === "project" ? s.providerBadges[node.project.id] : undefined
+  );
   const itemId = node.type === "project" ? node.project.id : node.group.id;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: itemId });
   const sortableStyle = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 };
@@ -127,6 +131,22 @@ function TreeNodeItemImpl({ node, depth, density, focusedNodeKey, onFocusNode }:
                 data-cli-tool={p.cli_tool.trim().toLowerCase()}
               >
                 {p.cli_tool}
+              </span>
+            )}
+            {showProjectTreeBadges && providerBadge && (
+              <span
+                className="ui-tree-meta-chip ui-tree-provider-chip inline-flex max-w-28 shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-tight"
+                title={`项目级供应商：${providerBadge.providerName ?? "自定义"}`}
+                aria-label={`项目级供应商：${providerBadge.providerName ?? "自定义"}`}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 16 16" fill="none" className="shrink-0" aria-hidden="true">
+                  <circle cx="8" cy="3" r="1.2" fill="currentColor" />
+                  <circle cx="4" cy="11" r="1.2" fill="currentColor" />
+                  <circle cx="12" cy="11" r="1.2" fill="currentColor" />
+                  <path d="M8 4.2V7.2 M8 7.2L4 9.8 M8 7.2L12 9.8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                  <circle cx="13.5" cy="3" r="1.2" fill="#ff8a3d" />
+                </svg>
+                <span className="min-w-0 truncate">{providerBadge.providerName ?? "自定义"}</span>
               </span>
             )}
             {showProjectTreeBadges && pathInvalid && (

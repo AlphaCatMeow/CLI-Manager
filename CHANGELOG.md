@@ -1,5 +1,17 @@
 # Changelog
 
+## [V1.0.3] - 2026-06-12
+
+### cc-switch 供应商集成
+
+- 设置新增「供应商」页：只读解析 cc-switch 数据库（默认 `~/.cc-switch/cc-switch.db`，可手动选择 .db 文件），按 app_type 分类展示供应商；密钥在 Rust 侧脱敏，明文 token 不进入 WebView。
+- 供应商页采用主从布局：左侧供应商列表，右侧详情面板（BASE_URL、模型、备注、环境变量），默认选中第一个，宽屏不再大片留白。
+- claude 项目右键菜单新增「切换供应商」：将所选供应商的 env 写入项目 `.claude/settings.json`，先清理 env 中所有 `ANTHROPIC_` 前缀的遗留 key 再全量写入；用户自有的非 `ANTHROPIC_` 变量与 hooks/permissions 等顶层字段原样保留；写盘走临时文件 + rename 原子替换，损坏 JSON 时拒绝写入并报错。
+- 切换弹层支持「跟随全局供应商」：一键删除项目级 env 配置恢复跟随全局；env 删空时连同 `settings.json` 文件一并删除（保留 `.claude/` 目录）。
+- 切换弹层显示当前生效状态：无项目级覆盖时标记跟随全局并显示全局当前供应商名；探测到 `settings.local.json` 配置了 `ANTHROPIC_*`（优先级更高会覆盖切换结果）时显示警告。
+- 项目树为有项目级供应商覆盖的 claude 项目显示独立徽标（网络拓扑图标 + 供应商名），样式区别于 claude/codex/gemini 的 CLI 工具徽章，尊重「项目树徽标」开关；切换/恢复后即时刷新。
+- 切换弹层列表改用细滚动条样式，消除右侧留白。
+
 ## [V1.0.2] - 2026-06-10
 
 ### 设置体验

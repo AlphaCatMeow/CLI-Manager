@@ -314,6 +314,8 @@ pub fn run() {
             commands::ccswitch::ccswitch_list_providers,
             commands::ccswitch::ccswitch_get_project_provider,
             commands::ccswitch::ccswitch_apply_provider,
+            commands::ccswitch::ccswitch_reset_project_provider,
+            commands::ccswitch::ccswitch_probe_projects,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

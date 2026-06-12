@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { getDb, batchUpdateSortOrder } from "../lib/db";
+import { useSettingsStore } from "./settingsStore";
+import { logWarn } from "../lib/logger";
 import type {
   Project, CreateProjectInput, UpdateProjectInput,
   Group, CreateGroupInput, TreeNode,
@@ -8,16 +10,30 @@ import type {
 
 let inflightFetchAll: Promise<void> | null = null;
 
+interface CcSwitchProjectBadge {
+  path: string;
+  hasOverride: boolean;
+  providerName: string | null;
+}
+
+interface ProviderBadge {
+  /** 匹配到的 cc-switch 供应商名；null 表示有覆盖但未匹配到（自定义配置） */
+  providerName: string | null;
+}
+
 interface ProjectStore {
   projects: Project[];
   groups: Group[];
   tree: TreeNode[];
   searchQuery: string;
   projectHealth: Record<string, boolean>;
+  /** 仅含存在项目级供应商覆盖的 claude 项目，key 为 project.id */
+  providerBadges: Record<string, ProviderBadge>;
   setSearchQuery: (q: string) => void;
   fetchAll: () => Promise<void>;
   fetchProjects: () => Promise<void>;
   fetchGroups: () => Promise<void>;
+  refreshProviderBadges: () => Promise<void>;
   createProject: (input: CreateProjectInput) => Promise<Project>;
   updateProject: (id: string, input: UpdateProjectInput) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
@@ -102,6 +118,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   tree: [],
   searchQuery: "",
   projectHealth: {},
+  providerBadges: {},
 
   setSearchQuery: (q) => {
     set({ searchQuery: q });
@@ -132,11 +149,42 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
         const tree = buildTree(groups, projects, get().searchQuery);
         set({ groups, projects, tree, projectHealth });
+        // 供应商徽标刷新不阻塞项目树加载，失败也静默
+        void get().refreshProviderBadges();
       } finally {
         inflightFetchAll = null;
       }
     })();
     return inflightFetchAll;
+  },
+
+  refreshProviderBadges: async () => {
+    const claudeProjects = get().projects.filter((p) =>
+      p.cli_tool.toLowerCase().includes("claude")
+    );
+    if (claudeProjects.length === 0) {
+      set({ providerBadges: {} });
+      return;
+    }
+    try {
+      const badges = await invoke<CcSwitchProjectBadge[]>("ccswitch_probe_projects", {
+        projectPaths: claudeProjects.map((p) => p.path),
+        dbPath: useSettingsStore.getState().ccSwitchDbPath ?? undefined,
+      });
+      const byPath = new Map(badges.map((b) => [b.path, b]));
+      const providerBadges: Record<string, ProviderBadge> = {};
+      for (const p of claudeProjects) {
+        const badge = byPath.get(p.path);
+        if (badge?.hasOverride) {
+          providerBadges[p.id] = { providerName: badge.providerName };
+        }
+      }
+      set({ providerBadges });
+    } catch (err) {
+      // db 不存在等任何失败：静默清空徽标，绝不打扰用户
+      logWarn("ccswitch probe projects failed", err);
+      set({ providerBadges: {} });
+    }
   },
 
   fetchProjects: async () => {

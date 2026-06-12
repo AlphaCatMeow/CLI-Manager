@@ -8,6 +8,7 @@ import {
   Box,
   Button,
   Card,
+  Divider,
   Group,
   Loader,
   SegmentedControl,
@@ -71,44 +72,84 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ProviderCard({ provider }: { provider: CcSwitchProvider }) {
-  const [envExpanded, setEnvExpanded] = useState(false);
-  const envEntries = Object.entries(provider.maskedEnv);
-  const websiteUrl = provider.websiteUrl;
-
+function ProviderListItem({
+  provider,
+  isSelected,
+  onClick,
+}: {
+  provider: CcSwitchProvider;
+  isSelected: boolean;
+  onClick: () => void;
+}) {
   return (
-    <Card className="border border-border bg-surface-container-low" p="sm" radius="lg">
-      <Stack gap="xs">
-        <Group gap="xs" wrap="nowrap" className="min-w-0">
-          <Text size="sm" fw={600} c="var(--on-surface)" truncate className="min-w-0" title={provider.name}>
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center gap-2 rounded-lg border px-3 py-2.5 text-left transition-colors ${
+        isSelected
+          ? "border-accent/40 bg-accent/10"
+          : "border-border bg-bg-tertiary hover:opacity-80"
+      }`}
+    >
+      <span className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="flex items-center gap-1.5">
+          <span className="truncate text-sm font-medium text-text-primary" title={provider.name}>
             {provider.name}
-          </Text>
+          </span>
           {provider.isCurrent && (
-            <Badge variant="light" color="green" radius="xl" className="shrink-0">
+            <Badge variant="light" color="green" radius="xl" size="xs" className="shrink-0">
               当前
             </Badge>
           )}
           {provider.category && (
-            <Badge variant="light" color="gray" radius="xl" className="shrink-0">
+            <Badge variant="light" color="gray" radius="xl" size="xs" className="shrink-0">
               {provider.category}
             </Badge>
           )}
-          {provider.apiFormat && (
-            <Badge variant="light" color="blue" radius="xl" className="shrink-0">
-              {provider.apiFormat}
-            </Badge>
-          )}
-          {provider.configParseError && (
-            <Badge variant="light" color="red" radius="xl" className="shrink-0">
-              配置解析失败
-            </Badge>
-          )}
-          <Box className="flex-1" />
+        </span>
+      </span>
+    </button>
+  );
+}
+
+function ProviderDetailPanel({ provider }: { provider: CcSwitchProvider }) {
+  const envEntries = Object.entries(provider.maskedEnv);
+  const websiteUrl = provider.websiteUrl;
+
+  return (
+    <Card className="border border-border bg-surface-container-low" p="md" radius="lg">
+      <Stack gap="md">
+        <Box>
+          <Group gap="xs" wrap="wrap">
+            <Text size="lg" fw={600} c="var(--on-surface)">
+              {provider.name}
+            </Text>
+            {provider.isCurrent && (
+              <Badge variant="light" color="green" radius="xl">
+                全局当前
+              </Badge>
+            )}
+            {provider.category && (
+              <Badge variant="light" color="gray" radius="xl">
+                {provider.category}
+              </Badge>
+            )}
+            {provider.apiFormat && (
+              <Badge variant="light" color="blue" radius="xl">
+                {provider.apiFormat}
+              </Badge>
+            )}
+            {provider.configParseError && (
+              <Badge variant="light" color="red" radius="xl">
+                配置解析失败
+              </Badge>
+            )}
+          </Group>
           {websiteUrl && (
             <Button
-              size="compact-xs"
+              size="compact-sm"
               variant="subtle"
-              className="shrink-0"
+              mt="xs"
               onClick={() => {
                 void openUrl(websiteUrl).catch((err) => {
                   toast.error("无法打开链接", { description: String(err) });
@@ -118,34 +159,48 @@ function ProviderCard({ provider }: { provider: CcSwitchProvider }) {
               官网
             </Button>
           )}
-        </Group>
+        </Box>
 
-        {provider.baseUrl && <InfoRow label="BASE_URL" value={provider.baseUrl} />}
-        {provider.model && <InfoRow label="模型" value={provider.model} />}
-        {provider.notes && (
-          <Text size="xs" c="var(--text-muted)" className="break-all">
-            {provider.notes}
-          </Text>
-        )}
+        <Divider />
+
+        <Stack gap="xs">
+          {provider.baseUrl && <InfoRow label="BASE_URL" value={provider.baseUrl} />}
+          {provider.model && <InfoRow label="模型" value={provider.model} />}
+          {provider.notes && (
+            <Box>
+              <Text size="xs" c="var(--text-muted)" mb={4}>
+                备注
+              </Text>
+              <Text size="xs" c="var(--on-surface)" className="break-all">
+                {provider.notes}
+              </Text>
+            </Box>
+          )}
+        </Stack>
 
         {envEntries.length > 0 && (
-          <Box>
-            <Button
-              size="compact-xs"
-              variant="subtle"
-              color="gray"
-              onClick={() => setEnvExpanded((prev) => !prev)}
-            >
-              {envExpanded ? "收起环境变量" : `环境变量 (${envEntries.length})`}
-            </Button>
-            {envExpanded && (
-              <Stack gap={4} mt={6} className="rounded-md bg-surface-container-lowest/70 px-3 py-2">
+          <>
+            <Divider />
+            <Box>
+              <Text size="xs" c="var(--text-muted)" mb="xs">
+                环境变量 ({envEntries.length})
+              </Text>
+              <Stack gap={4} className="rounded-md bg-surface-container-lowest/70 px-3 py-2">
                 {envEntries.map(([key, value]) => (
-                  <InfoRow key={key} label="" value={`${key}=${value}`} />
+                  <Text
+                    key={key}
+                    component="code"
+                    size="xs"
+                    ff="var(--font-ui-mono)"
+                    c="var(--on-surface)"
+                    className="break-all leading-5"
+                  >
+                    {key}={value}
+                  </Text>
                 ))}
               </Stack>
-            )}
-          </Box>
+            </Box>
+          </>
         )}
       </Stack>
     </Card>
@@ -159,6 +214,7 @@ export function ProviderSettingsPage({ searchValue }: { searchValue: string }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [appTypeFilter, setAppTypeFilter] = useState("claude");
+  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
 
   const loadProviders = useCallback(async () => {
     setLoading(true);
@@ -215,7 +271,6 @@ export function ProviderSettingsPage({ searchValue }: { searchValue: string }) {
     }));
   }, [data]);
 
-  // 数据加载后若当前筛选项不存在（例如 db 中没有 claude），回退到第一个可用类型
   useEffect(() => {
     if (appTypeOptions.length === 0) return;
     if (!appTypeOptions.some((option) => option.value === appTypeFilter)) {
@@ -234,8 +289,18 @@ export function ProviderSettingsPage({ searchValue }: { searchValue: string }) {
     });
   }, [data, appTypeFilter, searchValue]);
 
+  useEffect(() => {
+    if (visibleProviders.length === 0) {
+      setSelectedProviderId(null);
+    } else if (!selectedProviderId || !visibleProviders.some((p) => p.id === selectedProviderId)) {
+      setSelectedProviderId(visibleProviders[0].id);
+    }
+  }, [visibleProviders, selectedProviderId]);
+
+  const selectedProvider = visibleProviders.find((p) => p.id === selectedProviderId) ?? null;
+
   return (
-    <Stack gap="md" maw={860}>
+    <Stack gap="md" className="flex-1">
       <Card className="border border-border bg-surface-container-low" p="sm" radius="lg">
         <Stack gap="xs">
           <Group justify="space-between" align="center" gap="md" wrap="nowrap">
@@ -296,11 +361,29 @@ export function ProviderSettingsPage({ searchValue }: { searchValue: string }) {
         </Text>
       )}
 
-      <Stack gap="sm">
-        {visibleProviders.map((provider) => (
-          <ProviderCard key={`${provider.appType}-${provider.id}`} provider={provider} />
-        ))}
-      </Stack>
+      {data && visibleProviders.length > 0 && (
+        <Box className="flex min-h-0 flex-1 gap-4">
+          <Box className="w-[360px] shrink-0 space-y-1.5 overflow-y-auto">
+            {visibleProviders.map((provider) => (
+              <ProviderListItem
+                key={`${provider.appType}-${provider.id}`}
+                provider={provider}
+                isSelected={provider.id === selectedProviderId}
+                onClick={() => setSelectedProviderId(provider.id)}
+              />
+            ))}
+          </Box>
+          <Box className="min-w-0 flex-1 overflow-y-auto">
+            {selectedProvider ? (
+              <ProviderDetailPanel provider={selectedProvider} />
+            ) : (
+              <Text size="sm" c="var(--text-muted)" py="md">
+                请选择一个供应商
+              </Text>
+            )}
+          </Box>
+        </Box>
+      )}
     </Stack>
   );
 }

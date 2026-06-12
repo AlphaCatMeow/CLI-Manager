@@ -90,7 +90,9 @@ pub async fn ccswitch_get_project_provider(
     app: tauri::AppHandle,
     project_path: String,
     db_path: Option<String>,
-) -> Result<CcSwitchProjectProvider, String>   // { matchedProviderId, hasSettingsFile, baseUrl }
+) -> Result<CcSwitchProjectProvider, String>
+// { matchedProviderId, hasSettingsFile, baseUrl,
+//   localOverrideKeys }  // settings.local.json 中 ANTHROPIC_ 前缀 key 名（只 key 名不含值）
 
 #[tauri::command]
 pub async fn ccswitch_apply_provider(
@@ -99,6 +101,23 @@ pub async fn ccswitch_apply_provider(
     provider_id: String,
     db_path: Option<String>,
 ) -> Result<(), String>                        // unit：不向前端回传任何 env 内容
+
+#[tauri::command]
+pub async fn ccswitch_reset_project_provider(
+    project_path: String,                      // 无 db_path：恢复全局不读 cc-switch.db
+) -> Result<(), String>
+// 删除项目 settings.json 的整个 env 字段（用户拍板，含用户自有 key）；
+// 删后顶层为空对象 → 删除 settings.json 文件本身（.claude/ 目录保留）；
+// 文件不存在 = no-op 成功；损坏 JSON → settings_parse_failed 不动文件
+
+#[tauri::command]
+pub async fn ccswitch_probe_projects(
+    app: tauri::AppHandle,
+    project_paths: Vec<String>,
+    db_path: Option<String>,
+) -> Result<Vec<CcSwitchProjectBadge>, String>
+// 每项 { path, hasOverride, providerName }；单项路径缺失/损坏 JSON 容错为
+// hasOverride=false，绝不让整批失败；db 缺失 → db_not_found（前端静默清徽标）
 ```
 
 ### 3. Contracts

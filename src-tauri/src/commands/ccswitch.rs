@@ -200,6 +200,8 @@ pub struct CcSwitchProjectProvider {
     matched_provider_id: Option<String>,
     has_settings_file: bool,
     base_url: Option<String>,
+    /// settings.local.json env 中 ANTHROPIC_ 前缀的 key 名（只含 key 名，不含值）。
+    local_override_keys: Vec<String>,
 }
 
 fn env_object(value: &Value) -> Option<&Map<String, Value>> {
@@ -208,6 +210,22 @@ fn env_object(value: &Value) -> Option<&Map<String, Value>> {
 
 fn env_text(env: &Map<String, Value>, key: &str) -> Option<String> {
     env.get(key).map(env_value_text)
+}
+
+/// 纯函数：从 settings.local.json 文本提取 env 中 `ANTHROPIC_` 前缀的 key 名。
+/// 只返回 key 名（不含值，避免泄密）；损坏 JSON / 顶层非对象 / 无 env → 空数组。
+pub(crate) fn anthropic_env_keys(raw: &str) -> Vec<String> {
+    let parsed: Option<Value> = serde_json::from_str(raw).ok();
+    parsed
+        .as_ref()
+        .and_then(env_object)
+        .map(|env| {
+            env.keys()
+                .filter(|key| key.starts_with("ANTHROPIC_"))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 项目 settings.json 的 env 与 provider env 匹配规则：
@@ -293,6 +311,13 @@ pub async fn ccswitch_get_project_provider(
         .unwrap_or_default();
     let base_url = env_text(&project_env, "ANTHROPIC_BASE_URL");
 
+    // settings.local.json 优先级高于 settings.json，提取其中 ANTHROPIC_ key 名用于前端冲突提示。
+    // 文件不存在/损坏 → 空数组，容错不报错。
+    let local_settings_path = project_dir.join(".claude").join("settings.local.json");
+    let local_override_keys = fs::read_to_string(&local_settings_path)
+        .map(|raw| anthropic_env_keys(&raw))
+        .unwrap_or_default();
+
     let mut matched_provider_id = None;
     if !project_env.is_empty() {
         let path = resolve_db_path(&app, db_path)?;
@@ -325,6 +350,7 @@ pub async fn ccswitch_get_project_provider(
         matched_provider_id,
         has_settings_file,
         base_url,
+        local_override_keys,
     })
 }
 
@@ -372,16 +398,150 @@ pub async fn ccswitch_apply_provider(
         None
     };
     let next_text = merge_settings_text(existing.as_deref(), provider_env)?;
+    atomic_write_settings(&claude_dir, &settings_path, &next_text)
+}
 
-    // 原子写：同目录临时文件 + rename 覆盖，避免写一半留下损坏文件。
-    fs::create_dir_all(&claude_dir).map_err(|err| format!("settings_write_failed: {err}"))?;
+/// 原子写：同目录临时文件 + rename 覆盖，避免写一半留下损坏文件。
+fn atomic_write_settings(
+    claude_dir: &Path,
+    settings_path: &Path,
+    text: &str,
+) -> Result<(), String> {
+    fs::create_dir_all(claude_dir).map_err(|err| format!("settings_write_failed: {err}"))?;
     let tmp_path = claude_dir.join("settings.json.tmp");
-    fs::write(&tmp_path, &next_text).map_err(|err| format!("settings_write_failed: {err}"))?;
-    if let Err(err) = fs::rename(&tmp_path, &settings_path) {
+    fs::write(&tmp_path, text).map_err(|err| format!("settings_write_failed: {err}"))?;
+    if let Err(err) = fs::rename(&tmp_path, settings_path) {
         let _ = fs::remove_file(&tmp_path);
         return Err(format!("settings_write_failed: {err}"));
     }
     Ok(())
+}
+
+// ---------- Phase 3：恢复全局 + 项目树徽标 ----------
+
+/// 纯函数：删除 settings.json 文本中顶层 `env` 字段（整段删除）。
+/// 返回 `Ok(None)` 表示删除后顶层为空对象，调用方应删除文件本身；
+/// `Ok(Some(text))` 为应原子写回的新文本。
+/// 损坏 JSON / 顶层非对象 → `settings_parse_failed`。
+pub(crate) fn strip_env_section(existing: &str) -> Result<Option<String>, String> {
+    let mut settings: Value =
+        serde_json::from_str(existing).map_err(|_| "settings_parse_failed".to_string())?;
+    let settings_obj = settings
+        .as_object_mut()
+        .ok_or_else(|| "settings_parse_failed".to_string())?;
+    settings_obj.remove("env");
+    if settings_obj.is_empty() {
+        return Ok(None);
+    }
+    let mut text = serde_json::to_string_pretty(&settings)
+        .map_err(|err| format!("settings_write_failed: {err}"))?;
+    text.push('\n');
+    Ok(Some(text))
+}
+
+/// 恢复全局的文件操作部分（project_dir 已校验存在）：
+/// settings.json 不存在 → no-op 成功；删 env 后为空 `{}` → 删除文件（`.claude/` 目录保留）。
+fn reset_settings_file(project_dir: &Path) -> Result<(), String> {
+    let claude_dir = project_dir.join(".claude");
+    let settings_path = claude_dir.join("settings.json");
+    if !settings_path.is_file() {
+        return Ok(());
+    }
+    let existing = fs::read_to_string(&settings_path)
+        .map_err(|err| format!("settings_read_failed: {err}"))?;
+    match strip_env_section(&existing)? {
+        None => fs::remove_file(&settings_path)
+            .map_err(|err| format!("settings_write_failed: {err}")),
+        Some(next_text) => atomic_write_settings(&claude_dir, &settings_path, &next_text),
+    }
+}
+
+#[tauri::command]
+pub async fn ccswitch_reset_project_provider(project_path: String) -> Result<(), String> {
+    let project_dir = PathBuf::from(project_path.trim());
+    if !project_dir.is_dir() {
+        return Err("project_not_found".to_string());
+    }
+    reset_settings_file(&project_dir)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CcSwitchProjectBadge {
+    path: String,
+    has_override: bool,
+    provider_name: Option<String>,
+}
+
+/// 纯函数：探测单个项目 settings.json 文本的供应商覆盖状态。
+/// 文本缺失/损坏/env 无 ANTHROPIC_BASE_URL → (false, None)，单项容错不让整批失败；
+/// 有覆盖但匹配不到供应商 → (true, None)（前端显示"自定义"）。
+pub(crate) fn probe_settings_text(
+    raw: Option<&str>,
+    providers: &[(String, Map<String, Value>)],
+) -> (bool, Option<String>) {
+    let Some(raw) = raw else {
+        return (false, None);
+    };
+    let parsed: Option<Value> = serde_json::from_str(raw).ok();
+    let Some(project_env) = parsed.as_ref().and_then(env_object) else {
+        return (false, None);
+    };
+    if env_text(project_env, "ANTHROPIC_BASE_URL").is_none() {
+        return (false, None);
+    }
+    let provider_name = providers
+        .iter()
+        .find(|(_, provider_env)| provider_matches_project_env(project_env, provider_env))
+        .map(|(name, _)| name.clone());
+    (true, provider_name)
+}
+
+#[tauri::command]
+pub async fn ccswitch_probe_projects(
+    app: tauri::AppHandle,
+    project_paths: Vec<String>,
+    db_path: Option<String>,
+) -> Result<Vec<CcSwitchProjectBadge>, String> {
+    let path = resolve_db_path(&app, db_path)?;
+    let mut conn = open_db_readonly(&path).await?;
+    let rows = sqlx::query(
+        "SELECT name, settings_config FROM providers \
+         WHERE app_type = 'claude' ORDER BY sort_index, name",
+    )
+    .fetch_all(&mut conn)
+    .await
+    .map_err(|err| format!("db_query_failed: {err}"))?;
+    let _ = conn.close().await;
+
+    let mut providers: Vec<(String, Map<String, Value>)> = Vec::new();
+    for row in &rows {
+        let map_err = |err: sqlx::Error| format!("db_query_failed: {err}");
+        let name: String = row.try_get("name").map_err(map_err)?;
+        let settings_config: String = row.try_get("settings_config").map_err(map_err)?;
+        let parsed: Option<Value> = serde_json::from_str(&settings_config).ok();
+        if let Some(provider_env) = parsed.as_ref().and_then(env_object) {
+            providers.push((name, provider_env.clone()));
+        }
+    }
+
+    let badges = project_paths
+        .into_iter()
+        .map(|project_path| {
+            let settings_path = PathBuf::from(project_path.trim())
+                .join(".claude")
+                .join("settings.json");
+            let raw = fs::read_to_string(&settings_path).ok();
+            let (has_override, provider_name) = probe_settings_text(raw.as_deref(), &providers);
+            CcSwitchProjectBadge {
+                path: project_path,
+                has_override,
+                provider_name,
+            }
+        })
+        .collect();
+
+    Ok(badges)
 }
 
 #[cfg(test)]
@@ -579,5 +739,107 @@ mod tests {
             r#"{"ANTHROPIC_BASE_URL": "https://a.com", "ANTHROPIC_API_KEY": "sk-2"}"#,
         );
         assert!(provider_matches_project_env(&by_api_key, &provider_with_api_key));
+    }
+
+    // ---------- Phase 3 ----------
+
+    #[test]
+    fn strip_env_section_removes_env_and_keeps_other_fields() {
+        let raw = r#"{
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://a.com",
+                "ANTHROPIC_AUTH_TOKEN": "sk-1",
+                "HTTP_PROXY": "http://127.0.0.1:7890"
+            },
+            "hooks": {"UserPromptSubmit": [{"matcher": "*"}]},
+            "permissions": {"allow": ["Bash"]}
+        }"#;
+        let text = strip_env_section(raw).unwrap().expect("should keep file");
+        let value: Value = serde_json::from_str(&text).unwrap();
+        // env 整段删除（含用户自有非 ANTHROPIC_ key）
+        assert!(value.get("env").is_none());
+        // 其余顶层字段原样保留
+        assert!(value.get("hooks").is_some());
+        assert!(value.get("permissions").is_some());
+    }
+
+    #[test]
+    fn strip_env_section_signals_file_deletion_when_empty() {
+        // 只剩 env → 删除后顶层为空 → None 表示应删除文件
+        let only_env = r#"{"env": {"ANTHROPIC_BASE_URL": "https://a.com"}}"#;
+        assert_eq!(strip_env_section(only_env), Ok(None));
+        // 本来就是空对象 → 同样应删除文件
+        assert_eq!(strip_env_section("{}"), Ok(None));
+    }
+
+    #[test]
+    fn strip_env_section_rejects_corrupted_json() {
+        assert_eq!(
+            strip_env_section("{ not json"),
+            Err("settings_parse_failed".to_string())
+        );
+        // 合法 JSON 但顶层非对象，同样视为解析失败
+        assert_eq!(
+            strip_env_section("[1, 2]"),
+            Err("settings_parse_failed".to_string())
+        );
+    }
+
+    #[test]
+    fn reset_settings_file_is_noop_when_file_missing() {
+        let dir = std::env::temp_dir().join(format!(
+            "ccswitch-reset-noop-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        // settings.json 不存在（连 .claude 都没有）→ no-op 成功
+        assert_eq!(reset_settings_file(&dir), Ok(()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn anthropic_env_keys_extracts_only_prefixed_key_names() {
+        let raw = r#"{
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://a.com",
+                "ANTHROPIC_AUTH_TOKEN": "sk-secret",
+                "HTTP_PROXY": "http://127.0.0.1:7890"
+            }
+        }"#;
+        let keys = anthropic_env_keys(raw);
+        assert!(keys.contains(&"ANTHROPIC_BASE_URL".to_string()));
+        assert!(keys.contains(&"ANTHROPIC_AUTH_TOKEN".to_string()));
+        assert!(!keys.contains(&"HTTP_PROXY".to_string()));
+        // 只返回 key 名，不含任何值
+        assert!(!keys.iter().any(|k| k.contains("sk-secret")));
+
+        // 损坏 JSON / 无 env → 空数组容错
+        assert!(anthropic_env_keys("{ not json").is_empty());
+        assert!(anthropic_env_keys(r#"{"hooks": {}}"#).is_empty());
+    }
+
+    #[test]
+    fn probe_settings_text_tolerates_missing_and_corrupted() {
+        let providers = vec![(
+            "ProviderA".to_string(),
+            obj(r#"{"ANTHROPIC_BASE_URL": "https://a.com", "ANTHROPIC_AUTH_TOKEN": "sk-1"}"#),
+        )];
+
+        // 文件缺失 / 损坏 JSON / 无 env → hasOverride=false，不让整批失败
+        assert_eq!(probe_settings_text(None, &providers), (false, None));
+        assert_eq!(probe_settings_text(Some("{ not json"), &providers), (false, None));
+        assert_eq!(probe_settings_text(Some(r#"{"hooks": {}}"#), &providers), (false, None));
+
+        // 匹配到供应商 → 返回名字
+        let matched = r#"{"env": {"ANTHROPIC_BASE_URL": "https://a.com", "ANTHROPIC_AUTH_TOKEN": "sk-1"}}"#;
+        assert_eq!(
+            probe_settings_text(Some(matched), &providers),
+            (true, Some("ProviderA".to_string()))
+        );
+
+        // 有覆盖但匹配不到 → (true, None)，前端显示"自定义"
+        let custom = r#"{"env": {"ANTHROPIC_BASE_URL": "https://other.com", "ANTHROPIC_AUTH_TOKEN": "sk-x"}}"#;
+        assert_eq!(probe_settings_text(Some(custom), &providers), (true, None));
     }
 }
