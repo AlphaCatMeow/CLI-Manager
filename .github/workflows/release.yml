@@ -48,6 +48,25 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/V}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Extract changelog
+        id: changelog
+        shell: bash
+        run: |
+          CHANGELOG=$(node .github/scripts/extract-changelog.js "${{ steps.version.outputs.version }}" || echo "")
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="详见 [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/master/CHANGELOG.md)"
+          fi
+          echo "content<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Build and Release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -82,7 +101,7 @@ jobs:
 
             ## 变更日志
 
-            详见 [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/master/CHANGELOG.md)
+            ${{ steps.changelog.outputs.content }}
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
