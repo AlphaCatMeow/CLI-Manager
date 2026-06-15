@@ -385,6 +385,7 @@ interface PaneTabBarProps {
   onSubmitEdit: (sessionId: string, title: string) => void;
   onCancelEdit: () => void;
   onNewTab: () => void;
+  onDuplicateSession: (session: TerminalSession) => void;
   onOpenSplitPicker: (sessionId: string, direction: TerminalPaneSplitDirection, anchor?: DOMRect) => void;
   onUnsplit: (sessionId: string) => void;
   onMoveToPane: (sessionId: string, paneId: string) => void;
@@ -411,6 +412,7 @@ function PaneTabBar({
   onSubmitEdit,
   onCancelEdit,
   onNewTab,
+  onDuplicateSession,
   onOpenSplitPicker,
   onUnsplit,
   onMoveToPane,
@@ -652,6 +654,7 @@ function PaneTabBar({
                   <ContextMenuItem onSelect={() => closePaneSessionsToLeft(session.id)}>关闭左侧终端</ContextMenuItem>
                   <ContextMenuItem onSelect={() => closePaneSessionsToRight(session.id)}>关闭右侧终端</ContextMenuItem>
                   <ContextMenuItem onSelect={onNewTab}>新建终端</ContextMenuItem>
+                  <ContextMenuItem onSelect={() => onDuplicateSession(session)}>复制</ContextMenuItem>
                   {terminalBackgroundEnabled && terminalBackgroundImagePath && (
                     hiddenBackgroundSessionIds.has(session.id) ? (
                       <ContextMenuItem onSelect={() => onShowBackground(session.id)}>显示背景图</ContextMenuItem>
@@ -778,6 +781,7 @@ interface PaneLeafViewProps {
   onSubmitEdit: (sessionId: string, title: string) => void;
   onCancelEdit: () => void;
   onNewTab: () => void;
+  onDuplicateSession: (session: TerminalSession) => void;
   onOpenSplitPicker: (sessionId: string, direction: TerminalPaneSplitDirection, anchor?: DOMRect) => void;
   onUnsplit: (sessionId: string) => void;
   onMoveToPane: (sessionId: string, paneId: string) => void;
@@ -812,6 +816,7 @@ function PaneLeafView({
   onSubmitEdit,
   onCancelEdit,
   onNewTab,
+  onDuplicateSession,
   onOpenSplitPicker,
   onUnsplit,
   onMoveToPane,
@@ -844,6 +849,7 @@ function PaneLeafView({
           onSubmitEdit={onSubmitEdit}
           onCancelEdit={onCancelEdit}
           onNewTab={onNewTab}
+          onDuplicateSession={onDuplicateSession}
           onOpenSplitPicker={onOpenSplitPicker}
           onUnsplit={onUnsplit}
           onMoveToPane={onMoveToPane}
@@ -1104,6 +1110,19 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
     setActiveWorkspaceTab("terminal");
   }, [useExternalTerminal, createSession]);
 
+  const handleDuplicateSession = useCallback((session: TerminalSession) => {
+    void createSession(
+      session.projectId,
+      session.cwd,
+      session.title,
+      session.startupCmd,
+      session.envVars ? { ...session.envVars } : undefined,
+      session.shell ?? undefined,
+    ).then(() => {
+      setActiveWorkspaceTab("terminal");
+    }).catch(() => {});
+  }, [createSession]);
+
   const handleActivateSession = useCallback((sessionId: string) => {
     setActiveWorkspaceTab("terminal");
     setActive(sessionId);
@@ -1333,6 +1352,7 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
       }}
       onCancelEdit={() => setEditingSessionId(null)}
       onNewTab={() => void handleNewTab()}
+      onDuplicateSession={handleDuplicateSession}
       onOpenSplitPicker={handleOpenSplitPicker}
       onUnsplit={(sessionId) => void unsplitTerminal(sessionId)}
       onMoveToPane={moveSessionToPane}
@@ -1353,6 +1373,7 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
     fontSize,
     handleActivateSession,
     handleNewTab,
+    handleDuplicateSession,
     handleOpenSplitPicker,
     hiddenBackgroundSessionIds,
     hideBackgroundForSession,
