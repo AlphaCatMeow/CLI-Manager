@@ -17,6 +17,7 @@ export {
   FileText,
   Folder,
   FolderOpen,
+  GitBranch,
   Image,
   Maximize2,
   Minimize2,

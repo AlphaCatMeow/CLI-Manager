@@ -41,7 +41,7 @@ interface SidebarProps {
   compactMode?: boolean;
 }
 
-const SIDEBAR_COLLAPSED_WIDTH = 60;
+const SIDEBAR_COLLAPSED_WIDTH = 64;
 const SIDEBAR_COLLAPSE_THRESHOLD = 150;
 const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_MAX_WIDTH = 500;
@@ -830,6 +830,7 @@ export function Sidebar({ onOpenSettings, onOpenStats, compactMode = false }: Si
               setInitialLoading(true);
               void loadProjects();
             }}
+            onExpandSidebar={expandSidebar}
           />
         </TreeContext.Provider>
       </div>

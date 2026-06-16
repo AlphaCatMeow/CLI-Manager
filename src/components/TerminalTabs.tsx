@@ -30,7 +30,7 @@ import { CommandTemplatePanel } from "./CommandTemplatePanel";
 import { CommandHistoryPanel } from "./CommandHistoryPanel";
 import { TerminalStatsPanel } from "./terminal/TerminalStatsPanel";
 import { openWindowsTerminal } from "../lib/externalTerminal";
-import { Terminal, Plus, ListClockIcon, X, Maximize2, Minimize2, ChevronDown, ChevronRight, BarChart3, FileText } from "./icons";
+import { Terminal, Plus, ListClockIcon, X, Maximize2, Minimize2, ChevronDown, ChevronRight, BarChart3, GitBranch } from "./icons";
 import { EmptyState } from "./ui/EmptyState";
 import { useHistoryStore } from "../stores/historyStore";
 import type { HistorySourceFilter, Project, TerminalSession } from "../lib/types";
@@ -1399,7 +1399,7 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
           aria-label={gitChangesPanelOpen ? "关闭 Git 变更面板" : "打开 Git 变更面板"}
           aria-pressed={gitChangesPanelOpen}
         >
-          <FileText size={13} strokeWidth={1.8} />
+          <GitBranch size={13} strokeWidth={1.8} />
           {showToolbarText && <span>Git 变更</span>}
         </button>
       ),
@@ -1425,7 +1425,6 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
     const visibleButtons = terminalToolbarOrder
       .filter((key) => {
         if (key === "new") return true;
-        if (key === "gitChanges") return true;
         if (key === "fullscreen" && !onToggleFullscreen) return false;
         return terminalToolbarVisibility[key as keyof typeof terminalToolbarVisibility] === true;
       })

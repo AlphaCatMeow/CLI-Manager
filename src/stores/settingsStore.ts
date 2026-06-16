@@ -65,6 +65,7 @@ export interface TerminalToolbarVisibilitySettings {
   fullscreen: boolean;
   sessionHistory: boolean;
   stats: boolean;
+  gitChanges: boolean;
   showText: boolean;
 }
 
@@ -210,6 +211,7 @@ const DEFAULTS: Settings = {
     fullscreen: true,
     sessionHistory: true,
     stats: true,
+    gitChanges: true,
     showText: false,
   },
   sidebarToolbarVisibility: {
@@ -309,6 +311,7 @@ export function migrateTerminalToolbarVisibility(value: unknown): TerminalToolba
     fullscreen: typeof raw.fullscreen === "boolean" ? raw.fullscreen : defaults.fullscreen,
     sessionHistory: typeof raw.sessionHistory === "boolean" ? raw.sessionHistory : defaults.sessionHistory,
     stats: typeof raw.stats === "boolean" ? raw.stats : defaults.stats,
+    gitChanges: typeof raw.gitChanges === "boolean" ? raw.gitChanges : defaults.gitChanges,
     showText: typeof raw.showText === "boolean" ? raw.showText : defaults.showText,
   };
 }

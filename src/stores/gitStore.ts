@@ -4,6 +4,14 @@ import type { GitFileChange, GitTreeNode } from "../lib/types";
 
 type GitStatusFilter = "all" | "M" | "A" | "D" | "U";
 
+// 判断文件是否匹配当前筛选。
+// 「新增」(A) 视为一组：已暂存新增(A)、未跟踪(U/??) 都算新增，与面板的 addedCount 定义保持一致。
+function matchFilter(status: string, filter: GitStatusFilter): boolean {
+  if (filter === "all") return true;
+  if (filter === "A") return status === "A" || status === "U" || status === "??";
+  return status === filter;
+}
+
 interface GitStore {
   changes: GitFileChange[];
   tree: GitTreeNode[];
@@ -84,9 +92,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
 
       // 应用筛选
       const { statusFilter } = get();
-      const filtered = statusFilter === "all"
-        ? changes
-        : changes.filter(c => c.status === statusFilter || (statusFilter === "U" && c.status === "??"));
+      const filtered = changes.filter(c => matchFilter(c.status, statusFilter));
 
       const tree = buildTree(filtered);
       console.log(`[GitStore] 构建树结构完成，根节点数: ${tree.length}`);
@@ -112,9 +118,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
 
   setStatusFilter: (filter: GitStatusFilter) => {
     set((state) => {
-      const filtered = filter === "all"
-        ? state.changes
-        : state.changes.filter(c => c.status === filter || (filter === "U" && c.status === "??"));
+      const filtered = state.changes.filter(c => matchFilter(c.status, filter));
       const tree = buildTree(filtered);
       return { statusFilter: filter, tree };
     });

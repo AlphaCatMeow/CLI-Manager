@@ -181,7 +181,8 @@ const TERMINAL_TOOLBAR_OPTIONS: { key: TerminalToolbarOptionKey; label: string }
   { key: "commandHistory", label: "历史命令" },
   { key: "fullscreen", label: "全屏" },
   { key: "sessionHistory", label: "历史会话" },
-  { key: "stats", label: "统计" },
+  { key: "stats", label: "实时统计" },
+  { key: "gitChanges", label: "Git 变更" },
 ];
 
 type TerminalToolbarOptionKey = Exclude<keyof TerminalToolbarVisibilitySettings, "showText">;

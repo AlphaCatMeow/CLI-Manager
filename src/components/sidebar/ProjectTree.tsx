@@ -1,13 +1,14 @@
 import { DndContext, DragOverlay, PointerSensor, closestCenter, useSensor, useSensors, type CollisionDetection, type DragStartEvent } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { TreeNode as TNode } from "../../lib/types";
+import type { SessionStatus } from "../../stores/terminalStore";
 import { SidebarSkeleton } from "../ui/Skeleton";
 import { EmptyState } from "../ui/EmptyState";
+import { Popover, PopoverAnchor, PopoverContent } from "../ui/popover";
 import { Folder, Plus, Terminal } from "../icons";
 import { TreeNodeItem } from "./TreeNodeItem";
-import { useTreeActions } from "./TreeContext";
+import { useTreeActions, type TreeActions } from "./TreeContext";
 
 interface ProjectTreeProps {
   tree: TNode[];
@@ -20,14 +21,18 @@ interface ProjectTreeProps {
   onCancelRootGroup: () => void;
   onQuickAddProject: () => void;
   onRetry: () => void;
+  onExpandSidebar: () => void;
 }
 
-interface CompactItem {
-  key: string;
-  type: "group" | "project";
-  id: string;
-  label: string;
-  node: TNode;
+const STATUS_COLORS: Record<SessionStatus, string> = {
+  running: "#9ece6a",
+  exited: "#ff9e64",
+  error: "#f7768e",
+};
+
+function countProjects(node: TNode): number {
+  if (node.type === "project") return 1;
+  return node.children.reduce((sum, child) => sum + countProjects(child), 0);
 }
 
 interface VisibleTreeNode {
@@ -94,30 +99,6 @@ const treeCollisionDetection: CollisionDetection = (args) => {
   return [filtered[0]];
 };
 
-function flattenTree(nodes: TNode[], out: CompactItem[] = []): CompactItem[] {
-  for (const node of nodes) {
-    if (node.type === "group") {
-      out.push({
-        key: `g:${node.group.id}`,
-        type: "group",
-        id: node.group.id,
-        label: node.group.name,
-        node,
-      });
-      flattenTree(node.children, out);
-    } else {
-      out.push({
-        key: `p:${node.project.id}`,
-        type: "project",
-        id: node.project.id,
-        label: node.project.name,
-        node,
-      });
-    }
-  }
-  return out;
-}
-
 function flattenVisibleTree(
   nodes: TNode[],
   collapsedIds: Set<string>,
@@ -165,24 +146,16 @@ export function ProjectTree({
   onCancelRootGroup,
   onQuickAddProject,
   onRetry,
+  onExpandSidebar,
 }: ProjectTreeProps) {
   const actions = useTreeActions();
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   const [focusedNodeKey, setFocusedNodeKey] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const collapsedListRef = useRef<HTMLDivElement | null>(null);
   const visibleNodes = useMemo(
     () => flattenVisibleTree(tree, actions.collapsedIds),
     [actions.collapsedIds, tree]
   );
-  const compactItems = useMemo(() => flattenTree(tree), [tree]);
-  const collapsedRowVirtualizer = useVirtualizer({
-    count: compactItems.length,
-    getScrollElement: () => collapsedListRef.current,
-    estimateSize: () => (density === "compact" ? 32 : 36),
-    overscan: 8,
-    getItemKey: (index) => compactItems[index]?.key ?? index,
-  });
   const visibleNodeIndex = useMemo(() => {
     const map = new Map<string, number>();
     visibleNodes.forEach((node, idx) => map.set(node.key, idx));
@@ -332,73 +305,35 @@ export function ProjectTree({
   }
 
   if (collapsed) {
-    const collapsedButtonSize = density === "compact" ? "h-7 w-7" : "h-8 w-8";
-    const compactTextSize = density === "compact" ? "text-[11px]" : "text-xs";
+    const buttonSize = density === "compact" ? "h-7 w-7" : "h-8 w-8";
     return (
-      <div ref={collapsedListRef} className={`h-full overflow-y-auto ${density === "compact" ? "px-0.5 pb-1.5 pt-0.5" : "px-1 pb-2 pt-1"}`}>
-        {compactItems.length === 0 && (
+      <div className={`h-full overflow-y-auto ${density === "compact" ? "px-0.5 pb-1.5 pt-0.5" : "px-1 pb-2 pt-1"}`}>
+        {tree.length === 0 ? (
           <div className={`flex flex-col items-center text-text-muted ${density === "compact" ? "gap-1.5 py-2.5" : "gap-2 py-3"}`}>
             <Terminal size={20} strokeWidth={1.2} className="opacity-50" />
             <button
               onClick={onQuickAddProject}
-              className={`ui-flat-action ui-primary-action px-0 ${collapsedButtonSize}`}
+              className={`ui-flat-action ui-primary-action px-0 ${buttonSize}`}
               title="快速添加项目"
               aria-label="快速添加项目"
             >
               <Plus size={12} strokeWidth={2} />
             </button>
           </div>
-        )}
-        {compactItems.length > 0 && (
-          <div className="relative w-full" style={{ height: collapsedRowVirtualizer.getTotalSize() }}>
-            {collapsedRowVirtualizer.getVirtualItems().map((virtualRow) => {
-              const item = compactItems[virtualRow.index];
-              if (!item) return null;
-              return (
-                <div
-                  key={virtualRow.key}
-                  className="absolute left-0 top-0 w-full"
-                  style={{
-                    height: virtualRow.size,
-                    transform: `translateY(${virtualRow.start}px)`,
-                  }}
-                >
-                  {item.type === "group" ? (
-                    <button
-                      className={`ui-flat-action ui-tree-collapsed-item mx-auto my-0.5 px-0 text-primary ${collapsedButtonSize}`}
-                      title={item.label}
-                      aria-label={`目录 ${item.label}`}
-                      onContextMenu={(e) => {
-                        const groupNode = item.node.type === "group" ? item.node : null;
-                        if (groupNode) actions.onContextMenuGroup(e, groupNode.group.id, groupNode.group.name);
-                      }}
-                    >
-                      <Folder size={16} strokeWidth={1.5} />
-                    </button>
-                  ) : (
-                    (() => {
-                      const projectNode = item.node.type === "project" ? item.node : null;
-                      if (!projectNode) return null;
-                      const project = projectNode.project;
-                      const projectInitial = project.name.trim().charAt(0).toUpperCase() || "P";
-                      const selected = actions.selectedId === project.id || actions.selectedProjectIds.has(project.id);
-                      return (
-                        <button
-                          className={`ui-tree-collapsed-item mx-auto my-0.5 flex ${collapsedButtonSize} items-center justify-center rounded-xl font-semibold transition-colors ${compactTextSize}`}
-                          data-selected={selected ? "true" : "false"}
-                          title={project.name}
-                          aria-label={`打开项目 ${project.name}`}
-                          onClick={() => actions.onOpenProject(project)}
-                          onContextMenu={(e) => actions.onContextMenuProject(e, project)}
-                        >
-                          {projectInitial}
-                        </button>
-                      );
-                    })()
-                  )}
-                </div>
-              );
-            })}
+        ) : (
+          <div className="flex flex-col items-center gap-0.5">
+            {tree.map((node) =>
+              node.type === "group" ? (
+                <CollapsedGroupButton
+                  key={`g:${node.group.id}`}
+                  node={node}
+                  sizeClass={buttonSize}
+                  onExpandSidebar={onExpandSidebar}
+                />
+              ) : (
+                <CollapsedProjectButton key={`p:${node.project.id}`} node={node} sizeClass={buttonSize} />
+              )
+            )}
           </div>
         )}
       </div>
@@ -491,6 +426,164 @@ export function ProjectTree({
       )}
     </div>
   );
+}
+
+function CollapsedProjectButton({ node, sizeClass }: { node: TNode; sizeClass: string }) {
+  const actions = useTreeActions();
+  if (node.type !== "project") return null;
+  const p = node.project;
+  const status = actions.getProjectStatus(p.id);
+  const selected = actions.selectedId === p.id || actions.selectedProjectIds.has(p.id);
+  return (
+    <button
+      className={`ui-tree-collapsed-item my-0.5 flex ${sizeClass} items-center justify-center rounded-xl transition-colors`}
+      data-selected={selected ? "true" : "false"}
+      title={p.name}
+      aria-label={`打开项目 ${p.name}`}
+      onClick={() => actions.onOpenProject(p)}
+      onContextMenu={(e) => actions.onContextMenuProject(e, p)}
+    >
+      {status ? (
+        <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: STATUS_COLORS[status] }} />
+      ) : (
+        <Terminal size={15} strokeWidth={1.5} />
+      )}
+    </button>
+  );
+}
+
+function CollapsedGroupButton({
+  node,
+  sizeClass,
+  onExpandSidebar,
+}: {
+  node: TNode;
+  sizeClass: string;
+  onExpandSidebar: () => void;
+}) {
+  const actions = useTreeActions();
+  const [open, setOpen] = useState(false);
+  const closeTimer = useRef<number | null>(null);
+  const count = useMemo(() => countProjects(node), [node]);
+
+  const cancelClose = useCallback(() => {
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  }, []);
+  const openNow = useCallback(() => {
+    cancelClose();
+    setOpen(true);
+  }, [cancelClose]);
+  const scheduleClose = useCallback(() => {
+    cancelClose();
+    closeTimer.current = window.setTimeout(() => setOpen(false), 150);
+  }, [cancelClose]);
+  useEffect(() => {
+    return () => {
+      if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    };
+  }, []);
+
+  if (node.type !== "group") return null;
+  const g = node.group;
+
+  const handleClick = () => {
+    cancelClose();
+    setOpen(false);
+    if (actions.collapsedIds.has(g.id)) actions.toggleCollapsed(g.id);
+    onExpandSidebar();
+  };
+
+  return (
+    <Popover open={open} onOpenChange={(next) => { if (!next) setOpen(false); }}>
+      <PopoverAnchor asChild>
+        <button
+          className={`ui-flat-action ui-tree-collapsed-item relative my-0.5 px-0 text-primary ${sizeClass}`}
+          title={g.name}
+          aria-label={`目录 ${g.name}（${count} 个项目）`}
+          onMouseEnter={openNow}
+          onMouseLeave={scheduleClose}
+          onClick={handleClick}
+          onContextMenu={(e) => actions.onContextMenuGroup(e, g.id, g.name)}
+        >
+          <Folder size={16} strokeWidth={1.5} />
+          {count > 0 && <span className="ui-tree-collapsed-badge">{count > 99 ? "99+" : count}</span>}
+        </button>
+      </PopoverAnchor>
+      <PopoverContent
+        side="right"
+        align="start"
+        sideOffset={8}
+        className="ui-collapsed-flyout p-1.5"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+        onMouseEnter={openNow}
+        onMouseLeave={scheduleClose}
+      >
+        <GroupFlyout node={node} onPick={() => setOpen(false)} />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function GroupFlyout({ node, onPick }: { node: TNode; onPick: () => void }) {
+  const actions = useTreeActions();
+  if (node.type !== "group") return null;
+  return (
+    <div className="flex max-h-[60vh] min-w-[176px] max-w-[280px] flex-col overflow-y-auto">
+      <div className="truncate px-2 py-1 text-[11px] font-semibold text-on-surface-variant">{node.group.name}</div>
+      {node.children.length === 0 ? (
+        <div className="px-2 py-1 text-[11px] text-text-muted">空目录</div>
+      ) : (
+        renderFlyoutNodes(node.children, 0, actions, onPick)
+      )}
+    </div>
+  );
+}
+
+function renderFlyoutNodes(nodes: TNode[], depth: number, actions: TreeActions, onPick: () => void) {
+  return nodes.map((child) => {
+    const padLeft = 8 + depth * 12;
+    if (child.type === "group") {
+      return (
+        <div key={`g:${child.group.id}`}>
+          <div
+            className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-on-surface-variant"
+            style={{ paddingLeft: padLeft }}
+          >
+            <Folder size={13} strokeWidth={1.5} className="shrink-0" />
+            <span className="truncate">{child.group.name}</span>
+          </div>
+          {renderFlyoutNodes(child.children, depth + 1, actions, onPick)}
+        </div>
+      );
+    }
+    const p = child.project;
+    const status = actions.getProjectStatus(p.id);
+    return (
+      <button
+        key={`p:${p.id}`}
+        className="ui-collapsed-flyout-item flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-[12px] text-on-surface"
+        style={{ paddingLeft: padLeft }}
+        title={p.name}
+        onClick={() => {
+          actions.onOpenProject(p);
+          onPick();
+        }}
+        onContextMenu={(e) => actions.onContextMenuProject(e, p)}
+      >
+        <span className="ui-tree-leading-icon flex shrink-0 items-center">
+          {status ? (
+            <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: STATUS_COLORS[status] }} />
+          ) : (
+            <Terminal size={13} strokeWidth={1.5} />
+          )}
+        </span>
+        <span className="flex-1 truncate">{p.name}</span>
+      </button>
+    );
+  });
 }
 
 function findNodeById(nodes: TNode[], id: string): TNode | null {
