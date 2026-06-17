@@ -1,3 +1,4 @@
+use crate::commands::model_pricing::{find_cached_model_pricing, CachedModelPricingLookup};
 use log::debug;
 use memchr::memmem;
 use serde::Serialize;
@@ -3053,7 +3054,7 @@ fn calculate_usage_cost(model: Option<&str>, usage: UsageTokenScan) -> UsageStat
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct HistoryModelPricing {
     model_id: &'static str,
     input_per_million: f64,
@@ -3062,164 +3063,47 @@ struct HistoryModelPricing {
     cache_creation_per_million: f64,
 }
 
+// DEPRECATED: only used as seed/fallback; model_prices is the authoritative source after frontend cache push.
 const HISTORY_MODEL_PRICING: &[HistoryModelPricing] = &[
-    HistoryModelPricing {
-        model_id: "claude-opus-4-1",
-        input_per_million: 15.0,
-        output_per_million: 75.0,
-        cache_read_per_million: 1.5,
-        cache_creation_per_million: 18.75,
-    },
-    HistoryModelPricing {
-        model_id: "claude-opus-4",
-        input_per_million: 15.0,
-        output_per_million: 75.0,
-        cache_read_per_million: 1.5,
-        cache_creation_per_million: 18.75,
-    },
-    HistoryModelPricing {
-        model_id: "claude-sonnet-4-5",
-        input_per_million: 3.0,
-        output_per_million: 15.0,
-        cache_read_per_million: 0.3,
-        cache_creation_per_million: 3.75,
-    },
-    HistoryModelPricing {
-        model_id: "claude-sonnet-4",
-        input_per_million: 3.0,
-        output_per_million: 15.0,
-        cache_read_per_million: 0.3,
-        cache_creation_per_million: 3.75,
-    },
-    HistoryModelPricing {
-        model_id: "claude-haiku-4",
-        input_per_million: 0.8,
-        output_per_million: 4.0,
-        cache_read_per_million: 0.08,
-        cache_creation_per_million: 1.0,
-    },
-    HistoryModelPricing {
-        model_id: "claude-fable-5",
-        input_per_million: 15.0,
-        output_per_million: 75.0,
-        cache_read_per_million: 1.5,
-        cache_creation_per_million: 18.75,
-    },
-    HistoryModelPricing {
-        model_id: "claude-3-7-sonnet",
-        input_per_million: 3.0,
-        output_per_million: 15.0,
-        cache_read_per_million: 0.3,
-        cache_creation_per_million: 3.75,
-    },
-    HistoryModelPricing {
-        model_id: "claude-3-5-sonnet",
-        input_per_million: 3.0,
-        output_per_million: 15.0,
-        cache_read_per_million: 0.3,
-        cache_creation_per_million: 3.75,
-    },
-    HistoryModelPricing {
-        model_id: "claude-3-5-haiku",
-        input_per_million: 0.8,
-        output_per_million: 4.0,
-        cache_read_per_million: 0.08,
-        cache_creation_per_million: 1.0,
-    },
-    HistoryModelPricing {
-        model_id: "claude-3-opus",
-        input_per_million: 15.0,
-        output_per_million: 75.0,
-        cache_read_per_million: 1.5,
-        cache_creation_per_million: 18.75,
-    },
-    HistoryModelPricing {
-        model_id: "claude-3-sonnet",
-        input_per_million: 3.0,
-        output_per_million: 15.0,
-        cache_read_per_million: 0.3,
-        cache_creation_per_million: 3.75,
-    },
-    HistoryModelPricing {
-        model_id: "claude-3-haiku",
-        input_per_million: 0.25,
-        output_per_million: 1.25,
-        cache_read_per_million: 0.03,
-        cache_creation_per_million: 0.3,
-    },
-    HistoryModelPricing {
-        model_id: "gpt-5",
-        input_per_million: 1.25,
-        output_per_million: 10.0,
-        cache_read_per_million: 0.125,
-        cache_creation_per_million: 0.0,
-    },
-    HistoryModelPricing {
-        model_id: "gpt-5-mini",
-        input_per_million: 0.25,
-        output_per_million: 2.0,
-        cache_read_per_million: 0.025,
-        cache_creation_per_million: 0.0,
-    },
-    HistoryModelPricing {
-        model_id: "gpt-5-nano",
-        input_per_million: 0.05,
-        output_per_million: 0.4,
-        cache_read_per_million: 0.005,
-        cache_creation_per_million: 0.0,
-    },
-    HistoryModelPricing {
-        model_id: "gpt-4-1",
-        input_per_million: 2.0,
-        output_per_million: 8.0,
-        cache_read_per_million: 0.5,
-        cache_creation_per_million: 0.0,
-    },
-    HistoryModelPricing {
-        model_id: "gpt-4-1-mini",
-        input_per_million: 0.4,
-        output_per_million: 1.6,
-        cache_read_per_million: 0.1,
-        cache_creation_per_million: 0.0,
-    },
-    HistoryModelPricing {
-        model_id: "gpt-4o",
-        input_per_million: 2.5,
-        output_per_million: 10.0,
-        cache_read_per_million: 1.25,
-        cache_creation_per_million: 0.0,
-    },
-    HistoryModelPricing {
-        model_id: "gpt-4o-mini",
-        input_per_million: 0.15,
-        output_per_million: 0.6,
-        cache_read_per_million: 0.075,
-        cache_creation_per_million: 0.0,
-    },
-    HistoryModelPricing {
-        model_id: "o3",
-        input_per_million: 2.0,
-        output_per_million: 8.0,
-        cache_read_per_million: 0.5,
-        cache_creation_per_million: 0.0,
-    },
-    HistoryModelPricing {
-        model_id: "o3-mini",
-        input_per_million: 0.55,
-        output_per_million: 2.2,
-        cache_read_per_million: 0.55,
-        cache_creation_per_million: 0.0,
-    },
-    HistoryModelPricing {
-        model_id: "o4-mini",
-        input_per_million: 1.1,
-        output_per_million: 4.4,
-        cache_read_per_million: 0.275,
-        cache_creation_per_million: 0.0,
-    },
+    HistoryModelPricing { model_id: "claude-opus-4-1", input_per_million: 15.0, output_per_million: 75.0, cache_read_per_million: 1.5, cache_creation_per_million: 18.75 },
+    HistoryModelPricing { model_id: "claude-opus-4", input_per_million: 15.0, output_per_million: 75.0, cache_read_per_million: 1.5, cache_creation_per_million: 18.75 },
+    HistoryModelPricing { model_id: "claude-sonnet-4-5", input_per_million: 3.0, output_per_million: 15.0, cache_read_per_million: 0.3, cache_creation_per_million: 3.75 },
+    HistoryModelPricing { model_id: "claude-sonnet-4", input_per_million: 3.0, output_per_million: 15.0, cache_read_per_million: 0.3, cache_creation_per_million: 3.75 },
+    HistoryModelPricing { model_id: "claude-haiku-4", input_per_million: 0.8, output_per_million: 4.0, cache_read_per_million: 0.08, cache_creation_per_million: 1.0 },
+    HistoryModelPricing { model_id: "claude-fable-5", input_per_million: 15.0, output_per_million: 75.0, cache_read_per_million: 1.5, cache_creation_per_million: 18.75 },
+    HistoryModelPricing { model_id: "claude-3-7-sonnet", input_per_million: 3.0, output_per_million: 15.0, cache_read_per_million: 0.3, cache_creation_per_million: 3.75 },
+    HistoryModelPricing { model_id: "claude-3-5-sonnet", input_per_million: 3.0, output_per_million: 15.0, cache_read_per_million: 0.3, cache_creation_per_million: 3.75 },
+    HistoryModelPricing { model_id: "claude-3-5-haiku", input_per_million: 0.8, output_per_million: 4.0, cache_read_per_million: 0.08, cache_creation_per_million: 1.0 },
+    HistoryModelPricing { model_id: "claude-3-opus", input_per_million: 15.0, output_per_million: 75.0, cache_read_per_million: 1.5, cache_creation_per_million: 18.75 },
+    HistoryModelPricing { model_id: "claude-3-sonnet", input_per_million: 3.0, output_per_million: 15.0, cache_read_per_million: 0.3, cache_creation_per_million: 3.75 },
+    HistoryModelPricing { model_id: "claude-3-haiku", input_per_million: 0.25, output_per_million: 1.25, cache_read_per_million: 0.03, cache_creation_per_million: 0.3 },
+    HistoryModelPricing { model_id: "gpt-5", input_per_million: 1.25, output_per_million: 10.0, cache_read_per_million: 0.125, cache_creation_per_million: 0.0 },
+    HistoryModelPricing { model_id: "gpt-5-mini", input_per_million: 0.25, output_per_million: 2.0, cache_read_per_million: 0.025, cache_creation_per_million: 0.0 },
+    HistoryModelPricing { model_id: "gpt-5-nano", input_per_million: 0.05, output_per_million: 0.4, cache_read_per_million: 0.005, cache_creation_per_million: 0.0 },
+    HistoryModelPricing { model_id: "gpt-4-1", input_per_million: 2.0, output_per_million: 8.0, cache_read_per_million: 0.5, cache_creation_per_million: 0.0 },
+    HistoryModelPricing { model_id: "gpt-4-1-mini", input_per_million: 0.4, output_per_million: 1.6, cache_read_per_million: 0.1, cache_creation_per_million: 0.0 },
+    HistoryModelPricing { model_id: "gpt-4o", input_per_million: 2.5, output_per_million: 10.0, cache_read_per_million: 1.25, cache_creation_per_million: 0.0 },
+    HistoryModelPricing { model_id: "gpt-4o-mini", input_per_million: 0.15, output_per_million: 0.6, cache_read_per_million: 0.075, cache_creation_per_million: 0.0 },
+    HistoryModelPricing { model_id: "o3", input_per_million: 2.0, output_per_million: 8.0, cache_read_per_million: 0.5, cache_creation_per_million: 0.0 },
+    HistoryModelPricing { model_id: "o3-mini", input_per_million: 0.55, output_per_million: 2.2, cache_read_per_million: 0.55, cache_creation_per_million: 0.0 },
+    HistoryModelPricing { model_id: "o4-mini", input_per_million: 1.1, output_per_million: 4.4, cache_read_per_million: 0.275, cache_creation_per_million: 0.0 },
 ];
 
-fn find_history_model_pricing(model: &str) -> Option<&'static HistoryModelPricing> {
+fn find_history_model_pricing(model: &str) -> Option<HistoryModelPricing> {
+    match find_cached_model_pricing(model) {
+        CachedModelPricingLookup::Found(cached) => {
+            return Some(HistoryModelPricing {
+                model_id: "",
+                input_per_million: cached.input_per_million,
+                output_per_million: cached.output_per_million,
+                cache_read_per_million: cached.cache_read_per_million,
+                cache_creation_per_million: cached.cache_creation_per_million,
+            });
+        }
+        CachedModelPricingLookup::Missing => return None,
+        CachedModelPricingLookup::CacheUnavailable => {}
+    }
+
     let normalized = normalize_pricing_model_id(model)?;
     HISTORY_MODEL_PRICING
         .iter()
@@ -3236,6 +3120,7 @@ fn find_history_model_pricing(model: &str) -> Option<&'static HistoryModelPricin
                 })
                 .max_by_key(|pricing| pricing.model_id.len())
         })
+        .cloned()
 }
 
 fn normalize_pricing_model_id(model: &str) -> Option<String> {

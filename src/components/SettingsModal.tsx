@@ -10,9 +10,10 @@ import { TemplateSettingsPage } from "./settings/pages/TemplateSettingsPage";
 import { SyncSettingsPage } from "./settings/pages/SyncSettingsPage";
 import { HookSettingsPage } from "./settings/pages/HookSettingsPage";
 import { ProviderSettingsPage } from "./settings/pages/ProviderSettingsPage";
+import { ModelPricingSettingsPage } from "./settings/pages/ModelPricingSettingsPage";
 import { useSettingsStore } from "../stores/settingsStore";
 
-export type SettingsTab = "general" | "terminal-theme" | "shortcuts" | "templates" | "providers" | "sync" | "hooks";
+export type SettingsTab = "general" | "terminal-theme" | "shortcuts" | "templates" | "providers" | "model-pricing" | "sync" | "hooks";
 
 interface SettingsTabConfig {
   label: string;
@@ -21,7 +22,7 @@ interface SettingsTabConfig {
   searchPlaceholder?: string;
 }
 
-const SETTINGS_TAB_ORDER: SettingsTab[] = ["general", "terminal-theme", "shortcuts", "templates", "providers", "sync", "hooks"];
+const SETTINGS_TAB_ORDER: SettingsTab[] = ["general", "terminal-theme", "shortcuts", "templates", "providers", "model-pricing", "sync", "hooks"];
 
 const SETTINGS_TAB_CONFIG: Record<SettingsTab, SettingsTabConfig> = {
   general: {
@@ -51,6 +52,12 @@ const SETTINGS_TAB_CONFIG: Record<SettingsTab, SettingsTabConfig> = {
     title: "供应商 (cc-switch)",
     description: "只读解析 cc-switch 数据库，查看各 CLI 的 API 供应商配置。",
     searchPlaceholder: "搜索供应商",
+  },
+  "model-pricing": {
+    label: "模型价格",
+    title: "模型价格",
+    description: "管理本地模型定价、识别历史模型，并从 LiteLLM / OpenRouter 同步候选价格。",
+    searchPlaceholder: "搜索模型价格",
   },
   sync: {
     label: "同步",
@@ -120,6 +127,7 @@ export function SettingsModal({ open, onClose, initialTab }: Props) {
     if (activeTab === "shortcuts") return <ShortcutSettingsPage searchValue={searchValue} />;
     if (activeTab === "templates") return <TemplateSettingsPage searchValue={searchValue} />;
     if (activeTab === "providers") return <ProviderSettingsPage searchValue={searchValue} />;
+    if (activeTab === "model-pricing") return <ModelPricingSettingsPage searchValue={searchValue} />;
     if (activeTab === "sync") return <SyncSettingsPage />;
     if (activeTab === "hooks") return <HookSettingsPage />;
     return null;

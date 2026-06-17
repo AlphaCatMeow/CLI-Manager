@@ -13,6 +13,7 @@
 | [Tauri Updater Contracts](./tauri-updater-contracts.md) | Signed updater config, capabilities, release artifacts, and install/relaunch UX contracts | Active |
 | [cc-switch Integration Contracts](./ccswitch-integration-contracts.md) | External SQLite read-only access (sqlx, no rusqlite), secret masking, and per-project settings.json env replacement | Active |
 | [History Stats Contracts](./history-stats-contracts.md) | History usage stats payloads, token/cost fields, cache behavior, and frontend normalization | Active |
+| [Model Pricing Contracts](./model-pricing-contracts.md) | User-configurable model prices, remote sync, backend cache bridge, and cost calculation authority | Active |
 
 ---
 

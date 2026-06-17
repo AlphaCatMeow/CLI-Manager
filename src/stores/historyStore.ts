@@ -545,6 +545,24 @@ export async function fetchLatestProjectSessionDetail(
   }
 }
 
+// 供「模型价格设置」识别本地模型：扫描全部历史的模型分布，返回去重模型名列表。
+// 复用 normalizeStats 兜底 snake/camel 命名与缺失字段，避免直接读原始返回导致 undefined.map。
+export async function fetchDiscoveredModels(): Promise<string[]> {
+  const raw = await invoke<unknown>("history_get_stats", {
+    source: null,
+    ...getHistoryPathArgs(),
+    projectKey: null,
+    rangeDays: null,
+    startAt: null,
+    endAt: null,
+    force: true,
+  });
+  const stats = normalizeStats(raw);
+  return stats.model_distribution
+    .map((item) => item.model.trim())
+    .filter((model) => model.length > 0);
+}
+
 export async function fetchTodayProjectStats(
   projectKey: string,
   source?: HistorySource | null

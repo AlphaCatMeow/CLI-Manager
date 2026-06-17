@@ -10,3 +10,4 @@ pub mod hook_settings;
 pub mod ccusage;
 pub mod ccswitch;
 pub mod git;
+pub mod model_pricing;

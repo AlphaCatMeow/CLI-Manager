@@ -1,5 +1,30 @@
 # Changelog
 
+## [V1.1.2] - 2026-06-17
+
+### 模型价格设置
+
+#### 核心功能
+
+- **新增「模型价格」设置模块**：设置中心新增独立的「模型价格」页（位于「供应商」之后），集中管理各模型的 Input / Output / Cache Read / Cache Create 单价（单位统一为 USD / 1M tokens）。
+- **识别本地模型**：一键扫描 `~/.claude/projects` 与 `~/.codex/sessions` 历史日志中的模型分布，自动列出本地实际使用过的模型，并高亮「缺失价格」的模型引导补全。
+- **手动添加 / 编辑 / 删除**：支持手动新增模型定价、编辑既有价格、删除条目；删除采用统一风格的确认弹窗（替换原生 `window.confirm`，修复样式不统一与「取消仍删除」的问题）。
+- **一键远程同步**：从 LiteLLM 与 OpenRouter 拉取官方定价，按「精确 → 大小写 → 去前缀尾段 → 规范化 → Jaccard/Levenshtein 模糊」分级匹配；精确/大小写命中自动应用，模糊命中进入候选区供确认。
+- **候选批量应用**：同步后的候选可逐个确认，也可「全部应用候选」一键批量写入，避免逐条点击。
+
+#### 费用统计接入
+
+- **终端实时统计**：当前会话预估费用与今日费用改为优先读取本地模型价格表（前端缓存为权威源），不再依赖硬编码价格。
+- **历史用量分析**：`history_get_stats` 费用计算优先使用前端推送的后端价格缓存，硬编码价格表降级为兜底；模型删除即视为「未定价」，计入 `unpriced_tokens`。
+- **ccusage 用量分析**：保持使用 ccusage 工具自身估算，不接入本地价格表。
+
+#### 技术实现
+
+- **数据层**：新增 SQLite migration v11 建 `model_prices` 表（`model` 主键 + 四类单价 + `source`/`source_model_id`/`raw_json`/时间戳）；前端 `modelPricingStore` 负责 CRUD、种子初始化与候选应用，DB 为唯一权威源。
+- **前后端桥接**：前端启动/变更时通过 `model_prices_set_cache` 把价格推送到后端内存缓存（`OnceLock<RwLock<HashMap>>`），后端费用计算读缓存，避免后端猜测 DB 落盘路径。
+- **远程同步命令**：新增 `model_prices_sync`（`reqwest` 拉取 + per-token×1e6 换算 + 分级匹配 + 候选评分），新增 `model_pricing` 命令模块。
+- **复用归一化**：「识别本地模型」复用 `historyStore` 的 `normalizeStats` 兜底 snake/camel 与缺失字段，修复直接读原始返回导致的 `undefined.map` 报错。
+
 ## [V1.1.1] - 2026-06-17
 
 ### 终端侧边面板响应式优化

@@ -168,6 +168,26 @@ fn migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 11,
+            description: "create_model_prices_table",
+            sql: "
+                CREATE TABLE IF NOT EXISTS model_prices (
+                    model                  TEXT PRIMARY KEY,
+                    input_per_1m           REAL NOT NULL DEFAULT 0,
+                    output_per_1m          REAL NOT NULL DEFAULT 0,
+                    cache_read_per_1m      REAL NOT NULL DEFAULT 0,
+                    cache_creation_per_1m  REAL NOT NULL DEFAULT 0,
+                    source                 TEXT NOT NULL DEFAULT 'manual',
+                    source_model_id        TEXT,
+                    raw_json               TEXT,
+                    updated_at_ms          INTEGER NOT NULL DEFAULT 0,
+                    synced_at_ms           INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS idx_model_prices_source ON model_prices(source);
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -322,6 +342,8 @@ pub fn run() {
             commands::git::get_current_git_branch,
             commands::git::git_get_changes,
             commands::git::git_get_file_diff,
+            commands::model_pricing::model_prices_set_cache,
+            commands::model_pricing::model_prices_sync,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

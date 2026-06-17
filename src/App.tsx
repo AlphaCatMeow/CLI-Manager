@@ -28,6 +28,7 @@ import { useHistoryStore } from "./stores/historyStore";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useUpdateStore } from "./stores/updateStore";
 import { useTerminalStore, type CliHookPayload } from "./stores/terminalStore";
+import { useModelPricingStore } from "./stores/modelPricingStore";
 import { createPerfMarker, logWarn } from "./lib/logger";
 import { getContrastRatioFromHex, MIN_APPLY_CONTRAST_RATIO } from "./lib/contrast";
 import "./App.css";
@@ -341,12 +342,15 @@ function App() {
 
   useEffect(() => {
     const init = async () => {
-      // 1. 并行加载相互独立的子系统：设置、同步配置、会话持久化
+      // 1. 先加载设置，再并行加载依赖设置路径的子系统
+      await loadSettings();
       await Promise.all([
-        loadSettings(),
         useSyncStore.getState().load(),
         useSessionStore.getState().load(),
       ]);
+      void useModelPricingStore.getState().load().catch((err) => {
+        logWarn("Failed to preload model pricing", err);
+      });
 
       // 2. 加载项目列表
       await useProjectStore.getState().fetchAll();
