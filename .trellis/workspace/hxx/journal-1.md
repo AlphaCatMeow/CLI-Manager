@@ -343,3 +343,37 @@ Fixed xterm IME composition anchor fallback so candidate windows stay near the a
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: Git 变更面板增强路线图（P1 行数 / P3 watcher / P4 高亮 / P2 暂存提交）
+
+**Date**: 2026-06-18
+**Task**: Git 变更面板增强路线图（P1 行数 / P3 watcher / P4 高亮 / P2 暂存提交）
+**Branch**: `master`
+
+### Summary
+
+落地 Git 变更面板四阶段增强：P1 补全真实 diff 行数统计（单次 repo diff + foreach，含总增删聚合）；P3 用 notify+debouncer 的 fs-watcher 替代 4s 轮询（事件驱动 + 失败降级 15s + 多窗口隔离）；P4 接 react-diff-view 的 refractor(Prism) 实现 diff 语法高亮；P2 文件级暂存+面板内提交（stage/unstage/commit 命令、三态全选与目录批量、未跟踪文件仿 JetBrains 单独成组、右键 git 管控菜单、深色三态复选框）。AI commit message 明确排除。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f7c5f13` | (see git log) |
+| `29a19bb` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

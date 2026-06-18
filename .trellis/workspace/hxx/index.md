@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 10
-- **Last Active**: 2026-06-11
+- **Total Sessions**: 11
+- **Last Active**: 2026-06-18
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~345 | Active |
+| `journal-1.md` | ~379 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 11 | 2026-06-18 | Git 变更面板增强路线图（P1 行数 / P3 watcher / P4 高亮 / P2 暂存提交） | `f7c5f13`, `29a19bb` | `master` |
 | 10 | 2026-06-11 | Fix terminal IME candidate popup position | `9022bf7` | `fix-terminal-ime-candidate-popup-position` |
 | 9 | 2026-06-11 | Fix Chinese IME punctuation input | `308da34` | `master` |
 | 8 | 2026-06-10 | Windows 闪窗修复与设置/侧栏 UX 修复 | `7839e34`, `f5c43ea`, `4b4108b`, `1680b6b` | `master` |
