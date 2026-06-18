@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import type { Project } from "../lib/types";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useProjectStore } from "../stores/projectStore";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
-import { Check, AlertTriangle } from "./icons";
-import { ProviderBadge, ProviderRow } from "./provider/ProviderRow";
+import { AlertTriangle, Boxes, Check, ChevronRight, Database } from "./icons";
+import { ProviderBadge, type ProviderBadgeTone } from "./provider/ProviderRow";
+import { VendorIcon, inferVendor, type VendorKey } from "./VendorIcon";
 import { logError } from "../lib/logger";
 
 interface ClaudeProvider {
@@ -50,6 +51,111 @@ function formatError(error: unknown): string {
     if (message.startsWith(code)) return hint;
   }
   return `操作失败：${message}`;
+}
+
+type SwitchBadge = {
+  label: string;
+  tone: ProviderBadgeTone;
+};
+
+function inferProviderVendor(provider: ClaudeProvider): VendorKey | null {
+  return (
+    inferVendor(provider.baseUrl) ??
+    inferVendor(provider.appType) ??
+    inferVendor(provider.name) ??
+    inferVendor(provider.category)
+  );
+}
+
+function ProviderSwitchListButton({
+  selected,
+  disabled = false,
+  onClick,
+  icon,
+  name,
+  subtitle,
+  subtitleTitle,
+  badges = [],
+  trailing,
+}: {
+  selected: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  icon: ReactNode;
+  name: string;
+  subtitle?: string;
+  subtitleTitle?: string;
+  badges?: SwitchBadge[];
+  trailing?: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      data-selected={selected ? "true" : "false"}
+      aria-pressed={selected}
+      className="ui-focus-ring flex w-full items-center gap-3 text-left transition-all disabled:cursor-not-allowed disabled:opacity-50"
+      style={{
+        appearance: "none",
+        padding: "9px 10px",
+        borderRadius: 14,
+        backgroundColor: selected
+          ? "color-mix(in srgb, var(--primary) 10%, var(--surface-container-lowest))"
+          : "var(--surface-container-lowest)",
+        border: selected
+          ? "1px solid color-mix(in srgb, var(--primary) 42%, transparent)"
+          : "1px solid color-mix(in srgb, var(--border) 22%, transparent)",
+        boxShadow: selected
+          ? "0 4px 14px color-mix(in srgb, var(--primary) 12%, transparent)"
+          : "none",
+        color: "inherit",
+        cursor: disabled ? "not-allowed" : "pointer",
+        font: "inherit",
+      }}
+      onMouseEnter={(e) => {
+        if (!selected && !disabled) e.currentTarget.style.backgroundColor = "var(--surface-container-low)";
+      }}
+      onMouseLeave={(e) => {
+        if (!selected) e.currentTarget.style.backgroundColor = "var(--surface-container-lowest)";
+      }}
+    >
+      <span
+        className="inline-flex shrink-0 items-center justify-center"
+        style={{
+          width: 34,
+          height: 34,
+          borderRadius: 10,
+          backgroundColor: "var(--surface-container-high)",
+          color: "var(--on-surface)",
+        }}
+      >
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span
+          className="block truncate text-[13px] font-bold"
+          style={{ color: selected ? "var(--primary)" : "var(--on-surface)" }}
+        >
+          {name}
+        </span>
+        {subtitle && (
+          <span className="mt-0.5 block truncate text-[10px] text-text-muted" title={subtitleTitle ?? subtitle}>
+            {subtitle}
+          </span>
+        )}
+      </span>
+      <span className="flex shrink-0 items-center gap-1.5">
+        {trailing ??
+          badges.map((badge) => (
+            <ProviderBadge key={`${badge.tone}-${badge.label}`} tone={badge.tone}>
+              {badge.label}
+            </ProviderBadge>
+          ))}
+        <ChevronRight size={16} style={{ color: "var(--text-muted)" }} />
+      </span>
+    </button>
+  );
 }
 
 interface Props {
@@ -147,7 +253,7 @@ export function ProviderSwitchModal({ project, onClose }: Props) {
         if (!next) onClose();
       }}
     >
-      <DialogContent className="max-w-[440px]">
+      <DialogContent className="max-w-[480px] p-4">
         <DialogTitle className="mb-1 text-base font-semibold text-text-primary">
           切换供应商
         </DialogTitle>
@@ -175,26 +281,21 @@ export function ProviderSwitchModal({ project, onClose }: Props) {
 
         {!loading && !error && (
           <div className="mb-1">
-            <ProviderRow
+            <ProviderSwitchListButton
               selected={followGlobal}
               disabled={applyingId !== null}
               onClick={() => {
                 if (!followGlobal) void resetToGlobal();
               }}
+              icon={<Database size={18} strokeWidth={2.1} />}
               name="跟随全局供应商"
-              customSubtitle={
-                <span className="text-xs text-text-muted">
-                  {globalCurrentName
-                    ? `当前全局：${globalCurrentName}`
-                    : "cc-switch 未设置全局当前供应商"}
-                </span>
-              }
-              customTrailing={
+              subtitle={globalCurrentName ? `当前全局：${globalCurrentName}` : "cc-switch 未设置全局当前供应商"}
+              trailing={
                 applyingId === RESET_APPLYING_ID ? (
                   <span className="text-xs text-text-muted">恢复中…</span>
                 ) : followGlobal ? (
                   <Check size={14} strokeWidth={2} style={{ color: "var(--primary)" }} />
-                ) : null
+                ) : undefined
               }
             />
           </div>
@@ -216,39 +317,31 @@ export function ProviderSwitchModal({ project, onClose }: Props) {
           <div className="ui-thin-scroll max-h-[50vh] space-y-2.5 overflow-y-auto pr-0">
             {providers.map((provider) => {
               const matched = probe?.matchedProviderId === provider.id;
-
-              // 组装副标题：baseUrl + 徽章（全局当前/category/解析失败）
-              const subtitleContent = (
-                <div className="flex min-w-0 flex-col gap-1.5">
-                  {provider.baseUrl && (
-                    <span className="truncate text-xs text-text-muted" title={provider.baseUrl}>
-                      {provider.baseUrl}
-                    </span>
-                  )}
-                  <div className="flex flex-wrap gap-1">
-                    {provider.isCurrent && <ProviderBadge tone="primary">全局当前</ProviderBadge>}
-                    {provider.category && <ProviderBadge tone="neutral">{provider.category}</ProviderBadge>}
-                    {provider.configParseError && <ProviderBadge tone="danger">配置解析失败</ProviderBadge>}
-                  </div>
-                </div>
-              );
-
-              // 组装右侧内容：切换中… / Check 图标
-              const trailingContent = applyingId === provider.id ? (
-                <span className="text-xs text-text-muted">切换中…</span>
-              ) : matched ? (
-                <Check size={14} strokeWidth={2} style={{ color: "var(--primary)" }} />
-              ) : null;
+              const vendor = inferProviderVendor(provider);
+              const subtitle = provider.baseUrl ?? provider.category ?? undefined;
+              const badges: SwitchBadge[] = [];
+              if (applyingId === provider.id) {
+                badges.push({ label: "切换中…", tone: "neutral" });
+              } else if (matched) {
+                badges.push({ label: "ACTIVE", tone: "primary" });
+              } else if (provider.isCurrent) {
+                badges.push({ label: "当前", tone: "primary" });
+              } else if (provider.category) {
+                badges.push({ label: provider.category, tone: "neutral" });
+              }
+              if (provider.configParseError) badges.push({ label: "配置解析失败", tone: "danger" });
 
               return (
-                <ProviderRow
+                <ProviderSwitchListButton
                   key={provider.id}
                   selected={matched}
                   disabled={applyingId !== null || provider.configParseError}
                   onClick={() => void applyProvider(provider)}
+                  icon={<VendorIcon vendor={vendor} size={21} fallback={Boxes} />}
                   name={provider.name}
-                  customSubtitle={subtitleContent}
-                  customTrailing={trailingContent}
+                  subtitle={subtitle}
+                  subtitleTitle={provider.baseUrl ?? provider.category ?? undefined}
+                  badges={badges}
                 />
               );
             })}

@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { UnstyledButton } from "@mantine/core";
 
 /**
  * 供应商列表行组件（Editorial 左侧列表风格）。
@@ -42,7 +41,7 @@ export function ProviderRow({
   customTrailing,
 }: ProviderRowProps) {
   return (
-    <UnstyledButton
+    <button
       type="button"
       onClick={onClick}
       disabled={disabled}
@@ -50,12 +49,18 @@ export function ProviderRow({
       aria-pressed={selected}
       className="ui-focus-ring group flex w-full items-center justify-between gap-4 p-5 text-left transition-all disabled:cursor-not-allowed disabled:opacity-50"
       style={{
+        appearance: "none",
+        borderTop: "none",
+        borderRight: "none",
+        borderBottom: "none",
         borderLeft: selected ? "6px solid var(--primary)" : "6px solid transparent",
         borderRadius: "24px",
         backgroundColor: selected
           ? "color-mix(in srgb, var(--primary) 10%, var(--surface-container-lowest))"
           : "transparent",
         color: selected ? "var(--primary)" : "var(--on-surface-variant)",
+        cursor: disabled ? "not-allowed" : "pointer",
+        font: "inherit",
         fontWeight: selected ? 700 : 500,
         boxShadow: selected ? "0 0 18px color-mix(in srgb, var(--primary) 14%, transparent)" : "none",
       }}
@@ -102,7 +107,7 @@ export function ProviderRow({
       ) : badge ? (
         <ProviderListBadge variant={badge.variant}>{badge.label}</ProviderListBadge>
       ) : null}
-    </UnstyledButton>
+    </button>
   );
 }
 

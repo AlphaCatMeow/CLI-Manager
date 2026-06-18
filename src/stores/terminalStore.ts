@@ -305,25 +305,16 @@ function scheduleHookRunningTimeout(tabId: string, updatedAt: string) {
   hookRunningTimeouts.set(tabId, timer);
 }
 
-function detectCliHookTool(title?: string | null, startupCmd?: string | null): CliHookSource | null {
-  const raw = `${title ?? ""} ${startupCmd ?? ""}`.toLowerCase();
-  if (/(^|[\s("'])codex([\s)"']|$)/.test(raw)) return "codex";
-  if (/(^|[\s("'])claude([\s)"']|$)/.test(raw)) return "claude";
-  return null;
-}
-
-async function shouldEnableHookEnv(title?: string | null, startupCmd?: string | null): Promise<boolean> {
-  const tool = detectCliHookTool(title, startupCmd);
-  if (!tool) return false;
+async function shouldEnableHookEnv(): Promise<boolean> {
   const settings = useSettingsStore.getState();
   try {
     const status = await invoke<HookSettingsStatusPayload>("hook_settings_get_status", {
       selectedDir: settings.claudeHookConfigDir?.trim() || null,
       codexSelectedDir: settings.codexHookConfigDir?.trim() || null,
     });
-    return status[tool]?.status === "installed";
+    return status.claude.status === "installed" || status.codex.status === "installed";
   } catch (err) {
-    logError("hook_settings_get_status failed while deciding terminal hook env", { tool, err });
+    logError("hook_settings_get_status failed while deciding terminal hook env", { err });
     return false;
   }
 }
@@ -363,7 +354,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         cwd: cwd ?? null,
         envVars: buildPtyEnvVars(envVars ?? null, resolvedShell),
         shell: resolvedShell,
-        hookEnvEnabled: await shouldEnableHookEnv(title, startupCmd),
+        hookEnvEnabled: await shouldEnableHookEnv(),
       });
     } catch (err) {
       const description = String(err);
@@ -638,7 +629,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         cwd: options?.cwd ?? null,
         envVars: buildPtyEnvVars(options?.envVars ?? null, resolvedShell),
         shell: resolvedShell,
-        hookEnvEnabled: await shouldEnableHookEnv(options?.title, options?.startupCmd),
+        hookEnvEnabled: await shouldEnableHookEnv(),
       });
     } catch (err) {
       const description = String(err);
@@ -812,7 +803,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
           cwd: ps.cwd ?? null,
           envVars: buildPtyEnvVars(ps.envVars ?? null, resolvedShell),
           shell: resolvedShell,
-          hookEnvEnabled: await shouldEnableHookEnv(ps.title, ps.startupCmd),
+          hookEnvEnabled: await shouldEnableHookEnv(),
         });
       } catch (err) {
         logError("Failed to restore session", { session: ps, err });
