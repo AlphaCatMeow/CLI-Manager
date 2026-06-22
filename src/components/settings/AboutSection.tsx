@@ -5,7 +5,6 @@ import {
   Check,
   Download,
   ExternalLink,
-  FileText,
   RefreshCw,
   RotateCw,
 } from "lucide-react";
@@ -13,7 +12,6 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { useUpdateStore } from "../../stores/updateStore";
 import { MarkdownContent } from "../ui/MarkdownContent";
-import changelogRaw from "../../../CHANGELOG.md?raw";
 
 export function AboutSection() {
   const {
@@ -126,16 +124,6 @@ export function AboutSection() {
           V{currentVersion || "---"}
         </span>
       </div>
-
-      <details className="ui-markdown-preview mt-3 rounded-xl border border-border bg-surface-container-high/40" open>
-        <summary className="ui-focus-ring flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-medium text-on-surface">
-          <FileText className="h-3.5 w-3.5" />
-          <span>更新日志</span>
-        </summary>
-        <div className="border-t border-border p-3">
-          <MarkdownContent content={changelogRaw} linkBehavior="open" />
-        </div>
-      </details>
 
       <div className="mt-3 flex flex-wrap items-center gap-3">
         <button
