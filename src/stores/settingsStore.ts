@@ -49,6 +49,14 @@ export type KeyboardShortcutMap = Record<ShortcutAction, string>;
 export type TerminalNewlineShortcut = "Shift+Enter" | "Ctrl+Enter" | "Alt+Enter";
 export type UnsplitBehavior = "merge" | "close";
 
+export type HookEventType =
+  | "SessionStart"
+  | "UserPromptSubmit"
+  | "Notification"
+  | "Stop"
+  | "StopFailure"
+  | "PermissionRequest";
+
 const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
   "newTerminal",
   "closeTerminal",
@@ -162,6 +170,8 @@ interface Settings {
   hookPopupNotificationsEnabled: boolean;
   hookPopupAutoCloseEnabled: boolean;
   hookPopupAutoCloseSeconds: number;
+  systemNotificationsEnabled: boolean;
+  systemNotificationEvents: Record<HookEventType, boolean>;
   claudeHookConfigDir: string | null;
   codexHookConfigDir: string | null;
   /** cc-switch 数据库路径；null 表示使用默认路径 ~/.cc-switch/cc-switch.db */
@@ -239,6 +249,15 @@ const DEFAULTS: Settings = {
   hookPopupNotificationsEnabled: true,
   hookPopupAutoCloseEnabled: true,
   hookPopupAutoCloseSeconds: 60,
+  systemNotificationsEnabled: true,
+  systemNotificationEvents: {
+    SessionStart: false,
+    UserPromptSubmit: false,
+    Notification: true,
+    Stop: true,
+    StopFailure: true,
+    PermissionRequest: true,
+  },
   claudeHookConfigDir: null,
   codexHookConfigDir: null,
   ccSwitchDbPath: null,
@@ -282,6 +301,29 @@ function migrateDarkThemePalette(value: unknown): DarkThemePalette | undefined {
 function migrateTerminalThemeName(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   return LEGACY_TERMINAL_THEME_MAP[value] ?? value;
+}
+
+function migrateSystemNotificationEvents(value: unknown): Record<HookEventType, boolean> {
+  const defaults = DEFAULTS.systemNotificationEvents;
+  if (typeof value !== "object" || value === null) {
+    return { ...defaults };
+  }
+  const raw = value as Record<string, unknown>;
+  const events: HookEventType[] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "Notification",
+    "Stop",
+    "StopFailure",
+    "PermissionRequest",
+  ];
+  const result: Record<HookEventType, boolean> = { ...defaults };
+  for (const event of events) {
+    if (typeof raw[event] === "boolean") {
+      result[event] = raw[event];
+    }
+  }
+  return result;
 }
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
@@ -529,6 +571,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       3600,
       DEFAULTS.hookPopupAutoCloseSeconds
     );
+    entries.systemNotificationsEnabled =
+      typeof entries.systemNotificationsEnabled === "boolean"
+        ? entries.systemNotificationsEnabled
+        : DEFAULTS.systemNotificationsEnabled;
+    entries.systemNotificationEvents = migrateSystemNotificationEvents(entries.systemNotificationEvents);
     entries.claudeHookConfigDir =
       typeof entries.claudeHookConfigDir === "string" && entries.claudeHookConfigDir.trim()
         ? entries.claudeHookConfigDir

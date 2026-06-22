@@ -20,7 +20,7 @@ const CcusageStatsPanel = lazy(() =>
 import { WindowTitleBar } from "./components/WindowTitleBar";
 import { CloseConfirmDialog } from "./components/CloseConfirmDialog";
 import { AlertTriangle, Check, X } from "./components/icons";
-import { useSettingsStore } from "./stores/settingsStore";
+import { useSettingsStore, type HookEventType } from "./stores/settingsStore";
 import { useProjectStore } from "./stores/projectStore";
 import { useSessionStore } from "./stores/sessionStore";
 import { useSyncStore } from "./stores/syncStore";
@@ -120,6 +120,92 @@ function getClaudeHookToastTitle(payload: CliHookPayload, tabTitle: string): str
   if (payload.event === "StopFailure") return `${tabTitle} 执行失败`;
   if (payload.event === "PermissionRequest") return `${sourceName} 需要审批`;
   return `${sourceName} 提醒`;
+}
+
+function getHookProjectName(payload: CliHookPayload, tabTitle?: string | null): string {
+  const normalizedTitle = tabTitle?.trim();
+  if (normalizedTitle) return normalizedTitle;
+
+  const cwd = payload.cwd?.trim();
+  if (cwd) {
+    const normalizedCwd = cwd.replace(/[\\/]+$/, "");
+    const cwdParts = normalizedCwd.split(/[\\/]+/).filter(Boolean);
+    return cwdParts.length > 0 ? cwdParts[cwdParts.length - 1] : cwd;
+  }
+
+  return "未知项目";
+}
+
+function isSystemNotificationEvent(eventType: CliHookPayload["event"]): eventType is HookEventType {
+  return (
+    eventType === "SessionStart" ||
+    eventType === "UserPromptSubmit" ||
+    eventType === "Notification" ||
+    eventType === "Stop" ||
+    eventType === "StopFailure" ||
+    eventType === "PermissionRequest"
+  );
+}
+
+function getSystemNotificationBody(payload: CliHookPayload, projectName: string): string {
+  const sourceName = getCliHookSourceName(payload);
+  const detail = payload.message?.trim();
+  const suffix = detail ? `：${detail}` : "";
+
+  switch (payload.event) {
+    case "Stop":
+      return `✅ ${sourceName} 在 ${projectName} 的任务已完成${suffix}`;
+    case "StopFailure":
+      return `⚠️ ${sourceName} 在 ${projectName} 执行失败，请查看详情${suffix}`;
+    case "PermissionRequest":
+      return `🔔 ${sourceName} 需要你的关注哦~ 快来看看 ${projectName} 吧!${suffix}`;
+    case "Notification":
+      return `🔔 ${sourceName} 在 ${projectName} 有新的提醒${suffix}`;
+    case "SessionStart":
+      return `🚀 ${sourceName} 在 ${projectName} 的会话已启动${suffix}`;
+    case "UserPromptSubmit":
+      return `💬 ${sourceName} 在 ${projectName} 已提交新指令${suffix}`;
+    default:
+      return `🔔 ${sourceName} 在 ${projectName} 有新的通知${suffix}`;
+  }
+}
+
+async function sendSystemNotification(payload: CliHookPayload, tabTitle?: string | null): Promise<void> {
+  try {
+    const settings = useSettingsStore.getState();
+    if (!settings.systemNotificationsEnabled) return;
+    if (!isSystemNotificationEvent(payload.event)) return;
+    if (!settings.systemNotificationEvents[payload.event]) return;
+
+    const projectName = getHookProjectName(payload, tabTitle);
+    const title = "CLI-Manager";
+    const body = getSystemNotificationBody(payload, projectName);
+
+    const { isPermissionGranted, requestPermission, sendNotification } = await import(
+      "@tauri-apps/plugin-notification"
+    );
+
+    let permissionGranted = await isPermissionGranted();
+    if (!permissionGranted) {
+      const permission = await requestPermission();
+      permissionGranted = permission === "granted";
+    }
+    if (!permissionGranted) {
+      console.warn("[System Notification] Permission not granted");
+      return;
+    }
+
+    try {
+      sendNotification({ title, body });
+      return;
+    } catch (notificationErr) {
+      const isWsl = await invoke<boolean>("is_wsl").catch(() => false);
+      if (!isWsl) throw notificationErr;
+      await invoke("send_notification_via_windows", { title, body });
+    }
+  } catch (err) {
+    console.warn("[System Notification] Failed to send:", err);
+  }
 }
 
 function showClaudeHookToast(payload: CliHookPayload, tabId: string): void {
@@ -333,10 +419,14 @@ function App() {
         return;
       }
       const tabId = useTerminalStore.getState().handleCliHookEvent(event.payload);
+      const terminalStore = useTerminalStore.getState();
+      const tabTitle = tabId ? terminalStore.sessions.find((session) => session.id === tabId)?.title ?? null : null;
       // SessionStart 仅用于绑定 sessionId（无需用户介入），与 UserPromptSubmit 一样不弹 toast
       if (tabId && event.payload.event !== "UserPromptSubmit" && event.payload.event !== "SessionStart") {
         showClaudeHookToast(event.payload, tabId);
       }
+      // 系统通知：并行发送（不影响应用内通知）
+      void sendSystemNotification(event.payload, tabTitle);
     });
     // 子 Agent 转录 tail 增量：路由到对应转录面板。
     const unlistenTranscript = listen<SubagentTranscriptAppendPayload>("subagent-transcript-append", (event) => {

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import { Badge, Box, Button, Card, Group, SimpleGrid, Stack, Switch, Text, TextInput } from "@mantine/core";
 import { Play, Settings, AlertTriangle, CheckCircle, HelpCircle, ChevronDown, ChevronUp, Folder, FileCode, Copy, Check, X } from "lucide-react";
-import { useSettingsStore } from "@/stores/settingsStore";
+import { useSettingsStore, type HookEventType } from "@/stores/settingsStore";
 
 type HookInstallStatus = "directoryMissing" | "notInstalled" | "partialInstalled" | "installed";
 
@@ -41,6 +41,43 @@ const STATUS_COLORS: Record<HookInstallStatus, string> = {
   partialInstalled: "yellow",
   installed: "green",
 };
+
+const SYSTEM_NOTIFICATION_EVENT_OPTIONS: readonly {
+  event: HookEventType;
+  title: string;
+  description: string;
+}[] = [
+  {
+    event: "Stop",
+    title: "任务完成",
+    description: "Claude Code 或 Codex CLI 任务正常结束时发送系统通知。",
+  },
+  {
+    event: "StopFailure",
+    title: "执行失败",
+    description: "Hook 上报异常退出或失败状态时发送系统通知。",
+  },
+  {
+    event: "PermissionRequest",
+    title: "需要审批",
+    description: "CLI 请求权限审批、需要你回到终端处理时发送系统通知。",
+  },
+  {
+    event: "Notification",
+    title: "提醒",
+    description: "CLI 主动上报提醒消息时发送系统通知。",
+  },
+  {
+    event: "SessionStart",
+    title: "会话启动",
+    description: "新会话绑定到 CLI-Manager 标签页时发送系统通知。",
+  },
+  {
+    event: "UserPromptSubmit",
+    title: "命令提交",
+    description: "用户提示词提交并进入运行流程时发送系统通知。",
+  },
+];
 
 function formatPath(value: string | null): string {
   return value && value.trim() ? value : "未选择";
@@ -211,6 +248,8 @@ export function HookSettingsPage() {
   const hookPopupNotificationsEnabled = useSettingsStore((s) => s.hookPopupNotificationsEnabled);
   const hookPopupAutoCloseEnabled = useSettingsStore((s) => s.hookPopupAutoCloseEnabled);
   const hookPopupAutoCloseSeconds = useSettingsStore((s) => s.hookPopupAutoCloseSeconds);
+  const systemNotificationsEnabled = useSettingsStore((s) => s.systemNotificationsEnabled);
+  const systemNotificationEvents = useSettingsStore((s) => s.systemNotificationEvents);
   const updateSetting = useSettingsStore((s) => s.update);
   const [autoCloseSecondsDraft, setAutoCloseSecondsDraft] = useState(String(hookPopupAutoCloseSeconds));
   const [claudePathsOpen, setClaudePathsOpen] = useState(false);
@@ -444,6 +483,41 @@ export function HookSettingsPage() {
               </Group>
             </Group>
           </Card>
+        </Stack>
+      </section>
+
+      <section className="ui-surface-card rounded-2xl border border-border p-4">
+        <Stack gap="md">
+          <Box>
+            <Text size="sm" fw={600} c="var(--on-surface)">
+              系统通知
+            </Text>
+            <Text mt={4} size="xs" c="var(--on-surface-variant)">
+              并行发送系统原生通知，应用内通知弹框和标签小圆点仍按各自开关独立工作；首次发送时操作系统可能会请求授权。
+            </Text>
+          </Box>
+          <SettingsSwitchRow
+            title="启用系统通知"
+            description="开启后，CLI-Manager 会根据下方事件开关发送 Windows、macOS、Linux 或 WSL 主机通知。"
+            checked={systemNotificationsEnabled}
+            onCheckedChange={(checked) => void updateSetting("systemNotificationsEnabled", checked)}
+          />
+          <Stack gap="xs">
+            {SYSTEM_NOTIFICATION_EVENT_OPTIONS.map((option) => (
+              <SettingsSwitchRow
+                key={option.event}
+                title={option.title}
+                description={option.description}
+                checked={systemNotificationEvents[option.event]}
+                onCheckedChange={(checked) => {
+                  void updateSetting("systemNotificationEvents", {
+                    ...useSettingsStore.getState().systemNotificationEvents,
+                    [option.event]: checked,
+                  });
+                }}
+              />
+            ))}
+          </Stack>
         </Stack>
       </section>
 

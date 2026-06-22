@@ -294,6 +294,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(pty::manager::PtyManager::new())
         .manage(git_watcher::GitWatcherBridge::new())
         .manage(commands::subagent_transcript::SubagentTranscriptBridge::new())
@@ -373,6 +374,8 @@ pub fn run() {
             commands::subagent_transcript::subagent_transcript_unsubscribe,
             commands::model_pricing::model_prices_set_cache,
             commands::model_pricing::model_prices_sync,
+            commands::system_notification::is_wsl,
+            commands::system_notification::send_notification_via_windows,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
