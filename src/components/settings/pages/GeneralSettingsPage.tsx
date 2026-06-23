@@ -425,6 +425,7 @@ export function GeneralSettingsPage() {
   const sidebarDensity = useSettingsStore((s) => s.sidebarDensity);
   const viewMode = useSettingsStore((s) => s.viewMode);
   const closeBehavior = useSettingsStore((s) => s.closeBehavior);
+  const confirmBeforeClosingTerminalTab = useSettingsStore((s) => s.confirmBeforeClosingTerminalTab);
   const debugMode = useSettingsStore((s) => s.debugMode);
   const ccusageAnalyticsEnabled = useSettingsStore((s) => s.ccusageAnalyticsEnabled);
   const terminalToolbarVisibility = useSettingsStore((s) => s.terminalToolbarVisibility);
@@ -831,6 +832,25 @@ export function GeneralSettingsPage() {
               aria-label="关闭按钮行为"
               description="控制点击窗口关闭按钮时的动作。"
             />
+
+            <Card className="border border-border bg-surface-container-lowest" p="sm" radius="lg">
+              <Group justify="space-between" align="center" gap="md" wrap="nowrap">
+                <Box>
+                  <Text size="xs" c="var(--on-surface-variant)">
+                    关闭终端标签页前确认
+                  </Text>
+                  <Text mt={4} size="xs" lh={1.55} c="var(--text-muted)">
+                    开启后，点击标签页关闭按钮或使用关闭终端快捷键时会先弹窗确认，避免误关。
+                  </Text>
+                </Box>
+                <Switch
+                  color="cliPrimary"
+                  checked={confirmBeforeClosingTerminalTab}
+                  onChange={(event) => void update("confirmBeforeClosingTerminalTab", event.currentTarget.checked)}
+                  aria-label={confirmBeforeClosingTerminalTab ? "关闭终端标签页关闭确认" : "开启终端标签页关闭确认"}
+                />
+              </Group>
+            </Card>
 
             <Group justify="space-between" align="center" gap="md" wrap="nowrap">
               <Text size="xs" c="var(--on-surface-variant)">

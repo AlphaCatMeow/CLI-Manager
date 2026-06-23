@@ -3,6 +3,7 @@ import { useTerminalStore } from "../stores/terminalStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useCommandPaletteStore } from "../components/CommandPalette";
 import { useHistoryStore } from "../stores/historyStore";
+import { confirmTerminalTabClose } from "../lib/terminalCloseConfirm";
 
 /** Convert a KeyboardEvent to a combo string like "Ctrl+Shift+T" */
 export function eventToCombo(e: KeyboardEvent): string {
@@ -120,7 +121,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions = {}) {
       if (isShortcutMatch(combo, shortcuts.closeTerminal)) {
         if (viewMode === "compact") return;
         e.preventDefault();
-        if (activeSessionId) closeSession(activeSessionId);
+        if (activeSessionId && confirmTerminalTabClose()) closeSession(activeSessionId);
         return;
       }
     };

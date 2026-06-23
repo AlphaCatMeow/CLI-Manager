@@ -36,6 +36,7 @@ import { Terminal, Plus, ListClockIcon, X, Maximize2, Minimize2, ChevronDown, Ch
 import { VendorIcon, inferVendor, type VendorKey } from "./VendorIcon";
 import { EmptyState } from "./ui/EmptyState";
 import { useHistoryStore } from "../stores/historyStore";
+import { confirmTerminalTabClose } from "../lib/terminalCloseConfirm";
 import type { HistorySourceFilter, Project, TerminalSession, TreeNode } from "../lib/types";
 import {
   ContextMenu,
@@ -415,7 +416,7 @@ interface PaneTabBarProps {
   terminalBackgroundImagePath: string | null;
   hiddenBackgroundSessionIds: Set<string>;
   onActivateSession: (sessionId: string) => void;
-  onCloseSession: (sessionId: string) => void;
+  onCloseSessions: (sessionIds: string[]) => void;
   onStartEdit: (sessionId: string) => void;
   onSubmitEdit: (sessionId: string, title: string) => void;
   onCancelEdit: () => void;
@@ -441,7 +442,7 @@ function PaneTabBar({
   terminalBackgroundImagePath,
   hiddenBackgroundSessionIds,
   onActivateSession,
-  onCloseSession,
+  onCloseSessions,
   onStartEdit,
   onSubmitEdit,
   onCancelEdit,
@@ -577,8 +578,8 @@ function PaneTabBar({
   }, [onActivateSession, paneSessions]);
 
   const closePaneSessions = useCallback((sessionIds: string[]) => {
-    sessionIds.forEach((sessionId) => onCloseSession(sessionId));
-  }, [onCloseSession]);
+    onCloseSessions(sessionIds);
+  }, [onCloseSessions]);
 
   const closeOtherPaneSessions = useCallback((sessionId: string) => {
     const index = pane.sessionIds.indexOf(sessionId);
@@ -694,7 +695,7 @@ function PaneTabBar({
               statusUpdatedAt={tabStatusDetails[session.id]?.updatedAt ?? null}
               vendor={inferSessionVendor(session)}
               onActivate={() => onActivateSession(session.id)}
-              onClose={() => onCloseSession(session.id)}
+              onClose={() => closePaneSessions([session.id])}
               onStartEdit={() => onStartEdit(session.id)}
               onSubmitEdit={(title) => onSubmitEdit(session.id, title)}
               onCancelEdit={onCancelEdit}
@@ -702,7 +703,7 @@ function PaneTabBar({
               menuStyle={tabMenuStyle}
               menuContent={(getAnchor) => (
                 <>
-                  <ContextMenuItem onSelect={() => onCloseSession(session.id)}>关闭终端</ContextMenuItem>
+                  <ContextMenuItem onSelect={() => closePaneSessions([session.id])}>关闭终端</ContextMenuItem>
                   <ContextMenuItem onSelect={() => closeOtherPaneSessions(session.id)}>关闭其它终端</ContextMenuItem>
                   <ContextMenuItem onSelect={() => closePaneSessionsToLeft(session.id)}>关闭左侧终端</ContextMenuItem>
                   <ContextMenuItem onSelect={() => closePaneSessionsToRight(session.id)}>关闭右侧终端</ContextMenuItem>
@@ -827,7 +828,7 @@ interface PaneLeafViewProps {
   hiddenBackgroundSessionIds: Set<string>;
   activeDropPreview?: PaneDropPreview;
   onActivateSession: (sessionId: string) => void;
-  onCloseSession: (sessionId: string) => void;
+  onCloseSessions: (sessionIds: string[]) => void;
   onStartEdit: (sessionId: string) => void;
   onSubmitEdit: (sessionId: string, title: string) => void;
   onCancelEdit: () => void;
@@ -861,7 +862,7 @@ function PaneLeafView({
   hiddenBackgroundSessionIds,
   activeDropPreview,
   onActivateSession,
-  onCloseSession,
+  onCloseSessions,
   onStartEdit,
   onSubmitEdit,
   onCancelEdit,
@@ -893,7 +894,7 @@ function PaneLeafView({
           terminalBackgroundImagePath={terminalBackgroundImagePath}
           hiddenBackgroundSessionIds={hiddenBackgroundSessionIds}
           onActivateSession={onActivateSession}
-          onCloseSession={onCloseSession}
+          onCloseSessions={onCloseSessions}
           onStartEdit={onStartEdit}
           onSubmitEdit={onSubmitEdit}
           onCancelEdit={onCancelEdit}
@@ -936,20 +937,20 @@ function PaneLeafView({
                 lightThemePalette={lightThemePalette}
                 darkThemePalette={darkThemePalette}
                 onNewTab={onNewTab}
-                onCloseSession={() => onCloseSession(session.id)}
+                onCloseSession={() => onCloseSessions([session.id])}
                 onCloseOthers={
                   pane.sessionIds.length > 1
-                    ? () => pane.sessionIds.filter((id) => id !== session.id).forEach(onCloseSession)
+                    ? () => onCloseSessions(pane.sessionIds.filter((id) => id !== session.id))
                     : undefined
                 }
                 onCloseToLeft={
                   pane.sessionIds.indexOf(session.id) > 0
-                    ? () => pane.sessionIds.slice(0, pane.sessionIds.indexOf(session.id)).forEach(onCloseSession)
+                    ? () => onCloseSessions(pane.sessionIds.slice(0, pane.sessionIds.indexOf(session.id)))
                     : undefined
                 }
                 onCloseToRight={
                   pane.sessionIds.indexOf(session.id) < pane.sessionIds.length - 1
-                    ? () => pane.sessionIds.slice(pane.sessionIds.indexOf(session.id) + 1).forEach(onCloseSession)
+                    ? () => onCloseSessions(pane.sessionIds.slice(pane.sessionIds.indexOf(session.id) + 1))
                     : undefined
                 }
                 onSplitRight={(point) => onOpenSplitPicker(session.id, "horizontal", point)}
@@ -1305,6 +1306,12 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
     setActiveWorkspaceTab("terminal");
     setActive(sessionId);
   }, [setActive]);
+
+  const handleCloseSessions = useCallback((sessionIds: string[]) => {
+    const uniqueSessionIds = Array.from(new Set(sessionIds)).filter((sessionId) => sessions.some((session) => session.id === sessionId));
+    if (!confirmTerminalTabClose(uniqueSessionIds.length)) return;
+    uniqueSessionIds.forEach((sessionId) => void closeSession(sessionId));
+  }, [closeSession, sessions]);
 
   const ensureStatsPanelAllowed = useCallback(async () => {
     try {
@@ -1673,7 +1680,7 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
       hiddenBackgroundSessionIds={hiddenBackgroundSessionIds}
       activeDropPreview={activeDropPreview}
       onActivateSession={handleActivateSession}
-      onCloseSession={closeSession}
+      onCloseSessions={handleCloseSessions}
       onStartEdit={setEditingSessionId}
       onSubmitEdit={(sessionId, title) => {
         renameSession(sessionId, title);
@@ -1693,13 +1700,13 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
     activeSessionId,
     activeDropPreview,
     allPanes,
-    closeSession,
     darkThemePalette,
     editingSessionId,
     effectiveTerminalThemeName,
     fontFamily,
     fontSize,
     handleActivateSession,
+    handleCloseSessions,
     handleNewTab,
     handleDuplicateSession,
     handleOpenSplitPicker,
