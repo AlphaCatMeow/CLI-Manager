@@ -29,7 +29,15 @@ import { XTermTerminal } from "./XTermTerminal";
 import { CommandTemplatePanel } from "./CommandTemplatePanel";
 import { CommandHistoryPanel } from "./CommandHistoryPanel";
 import { TerminalStatsPanel } from "./terminal/TerminalStatsPanel";
-import { TerminalSidePanel, type TerminalSidePanelTab } from "./terminal/TerminalSidePanel";
+import {
+  ResizableTerminalPanelFrame,
+  TerminalSidePanel,
+  TERMINAL_GIT_PANEL_DEFAULT_WIDTH,
+  TERMINAL_GIT_PANEL_WIDTH_STORAGE_KEY,
+  TERMINAL_STATS_PANEL_DEFAULT_WIDTH,
+  TERMINAL_STATS_PANEL_WIDTH_STORAGE_KEY,
+  type TerminalSidePanelTab,
+} from "./terminal/TerminalSidePanel";
 import { SubagentTranscriptView } from "./terminal/SubagentTranscriptView";
 import { openWindowsTerminal } from "../lib/externalTerminal";
 import { Terminal, Plus, ListClockIcon, X, Maximize2, Minimize2, ChevronDown, ChevronRight, BarChart3, GitBranch, Folder } from "./icons";
@@ -95,7 +103,6 @@ const PANE_CENTER_DROP_PREFIX = "pane-center:";
 const PANE_EDGE_DROP_PREFIX = "pane-edge:";
 const PANE_DROP_EDGES: TerminalPaneDropEdge[] = ["left", "right", "top", "bottom"];
 const SPLIT_PICKER_OUTSIDE_GUARD_MS = 250;
-
 type SplitPickerAnchor = DOMRect | { x: number; y: number };
 type SplitPickerAlign = "start" | "end";
 
@@ -1800,11 +1807,27 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
             />
           ) : (
             <>
-              <TerminalStatsPanel activeSessionId={panelSessionId} open={statsOpen} />
+              {statsOpen && (
+                <ResizableTerminalPanelFrame
+                  storageKey={TERMINAL_STATS_PANEL_WIDTH_STORAGE_KEY}
+                  defaultWidth={TERMINAL_STATS_PANEL_DEFAULT_WIDTH}
+                  resizeLabel="调整实时统计面板宽度"
+                  resizeTitle="拖拽调整实时统计面板宽度"
+                >
+                  <TerminalStatsPanel activeSessionId={panelSessionId} open={statsOpen} embedded />
+                </ResizableTerminalPanelFrame>
+              )}
               {gitOpen && (
-                <Suspense fallback={null}>
-                  <GitChangesPanel open={gitOpen} projectPath={panelSession?.cwd ?? null} />
-                </Suspense>
+                <ResizableTerminalPanelFrame
+                  storageKey={TERMINAL_GIT_PANEL_WIDTH_STORAGE_KEY}
+                  defaultWidth={TERMINAL_GIT_PANEL_DEFAULT_WIDTH}
+                  resizeLabel="调整 Git 变更面板宽度"
+                  resizeTitle="拖拽调整 Git 变更面板宽度"
+                >
+                  <Suspense fallback={null}>
+                    <GitChangesPanel open={gitOpen} projectPath={panelSession?.cwd ?? null} embedded />
+                  </Suspense>
+                </ResizableTerminalPanelFrame>
               )}
             </>
           )}

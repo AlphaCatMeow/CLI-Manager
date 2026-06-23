@@ -44,6 +44,36 @@ import ReactMarkdown from "react-markdown";
 
 **Tests**: Run `npx tsc --noEmit` and `npm run build`; manually inspect the Markdown style preview in Settings > About in both default and terminal variants.
 
+### Convention: Session history transcripts use a history render layer before Markdown
+
+**What**: When rendering Claude/Codex session history message bodies, use `src/components/history/SessionTranscriptContent.tsx` instead of rendering raw message content directly with `MarkdownContent`. `SessionTranscriptContent` may detect session-log structures such as XML-ish blocks, workflow-state blocks, Git status lines, long lists, paths, commit hashes, and status tokens; ordinary Markdown content must still delegate to `HistoryMarkdownContent` / shared `MarkdownContent`.
+
+**Why**: History files are mixed transcripts, not pure Markdown. They contain system context, workflow metadata, Git changes, paths, and task states. A render-layer adapter preserves readability without changing backend history parsing, storage, or the shared Markdown safety policy.
+
+**Correct**:
+
+```tsx
+import { SessionTranscriptContent } from "./SessionTranscriptContent";
+
+<SessionTranscriptContent content={message.content} query={sessionQuery} />
+```
+
+**Wrong**:
+
+```tsx
+<MarkdownContent content={message.content} query={sessionQuery} />
+```
+
+**Contracts**:
+
+- Keep transcript parsing render-only; do not mutate stored history data or backend parsing contracts for visual grouping.
+- Keep unsupported transcript text safe by falling back to the shared Markdown path.
+- Do not use `dangerouslySetInnerHTML` for transcript highlighting.
+- Do not add a second Markdown parser inside history components.
+- Long transcript sections should remain bounded through collapse/preview behavior so virtualized message rows do not inflate unnecessarily.
+
+**Tests**: Run `npx tsc --noEmit`; manually inspect a history session containing XML-ish blocks, workflow-state blocks, Git changes, long lists, and normal Markdown.
+
 ### Convention: Keep settings tab ids stable when only renaming UI labels
 
 **What**: In `SettingsModal`, `SettingsTab` ids are part of the internal navigation contract. When a change only renames or reorganizes a settings page, keep the existing tab id and update only the visible label/title/description.

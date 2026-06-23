@@ -18,6 +18,7 @@ import type {
   HistoryStatsProjectItem,
   HistoryStatsSourceItem,
   HistoryTokenTrendPoint,
+  HistoryToolEvent,
   HistoryToolCount,
   PromptScope,
   HistorySource,
@@ -227,6 +228,7 @@ function normalizeDetail(raw: unknown): HistorySessionDetail {
   return {
     ...summary,
     usage: normalizeSessionUsage(rec.usage),
+    tool_events: normalizeToolEvents(rec.tool_events ?? rec.toolEvents),
     messages,
   };
 }
@@ -281,6 +283,30 @@ function normalizeToolCounts(raw: unknown): HistoryToolCount[] {
       return { name: asString(rec.name), count: asNumber(rec.count) };
     })
     .filter((item) => item.name.length > 0 && item.count > 0);
+}
+
+function normalizeToolEvents(raw: unknown): HistoryToolEvent[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => {
+      const rec = (item ?? {}) as Record<string, unknown>;
+      return {
+        call_id: asString(rec.call_id ?? rec.callId ?? "") || null,
+        name: asString(rec.name),
+        category: asString(rec.category),
+        message_index: rec.message_index === null || rec.messageIndex === null
+          ? null
+          : asNumber(rec.message_index ?? rec.messageIndex),
+        timestamp: asString(rec.timestamp ?? "") || null,
+        status: asString(rec.status ?? "") || null,
+        duration_ms: rec.duration_ms === null || rec.durationMs === null
+          ? null
+          : asNumber(rec.duration_ms ?? rec.durationMs),
+        input_summary: asString(rec.input_summary ?? rec.inputSummary ?? "") || null,
+        output_summary: asString(rec.output_summary ?? rec.outputSummary ?? "") || null,
+      };
+    })
+    .filter((item) => item.name.length > 0);
 }
 
 function normalizeHit(raw: unknown): HistorySearchHit {

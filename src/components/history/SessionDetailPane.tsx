@@ -4,10 +4,18 @@ import { useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import type { HistoryMessage, HistorySessionDetail, HistorySessionView } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
-import { MarkdownContent } from "../ui/MarkdownContent";
+import { SessionTranscriptContent } from "./SessionTranscriptContent";
 import { MetaEditor } from "./MetaEditor";
 import { formatTime, makeSessionLabel, roleBadge } from "./historyViewUtils";
+import { SessionTimelineView } from "./SessionTimelineView";
+import { SessionContextView } from "./SessionContextView";
+import { SessionFileChangesView } from "./SessionFileChangesView";
+import { SessionToolDiagnosticsView } from "./SessionToolDiagnosticsView";
+import { SessionSubtaskTreeView } from "./SessionSubtaskTreeView";
+import type { SessionProcessModel } from "./sessionEvents";
 import type { RefObject } from "react";
+
+export type HistoryDetailView = "transcript" | "timeline" | "context" | "changes" | "tools" | "subtasks";
 
 interface SessionDetailPaneProps {
   activeView: HistorySessionView | null;
@@ -24,9 +32,12 @@ interface SessionDetailPaneProps {
   visibleMessageCount: number;
   hasMoreMessages: boolean;
   totalMessageCount: number;
+  processModel: SessionProcessModel;
+  detailView: HistoryDetailView;
   messageListRef: RefObject<HTMLDivElement | null>;
   sessionSearchRef: RefObject<HTMLInputElement | null>;
   messageRefs: RefObject<Record<number, HTMLDivElement | null>>;
+  onDetailViewChange: (view: HistoryDetailView) => void;
   onMessageListScroll: () => void;
   onAliasDraftChange: (value: string) => void;
   onTagsDraftChange: (value: string) => void;
@@ -36,9 +47,19 @@ interface SessionDetailPaneProps {
   onJumpNext: () => void;
   onOpenPrompt: () => void;
   onOpenDiff: () => void;
+  onJumpToMessage: (messageIndex: number) => void;
   onToggleStar: () => void;
   onLoadMoreMessages: () => void;
 }
+
+const DETAIL_VIEWS: Array<{ id: HistoryDetailView; label: string }> = [
+  { id: "transcript", label: "原文" },
+  { id: "timeline", label: "过程" },
+  { id: "context", label: "上下文" },
+  { id: "changes", label: "变更" },
+  { id: "tools", label: "工具" },
+  { id: "subtasks", label: "子任务" },
+];
 
 export function SessionDetailPane({
   activeView,
@@ -55,9 +76,12 @@ export function SessionDetailPane({
   visibleMessageCount,
   hasMoreMessages,
   totalMessageCount,
+  processModel,
+  detailView,
   messageListRef,
   sessionSearchRef,
   messageRefs,
+  onDetailViewChange,
   onMessageListScroll,
   onAliasDraftChange,
   onTagsDraftChange,
@@ -67,6 +91,7 @@ export function SessionDetailPane({
   onJumpNext,
   onOpenPrompt,
   onOpenDiff,
+  onJumpToMessage,
   onToggleStar,
   onLoadMoreMessages,
 }: SessionDetailPaneProps) {
@@ -84,15 +109,15 @@ export function SessionDetailPane({
 
   useEffect(() => {
     if (activeMatchIndex === undefined) return;
-    if (activeMatchIndex < visibleMessages.length) {
+    if (detailView === "transcript" && activeMatchIndex < visibleMessages.length) {
       messageVirtualizer.scrollToIndex(activeMatchIndex, { align: "center" });
     }
-  }, [activeMatchIndex, messageVirtualizer, visibleMessages.length]);
+  }, [activeMatchIndex, detailView, messageVirtualizer, visibleMessages.length]);
 
   useEffect(() => {
     if (focusedMessageIndex === null || focusedMessageIndex >= visibleMessages.length) return;
-    messageVirtualizer.scrollToIndex(focusedMessageIndex, { align: "center" });
-  }, [focusedMessageIndex, focusedMessageSeq, messageVirtualizer, visibleMessages.length]);
+    if (detailView === "transcript") messageVirtualizer.scrollToIndex(focusedMessageIndex, { align: "center" });
+  }, [detailView, focusedMessageIndex, focusedMessageSeq, messageVirtualizer, visibleMessages.length]);
 
   if (!activeView) {
     return (
@@ -197,6 +222,21 @@ export function SessionDetailPane({
           onJumpPrev={onJumpPrev}
           onJumpNext={onJumpNext}
         />
+
+        <div className="ui-history-detail-tabs" role="tablist" aria-label="会话详情视图">
+          {DETAIL_VIEWS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              aria-selected={detailView === item.id}
+              data-active={detailView === item.id}
+              onClick={() => onDetailViewChange(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div ref={messageListRef} onScroll={onMessageListScroll} className="[grid-row:2] min-h-0 h-full overflow-x-hidden overflow-y-auto p-3">
@@ -206,7 +246,7 @@ export function SessionDetailPane({
           <div className="text-xs text-text-muted">当前会话没有可显示的消息</div>
         )}
 
-        {!loadingSessionDetail && visibleMessages.length > 0 && (
+        {!loadingSessionDetail && detailView === "transcript" && visibleMessages.length > 0 && (
           <div className="relative w-full" style={{ height: messageVirtualizer.getTotalSize() }}>
             {messageVirtualizer.getVirtualItems().map((virtualRow) => {
               const msg = visibleMessages[virtualRow.index];
@@ -241,14 +281,39 @@ export function SessionDetailPane({
                     </span>
                     <span>{msg.timestamp ?? "-"}</span>
                   </div>
-                  <MarkdownContent content={msg.content} query={sessionQuery} />
+                  <SessionTranscriptContent content={msg.content} query={sessionQuery} />
                 </div>
               );
             })}
           </div>
         )}
 
-        {!loadingSessionDetail && hasMoreMessages && (
+        {!loadingSessionDetail && detailView === "timeline" && (
+          <SessionTimelineView model={processModel} onJumpToMessage={onJumpToMessage} />
+        )}
+
+        {!loadingSessionDetail && detailView === "context" && <SessionContextView session={activeSession} />}
+
+        {!loadingSessionDetail && detailView === "changes" && (
+          <SessionFileChangesView model={processModel} onJumpToMessage={onJumpToMessage} onOpenDiff={onOpenDiff} />
+        )}
+
+        {!loadingSessionDetail && detailView === "tools" && (
+          <SessionToolDiagnosticsView
+            model={processModel}
+            builtinCalls={activeSession?.usage?.builtin_calls ?? []}
+            mcpCalls={activeSession?.usage?.mcp_calls ?? []}
+            skillCalls={activeSession?.usage?.skill_calls ?? []}
+            toolEvents={activeSession?.tool_events ?? []}
+            onJumpToMessage={onJumpToMessage}
+          />
+        )}
+
+        {!loadingSessionDetail && detailView === "subtasks" && (
+          <SessionSubtaskTreeView model={processModel} onJumpToMessage={onJumpToMessage} />
+        )}
+
+        {!loadingSessionDetail && detailView === "transcript" && hasMoreMessages && (
           <button onClick={onLoadMoreMessages} className="ui-btn mt-2.5 w-full" aria-label="加载更多消息">
             加载更多消息 ({visibleMessageCount}/{totalMessageCount})
           </button>

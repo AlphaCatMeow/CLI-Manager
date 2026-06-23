@@ -44,6 +44,7 @@ const FONT_FAMILY_OPTIONS: { value: string; label: string }[] = [
   { value: "Cascadia Code, Consolas, monospace", label: "Cascadia Code（推荐）" },
   { value: "\"JetBrains Mono\", \"Cascadia Code\", Consolas, monospace", label: "JetBrains Mono" },
   { value: "\"Fira Code\", \"Cascadia Code\", Consolas, monospace", label: "Fira Code" },
+  { value: "\"Microsoft YaHei\", \"Cascadia Code\", Consolas, monospace", label: "微软雅黑" },
   { value: "Consolas, monospace", label: "Consolas" },
   { value: "\"Courier New\", monospace", label: "Courier New" },
 ];

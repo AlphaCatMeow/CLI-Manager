@@ -229,6 +229,20 @@ pub struct HistoryToolCount {
     pub count: u64,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryToolEvent {
+    pub call_id: Option<String>,
+    pub name: String,
+    pub category: String,
+    pub message_index: Option<usize>,
+    pub timestamp: Option<String>,
+    pub status: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub input_summary: Option<String>,
+    pub output_summary: Option<String>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryTokenTrendPoint {
@@ -270,6 +284,7 @@ pub struct HistorySessionDetail {
     pub message_count: usize,
     pub branch: Option<String>,
     pub usage: HistorySessionUsage,
+    pub tool_events: Vec<HistoryToolEvent>,
     pub messages: Vec<HistoryMessage>,
 }
 
@@ -2117,6 +2132,7 @@ fn build_session_detail(file_ref: &SessionFileRef) -> Result<HistorySessionDetai
         fingerprint.created_at,
         fingerprint.updated_at,
     );
+    let tool_events = scan_tool_events(&file_ref.path);
     if let Ok(mut cache) = get_stats_cache().lock() {
         cache.entries.insert(
             path_to_key(&file_ref.path),
@@ -2152,6 +2168,7 @@ fn build_session_detail(file_ref: &SessionFileRef) -> Result<HistorySessionDetai
         message_count: messages.len(),
         branch: computed.branch,
         usage,
+        tool_events,
         messages,
     })
 }
@@ -2749,6 +2766,41 @@ fn scan_session_detail(path: &Path) -> (SessionSummaryScan, SessionStatsScan, Ve
     scan_session_inner(path, true)
 }
 
+fn scan_tool_events(path: &Path) -> Vec<HistoryToolEvent> {
+    let Ok(file) = File::open(path) else {
+        return Vec::new();
+    };
+    let mut events = Vec::new();
+    let mut message_index = 0usize;
+    let mut seen_call_ids: HashSet<String> = HashSet::new();
+
+    for line in BufReader::with_capacity(READ_BUF_CAPACITY, file).lines().map_while(Result::ok) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+
+        let current_message_index = if parse_message(&value).is_some() {
+            let index = Some(message_index);
+            message_index += 1;
+            index
+        } else {
+            None
+        };
+
+        collect_tool_events_from_value(
+            &value,
+            current_message_index,
+            &mut seen_call_ids,
+            &mut events,
+        );
+    }
+    events
+}
+
 /// Stream parsed messages from a session file. Callback returns `false` to break early.
 /// 同一条消息的多个流式行携带相同 usage，去重后仅首行保留 token 字段，避免前端求和虚高。
 fn iter_session_messages<F>(path: &Path, mut callback: F) -> Result<(), String>
@@ -3026,6 +3078,207 @@ fn collect_tool_calls(
             }
         }
     }
+}
+
+fn collect_tool_events_from_value(
+    value: &Value,
+    message_index: Option<usize>,
+    seen_call_ids: &mut HashSet<String>,
+    events: &mut Vec<HistoryToolEvent>,
+) {
+    if let Some(blocks) = value
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_array)
+    {
+        for block in blocks {
+            if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            let Some(name) = block.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let call_id = block.get("id").and_then(Value::as_str).map(str::to_string);
+            if !mark_tool_event_seen(call_id.as_deref(), seen_call_ids) {
+                continue;
+            }
+            events.push(make_tool_event(
+                call_id,
+                name,
+                message_index,
+                extract_timestamp(value),
+                Some("started"),
+                None,
+                block.get("input").and_then(summarize_json_value),
+                None,
+                None,
+            ));
+        }
+    }
+
+    if let Some(payload) = value.get("payload") {
+        let payload_type = payload.get("type").and_then(Value::as_str);
+        if matches!(payload_type, Some("function_call") | Some("custom_tool_call")) {
+            let Some(name) = payload.get("name").and_then(Value::as_str) else {
+                return;
+            };
+            let call_id = payload.get("call_id").and_then(Value::as_str).map(str::to_string);
+            if !mark_tool_event_seen(call_id.as_deref(), seen_call_ids) {
+                return;
+            }
+            let mcp_server = payload
+                .get("namespace")
+                .and_then(Value::as_str)
+                .and_then(extract_mcp_server);
+            events.push(make_tool_event(
+                call_id,
+                name,
+                message_index,
+                extract_timestamp(value),
+                Some("started"),
+                None,
+                payload.get("arguments").and_then(summarize_json_value),
+                None,
+                mcp_server,
+            ));
+            return;
+        }
+
+        if payload_type == Some("function_call_output") {
+            let call_id = payload.get("call_id").and_then(Value::as_str).map(str::to_string);
+            let output_summary = payload.get("output").and_then(summarize_json_value);
+            update_tool_event_output(events, call_id.as_deref(), output_summary, None);
+            return;
+        }
+
+        if payload_type
+            .map(|kind| kind.starts_with("mcp_tool_call"))
+            .unwrap_or(false)
+        {
+            let call_id = payload.get("call_id").and_then(Value::as_str).map(str::to_string);
+            let duration_ms = extract_tool_duration_ms(payload);
+            let status = if payload_type == Some("mcp_tool_call_end") {
+                Some("completed")
+            } else if payload_type == Some("mcp_tool_call_error") {
+                Some("failed")
+            } else {
+                None
+            };
+
+            if let Some(invocation) = payload.get("invocation") {
+                if let Some(server) = invocation.get("server").and_then(Value::as_str) {
+                    let name = invocation.get("tool").and_then(Value::as_str).unwrap_or(server);
+                    if mark_tool_event_seen(call_id.as_deref(), seen_call_ids) {
+                        events.push(make_tool_event(
+                            call_id.clone(),
+                            name,
+                            message_index,
+                            extract_timestamp(value),
+                            status,
+                            duration_ms,
+                            invocation.get("arguments").and_then(summarize_json_value),
+                            payload.get("result").and_then(summarize_json_value),
+                            Some(server),
+                        ));
+                    } else {
+                        update_tool_event_output(
+                            events,
+                            call_id.as_deref(),
+                            payload.get("result").and_then(summarize_json_value),
+                            status.map(str::to_string),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn mark_tool_event_seen(call_id: Option<&str>, seen_call_ids: &mut HashSet<String>) -> bool {
+    let Some(id) = call_id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return true;
+    };
+    seen_call_ids.insert(id.to_string())
+}
+
+fn make_tool_event(
+    call_id: Option<String>,
+    name: &str,
+    message_index: Option<usize>,
+    timestamp: Option<String>,
+    status: Option<&str>,
+    duration_ms: Option<u64>,
+    input_summary: Option<String>,
+    output_summary: Option<String>,
+    mcp_server: Option<&str>,
+) -> HistoryToolEvent {
+    let category = if let Some(server) = mcp_server.or_else(|| extract_mcp_server(name)) {
+        format!("mcp:{server}")
+    } else if name == "Skill" {
+        "skill".to_string()
+    } else {
+        "builtin".to_string()
+    };
+    HistoryToolEvent {
+        call_id,
+        name: name.to_string(),
+        category,
+        message_index,
+        timestamp,
+        status: status.map(str::to_string),
+        duration_ms,
+        input_summary,
+        output_summary,
+    }
+}
+
+fn update_tool_event_output(
+    events: &mut [HistoryToolEvent],
+    call_id: Option<&str>,
+    output_summary: Option<String>,
+    status: Option<String>,
+) {
+    let Some(call_id) = call_id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return;
+    };
+    if let Some(event) = events
+        .iter_mut()
+        .rev()
+        .find(|event| event.call_id.as_deref() == Some(call_id))
+    {
+        if output_summary.is_some() {
+            event.output_summary = output_summary;
+        }
+        if status.is_some() {
+            event.status = status;
+        }
+    }
+}
+
+fn summarize_json_value(value: &Value) -> Option<String> {
+    let text = match value {
+        Value::Null => return None,
+        Value::String(text) => text.clone(),
+        other => serde_json::to_string(other).ok()?,
+    };
+    let normalized = normalize_text(&text);
+    if normalized.is_empty() {
+        None
+    } else if normalized.len() > 500 {
+        let truncated: String = normalized.chars().take(500).collect();
+        Some(format!("{truncated}…"))
+    } else {
+        Some(normalized)
+    }
+}
+
+fn extract_tool_duration_ms(value: &Value) -> Option<u64> {
+    value
+        .get("duration_ms")
+        .or_else(|| value.get("durationMs"))
+        .or_else(|| value.get("elapsed_ms"))
+        .or_else(|| value.get("elapsedMs"))
+        .and_then(extract_positive_u64)
 }
 
 fn extract_mcp_server(value: &str) -> Option<&str> {

@@ -147,6 +147,18 @@ export interface HistoryToolCount {
   count: number;
 }
 
+export interface HistoryToolEvent {
+  call_id?: string | null;
+  name: string;
+  category: string;
+  message_index?: number | null;
+  timestamp?: string | null;
+  status?: string | null;
+  duration_ms?: number | null;
+  input_summary?: string | null;
+  output_summary?: string | null;
+}
+
 export interface HistoryTokenTrendPoint {
   input_tokens: number;
   output_tokens: number;
@@ -173,6 +185,7 @@ export interface HistorySessionUsage {
 
 export interface HistorySessionDetail extends HistorySessionSummary {
   usage?: HistorySessionUsage;
+  tool_events?: HistoryToolEvent[];
   messages: HistoryMessage[];
 }
 

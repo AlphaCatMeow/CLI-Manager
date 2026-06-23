@@ -7,9 +7,10 @@ import { useProjectStore } from "../stores/projectStore";
 import { PromptLibrary } from "./prompts/PromptLibrary";
 import { DiffModal } from "./history/DiffModal";
 import { HistoryListPane } from "./history/HistoryListPane";
-import { SessionDetailPane } from "./history/SessionDetailPane";
+import { SessionDetailPane, type HistoryDetailView } from "./history/SessionDetailPane";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { toGroupLabel, type TimeGroupLabel } from "./history/historyViewUtils";
+import { buildSessionProcessModel } from "./history/sessionEvents";
 
 const SESSION_PAGE_SIZE = 100;
 const MESSAGE_PAGE_SIZE = 160;
@@ -86,6 +87,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
   const [promptOpen, setPromptOpen] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
   const [diffContainer, setDiffContainer] = useState<HTMLElement | null>(null);
+  const [detailView, setDetailView] = useState<HistoryDetailView>("transcript");
   const [visibleSessionCount, setVisibleSessionCount] = useState(SESSION_PAGE_SIZE);
   const [visibleMessageCount, setVisibleMessageCount] = useState(MESSAGE_PAGE_SIZE);
   const [debouncedSessionQuery, setDebouncedSessionQuery] = useState(sessionQuery);
@@ -294,6 +296,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
 
   useEffect(() => {
     setVisibleMessageCount(MESSAGE_PAGE_SIZE);
+    setDetailView("transcript");
     pendingScrollMessageRef.current = null;
     messageRefs.current = {};
   }, [activeSession?.session_id]);
@@ -302,6 +305,8 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
     () => (activeSession?.messages ?? EMPTY_MESSAGES).slice(0, visibleMessageCount),
     [activeSession?.messages, visibleMessageCount]
   );
+
+  const processModel = useMemo(() => buildSessionProcessModel(activeSession), [activeSession]);
 
   const hasMoreMessages = visibleMessageCount < (activeSession?.messages.length ?? 0);
 
@@ -410,6 +415,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
   const jumpToMessage = async (messageIndex: number) => {
     if (!activeView) return;
     try {
+      setDetailView("transcript");
       await openSessionAtMessage(activeView.sessionKey, messageIndex);
     } catch (err) {
       toast.error("定位消息失败", { description: String(err) });
@@ -490,9 +496,12 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
             visibleMessageCount={visibleMessageCount}
             hasMoreMessages={hasMoreMessages}
             totalMessageCount={activeSession?.messages.length ?? 0}
+            processModel={processModel}
+            detailView={detailView}
             messageListRef={messageListRef}
             sessionSearchRef={sessionSearchRef}
             messageRefs={messageRefs}
+            onDetailViewChange={setDetailView}
             onMessageListScroll={handleMessageListScroll}
             onAliasDraftChange={setAliasDraft}
             onTagsDraftChange={setTagsDraft}
@@ -504,6 +513,9 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
             onJumpNext={jumpNext}
             onOpenPrompt={() => setPromptOpen(true)}
             onOpenDiff={() => setDiffOpen(true)}
+            onJumpToMessage={(messageIndex) => {
+              void jumpToMessage(messageIndex);
+            }}
             onToggleStar={() => {
               void toggleStar();
             }}

@@ -5,7 +5,7 @@ import "react-diff-view/style/index.css";
 import { FileCode2, GitCompareArrows, X } from "lucide-react";
 import type { HistoryMessage } from "../../lib/types";
 import DiffWorker from "../../lib/diffParser.worker.ts?worker";
-import type { ParsedDiffBlock } from "../../lib/diffParser.worker";
+import { isDiffCandidate, type ParsedDiffBlock } from "../../lib/diffParser";
 import { cn } from "@/lib/utils";
 
 interface DiffModalProps {
@@ -53,15 +53,6 @@ const FallbackDiffViewer = memo(function FallbackDiffViewer({ patch }: { patch: 
     </div>
   );
 });
-
-function isDiffCandidate(content: string): boolean {
-  return (
-    content.includes("diff --git") ||
-    content.includes("*** Begin Patch") ||
-    content.includes("@@") ||
-    content.includes("+++")
-  );
-}
 
 function parseBlockFiles(patch: string): FileData[] {
   if (!patch.includes("diff --git") && !patch.includes("--- ")) return [];

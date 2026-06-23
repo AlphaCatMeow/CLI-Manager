@@ -77,6 +77,22 @@ interface HistorySessionUsage {
   token_trend: HistoryTokenTrendPoint[];
 }
 
+interface HistoryToolEvent {
+  call_id?: string | null;
+  name: string;
+  category: string;
+  message_index?: number | null;
+  timestamp?: string | null;
+  status?: string | null;
+  duration_ms?: number | null;
+  input_summary?: string | null;
+  output_summary?: string | null;
+}
+
+interface HistorySessionDetail {
+  tool_events?: HistoryToolEvent[];
+}
+
 interface TerminalSession {
   cliSessionId?: string;
 }
@@ -98,6 +114,9 @@ interface TerminalSession {
 - Explicit cost fields from the source payload are not billing authority for CLI-Manager history stats. Local `model_prices` decides cost when model pricing is available; otherwise usage is counted as unpriced.
 - Codex session project keys should prefer session metadata `cwd`; path-derived keys are only a fallback.
 - Codex session identity should prefer `session_meta.payload.id` for rollout JSONL files (`rollout-*.jsonl`) so `HistorySessionSummary.session_id` / `HistorySessionDetail.session_id` match the hook-reported `TerminalSession.cliSessionId`. If the metadata id is missing, fall back to the file stem. This Codex-only normalization must not change Claude Code session identity, which continues to use the existing file-stem id.
+- `HistorySessionDetail.tool_events` is detail-only diagnostic data, not part of list/stats aggregation. It may require an additional detail-path scan and must not pollute `SessionStatsScan` caches used by list/stats hot paths.
+- Tool event extraction must preserve source truth: return `duration_ms`, `status`, input/output summaries only when the raw JSONL exposes them. Do not synthesize durations or success states from tool names or message text. Missing fields normalize to `null` or an empty list on the frontend.
+- Tool event categories use stable strings: `builtin`, `skill`, or `mcp:<server>`. Claude `tool_use` names like `mcp__exa__web_search_exa` and Codex namespaces like `mcp__gitnexus` must map to the same MCP category shape.
 - Terminal realtime stats bind strictly to the current terminal's `TerminalSession.cliSessionId` (from CLI hook payload). When a session id is present, look up **only** that session; if it is not yet found in history (e.g. JSONL not flushed), keep that terminal's own empty/loading state and **never** fall back to a different session. Project-level "latest session" lookup is used only when the terminal has no session id at all.
 - When the CLI hook chain is known to be active (any terminal has bound a `cliSessionId` this run) but the current CLI terminal has not yet received its own id, the realtime panel shows an explicit "awaiting session identification" empty state instead of borrowing the project's latest session — so newly opened sessions never display a neighbor window's data. Only a true no-hook environment (no terminal ever bound an id) keeps the project latest-session fallback.
 - Stats date ranges may cover up to 366 days and must reject larger ranges with `date_range_too_large`.
@@ -110,6 +129,9 @@ interface TerminalSession {
 | Missing usage field | Count tokens and cost as zero. |
 | Older cached/frontend payload lacks hourly token/cost/session fields | Normalize missing hourly fields to zero counts and an empty `session_refs` array. |
 | Usage field has unknown shape | Ignore unknown fields; keep the message/session readable. |
+| Tool event has no call id | Keep the event if it has a tool name; do not deduplicate by name only. |
+| Tool event has no duration/status | Return `null`; UI must render an explicit missing-data state rather than guessing. |
+| Tool output is very large | Return a bounded summary, not the full unbounded output. |
 | Session has no token trend points | Return an empty `token_trend`; UI renders an explicit empty state. |
 | Session has exactly one token trend point | Keep the single point; UI renders a single-point state instead of a misleading line chart. |
 | CLI hook session id present but not yet in history | Keep the terminal's own loading/empty state; never show another session. |
@@ -127,6 +149,7 @@ interface TerminalSession {
 
 - Good: a Claude session with input/output/cache usage and known model produces complete totals, cost, model distribution, daily trend, and per-session message token fields.
 - Good: a Codex session with multiple cumulative `token_count` events returns `token_trend` as adjacent deltas, and two Codex windows in the same project show different realtime session details after their hook `sessionId` values arrive.
+- Good: a history detail payload includes `tool_events` for Claude `tool_use` and Codex `function_call` rows; missing per-call duration remains `null` and the frontend says no duration data is available.
 - Good: a Codex rollout file with `session_meta.payload.id` returns that UUID as `session_id`, allowing realtime stats strict binding to match the hook session id; a Claude file with a similar metadata id still keeps its original file-stem identity.
 - Base: a Codex session without model pricing still appears in stats with token totals and `unpriced_tokens`; a single-day stats view can map `hourly_activity` into 24 hourly trend and heatmap buckets.
 - Bad: frontend assumes a newly added numeric field is always present and renders `NaN` when older cached payloads omit it; realtime stats uses only project latest-session lookup and shows another window's current context.
@@ -141,11 +164,13 @@ interface TerminalSession {
   - Case-insensitive ASCII search avoids per-message lowercasing regressions.
   - Claude streamed duplicate usage lines produce one total and one matching `token_trend` point.
   - Codex cumulative `token_count` events produce delta totals and matching `token_trend` points.
+  - Tool event extraction returns bounded diagnostic rows for Claude `tool_use`, Codex `function_call`, `function_call_output`, and MCP end/error events without changing aggregate tool counts.
 - Frontend checks:
   - `npm run build` must pass after payload/type changes.
   - Stats UI must render missing token/cost fields as zero, not `NaN`.
   - Realtime terminal stats passes `cliSessionId` into history lookup when present and keeps project fallback when absent.
   - Token trend UI renders explicit empty/single-point states when there are fewer than two trend points.
+  - Tool diagnostics renders `tool_events` when present and renders a missing-duration state when `duration_ms` is absent.
   - Single-day stats must use `hourly_activity` for Token/cost trend and session heatmap; multi-day ranges must keep using `daily_series` and `heatmap`.
 - Release checks:
   - `cargo test` must pass before tagging a release that changes history stats contracts.

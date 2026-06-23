@@ -502,7 +502,7 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
 
       {/* Filter */}
       {changes.length > 0 && (
-        <div ref={filterRowRef} className="flex shrink-0 justify-center gap-1 border-b px-2 py-1.5" style={{ borderColor: TERM.dim }}>
+        <div ref={filterRowRef} className="flex w-full shrink-0 gap-1 border-b px-2 py-1.5" style={{ borderColor: TERM.dim }}>
           {filterButtons.map((btn) => {
             const Icon = btn.icon;
             const active = statusFilter === btn.value;
@@ -512,7 +512,7 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
                 key={btn.value}
                 type="button"
                 onClick={() => setStatusFilter(btn.value)}
-                className="ui-focus-ring flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] transition-colors"
+                className="ui-focus-ring flex min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] transition-colors"
                 title={title}
                 aria-label={title}
                 aria-pressed={active}
