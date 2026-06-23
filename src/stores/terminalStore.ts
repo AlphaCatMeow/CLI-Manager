@@ -227,6 +227,23 @@ function createSubagentPaneId(parentTabId: string, agentId: string | null, toolU
   return `subagent:${parentTabId}:${Date.now().toString(36)}:${subagentSeq.toString(36)}`;
 }
 
+function buildSubagentTitle(
+  parentSession: TerminalSession | undefined,
+  agentType: string | null,
+  existingSubagentCount: number
+): string {
+  const parentTitle = parentSession?.title || "Terminal";
+  const agentLabel = agentType || "子Agent";
+
+  // 如果同一父终端已经有子 Agent，添加序号
+  if (existingSubagentCount > 0) {
+    return `${agentLabel} #${existingSubagentCount + 1} (${parentTitle})`;
+  }
+
+  // 首个子 Agent：显示父终端标题，便于识别来源
+  return `${agentLabel} (${parentTitle})`;
+}
+
 function resolveSubagentTranscriptSource(payload: CliHookPayload): SubagentTranscriptSource {
   const childPath = trimOptional(payload.agentTranscriptPath);
   const parentPath = trimOptional(payload.transcriptPath);
@@ -399,6 +416,11 @@ function findSubagentSessionId(sessions: TerminalSession[], payload: CliHookPayl
     );
     if (byTool) return byTool.id;
   }
+
+  // Fallback：仅当 payload 既无 agentId 也无 toolUseId（完全无法识别）时，才通过 parentTabId 推断。
+  // 若 payload 带 agentId/toolUseId 但未匹配到，说明是新的子 Agent，应返回 null 以创建新 Tab，
+  // 避免并发场景下第二个子 Agent 被错误合并到第一个。
+  if (agentId || toolUseId) return null;
 
   const candidates = sessions.filter(
     (session) => session.kind === "subagent-transcript" && session.subagent?.parentSessionId === payload.tabId
@@ -1198,7 +1220,16 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     const parentTabId = payload.tabId;
     const sessions = get().sessions;
     // 多窗口隔离：hook 事件广播到所有窗口，仅拥有该 Tab 的窗口处理。
-    if (!sessions.some((session) => session.id === parentTabId)) return;
+    if (!sessions.some((session) => session.id === parentTabId)) {
+      logInfo("[subagent_transcript] parent tab not found, skipping", {
+        parentTabId,
+        event: payload.event,
+        agentId: payload.agentId,
+        sessionCount: sessions.length,
+        sessionIds: sessions.map((s) => s.id).slice(0, 5),
+      });
+      return;
+    }
 
     const tree = get().paneTree;
     if (!tree) return;
@@ -1282,15 +1313,31 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
     // 去重：同一子 Agent 已有面板则更新 source；仅发现/切换 child JSONL 时订阅。
     if (sessions.some((session) => session.id === pseudoId)) {
+      const agentType = payload.agentType?.trim() || null;
+      const parentSession = sessions.find((session) => session.id === parentTabId);
+      const existingSession = sessions.find((session) => session.id === pseudoId);
+
+      // 如果这次更新带来了 agentType（通常是 SubagentStart 绑定到 AgentToolStart 创建的 placeholder），重建标题。
+      const shouldUpdateTitle = agentType && existingSession && (!existingSession.subagent?.agentType);
+      const newTitle = shouldUpdateTitle
+        ? buildSubagentTitle(
+            parentSession,
+            agentType,
+            sessions.filter((s) => s.kind === "subagent-transcript" && s.subagent?.parentSessionId === parentTabId && s.id !== pseudoId).length
+          )
+        : undefined;
+
       set((state) => ({
         sessions: state.sessions.map((session) =>
           session.id === pseudoId && session.kind === "subagent-transcript" && session.subagent
             ? {
                 ...session,
+                title: newTitle ?? session.title,
                 subagent: {
                   ...session.subagent,
                   agentId: agentId ?? session.subagent.agentId,
                   toolUseId: toolUseId ?? session.subagent.toolUseId,
+                  agentType: agentType ?? session.subagent.agentType,
                   source,
                 },
               }
@@ -1306,10 +1353,23 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       return;
     }
 
+    // AgentToolStart/AgentToolStop 在并发场景下无法可靠关联到 SubagentStart（前者只有 toolUseId，后者只有 agentId）。
+    // 策略：这两个事件只触发 discovery，不创建 UI；SubagentStart 创建真实 Tab，discovery 负责升级内容源。
+    if (payload.event === "AgentToolStart" || payload.event === "AgentToolStop") {
+      if (!agentId && (resolvedSource.kind === "pending" || resolvedSource.kind === "lifecycle-only")) {
+        startSubagentDiscovery(parentTabId, payload.sessionId ?? null, payload.cwd ?? null);
+      }
+      return;
+    }
+
     const agentType = payload.agentType?.trim() || null;
+    const parentSession = sessions.find((session) => session.id === parentTabId);
+    const existingSubagentCount = sessions.filter(
+      (session) => session.kind === "subagent-transcript" && session.subagent?.parentSessionId === parentTabId
+    ).length;
     const pseudoSession: TerminalSession = {
       id: pseudoId,
-      title: agentType ?? "子 Agent",
+      title: buildSubagentTitle(parentSession, agentType, existingSubagentCount),
       kind: "subagent-transcript",
       subagent: {
         parentSessionId: parentTabId,
@@ -1348,15 +1408,6 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
     if (shouldSubscribe) subscribeChild();
     else if (!subscribeDerivedChild()) subscribeChild();
-
-    // AgentToolStart pending 兜底：若无 agentId 且为 pending/lifecycle-only 状态，启动短时目录扫描。
-    if (
-      (payload.event === "AgentToolStart" || payload.event === "AgentToolStop") &&
-      !agentId &&
-      (source.kind === "pending" || source.kind === "lifecycle-only")
-    ) {
-      startSubagentDiscovery(parentTabId, payload.sessionId ?? null, payload.cwd ?? null);
-    }
   },
 
   finishSubagentTranscript: (payload) => {

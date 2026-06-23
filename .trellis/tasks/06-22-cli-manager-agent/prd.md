@@ -244,3 +244,19 @@ type SubagentTranscriptSourceKind = "pending" | "child-jsonl" | "parent-jsonl" |
 - **Hook 客户端**: `src-tauri/src/hook_client.rs` — `__hook` 已解析 `tool_use_id`/`tool_input`/`tool_response` 并提取 `agentId`/`toolUseId`
 - **合同文档**: `.trellis/spec/backend/cli-hook-contracts.md` — 更新 Signatures、Contracts、Good/Base/Bad Cases、Tests Required
 - **验收文档**: `.trellis/tasks/06-22-cli-manager-agent/acceptance.md` — 已完整覆盖 pending/AgentToolStart/AgentToolStop/source resolution/并发/降级/diagnostics 验收点
+
+### 进度更新 (2026-06-23) — 并发多子 Agent Tab 修复
+
+**问题**：在终端内启动多个并发 sub-agent 时，UI 出现两类异常：
+
+1. **Tab 重复**：2 个 sub-agent 产生 4 个 Tab。根因是 `AgentToolStart`（只有 `toolUseId`，无 `agentId`）和 `SubagentStart`（只有 `agentId`，无 `toolUseId`）在并发场景下无共同标识，无法关联，导致两类事件各自创建 Tab。
+2. **Tab 闪现即消失 + 误覆盖**：`findSubagentSessionId` 的 fallback 在「同父 Tab 候选唯一」时会把第二个 agent 错误匹配到第一个 Tab，造成内容互相覆盖；后续 `Stop` 又把它关闭。
+
+**修复**（`src/stores/terminalStore.ts`）：
+
+- **`AgentToolStart`/`AgentToolStop` 不再创建 UI**：这两个事件只触发短时目录 discovery，由 `SubagentStart`（携带可靠 `agentId` + `agentType`）创建真实 Tab，discovery 负责把数据源升级为 `child-jsonl`。
+- **收紧 `findSubagentSessionId` fallback**：精确匹配优先用 `agentId`，其次 `toolUseId`；仅当 payload **既无 `agentId` 也无 `toolUseId`** 时才按 parentTabId 推断，且要求候选唯一，避免并发误匹配。
+- **`SubagentStart` 绑定 placeholder 时重建标题**：当更新已有 session 带来新的 `agentType` 时，重新生成标题，格式为 `{agentType} (父Tab名)`，第二个起追加 `#N` 序号。
+- **`buildSubagentTitle()` 辅助函数**：统一生成包含父 Tab 标题与序号的可读标题。
+
+**结果**：2 个并发 sub-agent → 2 个独立 Tab，标题可区分来源，均能正确显示各自内容，互不覆盖。`npx tsc --noEmit` 通过，Rust backend 编译通过。
