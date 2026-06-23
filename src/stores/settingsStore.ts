@@ -178,6 +178,7 @@ interface Settings {
   ccSwitchDbPath: string | null;
   /** Git 变更树分组模式：directory（按目录树） / module（按顶层目录模块） */
   gitGroupBy: "directory" | "module";
+  confirmBeforeClosingTerminalTab: boolean;
 }
 
 interface SettingsStore extends Settings {
@@ -262,6 +263,7 @@ const DEFAULTS: Settings = {
   codexHookConfigDir: null,
   ccSwitchDbPath: null,
   gitGroupBy: "directory",
+  confirmBeforeClosingTerminalTab: false,
 };
 
 const LEGACY_LIGHT_PALETTE_MAP: Partial<Record<string, LightThemePalette>> = {
@@ -588,6 +590,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       typeof entries.ccSwitchDbPath === "string" && entries.ccSwitchDbPath.trim()
         ? entries.ccSwitchDbPath
         : null;
+    entries.confirmBeforeClosingTerminalTab =
+      typeof entries.confirmBeforeClosingTerminalTab === "boolean"
+        ? entries.confirmBeforeClosingTerminalTab
+        : DEFAULTS.confirmBeforeClosingTerminalTab;
 
     // 检测背景图是否仍存在；若不存在，仅在内存中清空 imagePath，保留 settings.json
     // 中的原配置，便于后续提示用户「之前选的图丢了」。
