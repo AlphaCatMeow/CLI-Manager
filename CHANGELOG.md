@@ -43,6 +43,10 @@
 - **修复分屏后原 Tab 历史输出丢失**：重构 `SplitTerminalView` 为扁平绝对定位布局，所有终端面板作为稳定 keyed 子节点渲染；分屏操作仅改变布局位置与尺寸，不改变 React 组件父路径，从而避免 `XTermTerminal` 卸载并丢失 xterm.js 内存 scrollback buffer。手动分屏与 sub-agent hook 自动分屏均已修复。
 - **修复并发 sub-agent 转录 Tab 重复与丢失**：并发场景下 `AgentToolStart`（仅含 `toolUseId`）与 `SubagentStart`（仅含 `agentId`）无共同 ID，原逻辑导致 2 个子 Agent 产生 4 个 Tab，其中半数空白、半数被自动关闭后整体消失。现改为 `AgentToolStart` / `AgentToolStop` 仅触发 subagents 目录扫描、不创建 UI；真实 Tab 由携带 `agentId` + `agentType` 的 `SubagentStart` 创建，目录扫描负责将内容源升级为 child JSONL。`findSubagentSessionId` 的兜底匹配收紧为「仅当 payload 既无 `agentId` 也无 `toolUseId` 时才按 `parentTabId` 推断」，避免并发误匹配；子 Agent Tab 标题改为 `{agentType} (父Tab名)`，多个同父子 Agent 追加 `#N` 序号。
 
+### 修复
+
+- **WSL 实时统计读取不到会话**：WSL 环境下扫描 Claude 会话文件时，`find /path -name '*.jsonl'` 的 glob 模式被 zsh 的 `nomatch` 选项拦截——zsh 将未加引号的 `*.jsonl` 当作 glob 展开，若无匹配文件直接报错退出，导致 `find` 无法执行、始终返回 0 个文件。已转义 glob 通配符（`\*`）避免 shell 展开。
+
 ### 字体设置
 
 - **自定义应用 / 终端字体（#45）**：设置页新增系统字体库读取与可搜索字体下拉，应用字体和终端字体分别配置；字体列表保留分页渲染并支持滚动到底加载下一页，读取失败时回退到内置推荐字体与当前自定义值。
