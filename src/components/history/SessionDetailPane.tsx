@@ -1,6 +1,6 @@
 ﻿import { useVirtualizer } from "@tanstack/react-virtual";
-import { BookCopy, Copy, GitCompare, Star } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { BookCopy, ChevronDown, ChevronRight, Copy, GitCompare, Star } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { HistoryMessage, HistorySessionDetail, HistorySessionView } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
@@ -99,41 +99,127 @@ function getCollapsedMessagePreview(content: string): string[] {
 function AutoCollapsedMessageContent({
   message,
   query,
-  forceOpen,
+  open,
 }: {
   message: HistoryMessage;
   query: string;
-  forceOpen: boolean;
+  open: boolean;
 }) {
-  const [open, setOpen] = useState(forceOpen);
-
-  useEffect(() => {
-    if (forceOpen) setOpen(true);
-  }, [forceOpen]);
-
   if (!shouldAutoCollapseMessage(message)) {
     return <SessionTranscriptContent content={message.content} query={query} />;
   }
 
   const previewLines = getCollapsedMessagePreview(message.content);
 
+  if (open) {
+    return (
+      <div className="ui-history-message-collapse">
+        <SessionTranscriptContent content={message.content} query={query} />
+      </div>
+    );
+  }
+
   return (
-    <details
-      className="ui-history-message-collapse"
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
+    <div className="ui-history-message-collapse">
+      <span className="ui-history-message-collapse-preview">
+        {previewLines.map((line, index) => (
+          <span key={index}>{line}</span>
+        ))}
+      </span>
+    </div>
+  );
+}
+
+function HistoryMessageCard({
+  message,
+  index,
+  isMatched,
+  isFocused,
+  badge,
+  query,
+  messageRefs,
+  measureElement,
+}: {
+  message: HistoryMessage;
+  index: number;
+  isMatched: boolean;
+  isFocused: boolean;
+  badge: ReturnType<typeof roleBadge>;
+  query: string;
+  messageRefs: RefObject<Record<number, HTMLDivElement | null>>;
+  measureElement: (element: Element) => void;
+}) {
+  const forceOpen = isMatched || isFocused;
+  const collapsible = shouldAutoCollapseMessage(message);
+  const [open, setOpen] = useState(forceOpen);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (forceOpen) setOpen(true);
+  }, [forceOpen]);
+
+  useEffect(() => {
+    if (cardRef.current) measureElement(cardRef.current);
+  }, [measureElement, open]);
+
+  const setCardRef = (element: HTMLDivElement | null) => {
+    cardRef.current = element;
+    messageRefs.current[index] = element;
+    if (element) measureElement(element);
+  };
+  const toggleTitle = open ? "收起内容" : "展开折叠内容";
+
+  return (
+    <div
+      data-index={index}
+      ref={setCardRef}
+      className="ui-history-message-card absolute left-0 top-0 w-full p-2.5"
+      style={{
+        borderColor: isFocused ? "var(--warning)" : isMatched ? "var(--accent)" : "var(--border)",
+      }}
     >
-      <summary aria-label={open ? "收起内容" : "展开折叠内容"}>
-        {!open && (
-          <span className="ui-history-message-collapse-preview">
-            {previewLines.map((line, index) => (
-              <span key={index}>{line}</span>
-            ))}
+      {collapsible ? (
+        <button
+          type="button"
+          className="ui-history-message-header ui-dev-label mb-1 flex w-full items-center justify-between text-[11px] text-text-muted"
+          onClick={() => setOpen((current) => !current)}
+          aria-expanded={open}
+          title={toggleTitle}
+        >
+          <span
+            className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide"
+            style={{
+              color: badge.color,
+              backgroundColor: badge.bg,
+              border: `1px solid ${badge.border}`,
+            }}
+          >
+            {badge.label}
           </span>
-        )}
-      </summary>
-      <SessionTranscriptContent content={message.content} query={query} />
-    </details>
+          <span className="flex min-w-0 items-center gap-2">
+            <span>{message.timestamp ?? "-"}</span>
+            <span className="ui-history-message-collapse-icon" aria-hidden="true">
+              {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+            </span>
+          </span>
+        </button>
+      ) : (
+        <div className="ui-dev-label mb-1 flex items-center justify-between text-[11px] text-text-muted">
+          <span
+            className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide"
+            style={{
+              color: badge.color,
+              backgroundColor: badge.bg,
+              border: `1px solid ${badge.border}`,
+            }}
+          >
+            {badge.label}
+          </span>
+          <span>{message.timestamp ?? "-"}</span>
+        </div>
+      )}
+      <AutoCollapsedMessageContent message={message} query={query} open={open} />
+    </div>
   );
 }
 
@@ -339,33 +425,17 @@ export function SessionDetailPane({
               const isFocused = focusedMessageIndex === virtualRow.index;
               const badge = roleBadge(msg.role);
               return (
-                <div
-                  key={virtualRow.key}
-                  data-index={virtualRow.index}
-                  ref={(el) => {
-                    messageRefs.current[virtualRow.index] = el;
-                    if (el) messageVirtualizer.measureElement(el);
-                  }}
-                  className="ui-history-message-card absolute left-0 top-0 w-full p-2.5"
-                  style={{
-                    borderColor: isFocused ? "var(--warning)" : isMatched ? "var(--accent)" : "var(--border)",
-                    transform: `translateY(${virtualRow.start}px)`,
-                  }}
-                >
-                  <div className="ui-dev-label mb-1 flex items-center justify-between text-[11px] text-text-muted">
-                    <span
-                      className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide"
-                      style={{
-                        color: badge.color,
-                        backgroundColor: badge.bg,
-                        border: `1px solid ${badge.border}`,
-                      }}
-                    >
-                      {badge.label}
-                    </span>
-                    <span>{msg.timestamp ?? "-"}</span>
-                  </div>
-                  <AutoCollapsedMessageContent message={msg} query={sessionQuery} forceOpen={isMatched || isFocused} />
+                <div key={virtualRow.key} className="absolute left-0 top-0 w-full" style={{ transform: `translateY(${virtualRow.start}px)` }}>
+                  <HistoryMessageCard
+                    message={msg}
+                    index={virtualRow.index}
+                    isMatched={isMatched}
+                    isFocused={isFocused}
+                    badge={badge}
+                    query={sessionQuery}
+                    messageRefs={messageRefs}
+                    measureElement={messageVirtualizer.measureElement}
+                  />
                 </div>
               );
             })}

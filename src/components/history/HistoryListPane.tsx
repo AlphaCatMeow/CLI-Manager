@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, ChevronRight, Folder, RefreshCw, Search, Star, Terminal, X } from "lucide-react";
+import { Bot, ChevronDown, ChevronRight, Folder, RefreshCw, Search, Star, Terminal, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react";
 import type { Group, HistorySearchHit, HistorySessionView, HistorySourceFilter, Project } from "../../lib/types";
 import { useI18n } from "../../lib/i18n";
@@ -67,6 +67,7 @@ interface HistoryListPaneProps {
   onProjectPathFilterChange: (value: string | null) => void;
   onGlobalQueryChange: (value: string) => void;
   onOpenSession: (sessionKey: string) => void;
+  onResumeSession: (session: HistorySessionView) => void;
   onDeleteSession: (session: HistorySessionView) => void;
   onOpenHit: (hit: HistorySearchHit) => void;
   onLoadMoreSessions: () => void;
@@ -85,7 +86,7 @@ function rowHeight(row: HistoryListRow): number {
   if (row.type === "empty") return 88;
   if (row.type === "loading" || row.type === "loadMore") return 56;
   if (row.type === "searchHit") return 72;
-  return row.depth > 0 ? 104 : 96;
+  return row.depth > 0 ? 82 : 96;
 }
 
 function sessionRelationKey(source: string, projectKey: string, sessionId: string): string {
@@ -275,6 +276,7 @@ export function HistoryListPane({
   onProjectPathFilterChange,
   onGlobalQueryChange,
   onOpenSession,
+  onResumeSession,
   onDeleteSession,
   onOpenHit,
   onLoadMoreSessions,
@@ -291,6 +293,7 @@ export function HistoryListPane({
   const [projectSearchQuery, setProjectSearchQuery] = useState("");
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const projectDropdownRef = useRef<HTMLDivElement | null>(null);
+  const projectMenuWasOpenRef = useRef(false);
 
   const projectTree = useMemo(() => buildHistoryProjectTree(groups, projects), [groups, projects]);
   const selectedProject = useMemo(
@@ -371,6 +374,13 @@ export function HistoryListPane({
     onDeleteSession(session);
   }, [contextMenu, onDeleteSession]);
 
+  const handleContextMenuResume = useCallback(() => {
+    if (!contextMenu) return;
+    const session = contextMenu.session;
+    setContextMenu(null);
+    onResumeSession(session);
+  }, [contextMenu, onResumeSession]);
+
   useEffect(() => {
     if (!contextMenu) return;
     const handler = (e: Event) => {
@@ -393,11 +403,17 @@ export function HistoryListPane({
   }, [contextMenu]);
 
   useEffect(() => {
+    const wasOpen = projectMenuWasOpenRef.current;
+    projectMenuWasOpenRef.current = projectMenuOpen;
+
     if (!projectMenuOpen) {
       setProjectSearchQuery("");
       return;
     }
-    setCollapsedFilterGroups(new Set(projectGroupIds));
+
+    if (!wasOpen) {
+      setCollapsedFilterGroups(new Set(projectGroupIds));
+    }
   }, [projectGroupIds, projectMenuOpen]);
 
   useEffect(() => {
@@ -534,7 +550,7 @@ export function HistoryListPane({
           <button
             onClick={onRefresh}
             aria-label="刷新历史会话列表"
-            className="ui-flat-action ui-toolbar-button-compact h-8 w-8 shrink-0 px-0"
+            className="ui-flat-action ui-toolbar-button-compact ui-history-list-action h-8 w-8 shrink-0 px-0"
             title="刷新会话列表"
           >
             <RefreshCw size={12} />
@@ -543,7 +559,7 @@ export function HistoryListPane({
             type="button"
             onClick={onClose}
             aria-label="关闭历史会话"
-            className="ui-flat-action ui-toolbar-button-compact h-8 w-8 shrink-0 px-0"
+            className="ui-flat-action ui-toolbar-button-compact ui-history-close-action h-8 w-8 shrink-0 px-0"
             title="关闭历史会话"
           >
             <X size={13} />
@@ -687,17 +703,29 @@ export function HistoryListPane({
                 )}
 
                 {row.type === "session" && (
-                  <div className="py-1 pr-2" style={{ paddingLeft: row.depth > 0 ? 22 : 8 }}>
+                  <div className={row.depth > 0 ? "relative py-0.5 pr-2 pl-9" : "py-1 pr-2 pl-2"}>
+                    {row.depth > 0 && (
+                      <>
+                        <span className="absolute bottom-0 left-[18px] top-[-8px] w-px bg-border/70" aria-hidden="true" />
+                        <span className="absolute left-[18px] top-1/2 h-px w-3 bg-border/70" aria-hidden="true" />
+                        <span className="absolute left-[28px] top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-text-muted/70" aria-hidden="true" />
+                      </>
+                    )}
                     <div
                       onContextMenu={(e) => handleSessionContextMenu(e, row.item)}
-                      className="ui-list-row flex min-h-[88px] w-full items-start gap-2 rounded-xl border border-border/70 bg-surface-container-lowest px-2.5 py-2 text-left"
+                      className={[
+                        "ui-list-row flex w-full items-start gap-2 border text-left",
+                        row.depth > 0
+                          ? "min-h-[72px] rounded-lg border-border/45 bg-surface-container-low px-2 py-1.5"
+                          : "min-h-[88px] rounded-xl border-border/70 bg-surface-container-lowest px-2.5 py-2",
+                      ].join(" ")}
                       style={{ backgroundColor: row.item.sessionKey === activeSessionKey ? "var(--bg-tertiary)" : undefined }}
                     >
                       {row.childCount > 0 && (
                         <button
                           type="button"
                           onClick={() => toggleSessionParent(row.item.sessionKey)}
-                          className="ui-flat-action mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-text-muted"
+                          className="ui-flat-action mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-surface-container-high text-text-secondary"
                           aria-expanded={!collapsedSessionParents.has(row.item.sessionKey)}
                           aria-label={t(
                             collapsedSessionParents.has(row.item.sessionKey)
@@ -712,13 +740,11 @@ export function HistoryListPane({
                             { count: row.childCount }
                           )}
                         >
-                          <ChevronRight
-                            size={13}
-                            style={{
-                              transform: collapsedSessionParents.has(row.item.sessionKey) ? "rotate(0deg)" : "rotate(90deg)",
-                              transition: "transform 150ms",
-                            }}
-                          />
+                          {collapsedSessionParents.has(row.item.sessionKey) ? (
+                            <ChevronRight size={14} strokeWidth={2.4} />
+                          ) : (
+                            <ChevronDown size={14} strokeWidth={2.4} />
+                          )}
                         </button>
                       )}
                       <button
@@ -728,6 +754,19 @@ export function HistoryListPane({
                       >
                         <div className="flex min-w-0 items-center gap-1.5">
                           {row.item.starred && <Star size={12} className="shrink-0" style={{ color: "var(--warning)" }} fill="currentColor" />}
+                          {row.depth > 0 && (
+                            <span
+                              className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em]"
+                              style={{
+                                backgroundColor: "color-mix(in srgb, var(--primary) 16%, var(--surface-container-high) 84%)",
+                                border: "1px solid color-mix(in srgb, var(--primary) 34%, transparent)",
+                                color: "color-mix(in srgb, var(--primary) 72%, var(--text-primary) 28%)",
+                              }}
+                            >
+                              <Bot size={10} strokeWidth={2.2} />
+                              {t("history.tree.subagent")}
+                            </span>
+                          )}
                           <span className="truncate text-[13px] font-semibold text-text-primary">{row.item.displayTitle}</span>
                           {row.childCount > 0 && (
                             <span className="shrink-0 rounded-full border border-border/70 px-1.5 text-[10px] font-medium text-text-muted">
@@ -738,11 +777,6 @@ export function HistoryListPane({
                         <div className="ui-dev-label mt-1 truncate text-[11px] text-text-muted">
                           {row.item.source} · {makeSessionLabel(row.item)} · {row.item.message_count} 条消息
                         </div>
-                        {row.parentSessionId && (
-                          <div className="ui-dev-label mt-1 truncate text-[11px] text-text-muted">
-                            {t("history.tree.parentSession", { sessionId: row.parentSessionId })}
-                          </div>
-                        )}
                         <div className="ui-dev-label mt-1 truncate text-[11px] text-text-muted">更新于 {formatTime(row.item.updated_at)}</div>
                       </button>
                       <button
@@ -790,8 +824,13 @@ export function HistoryListPane({
       {contextMenu && (
         <Portal>
           <div className="context-menu" style={{ left: menuX, top: menuY }} ref={contextMenuRef} role="menu">
+            <button className="context-menu-item" role="menuitem" onClick={handleContextMenuResume}>
+              <RefreshCw size={13} aria-hidden="true" />
+              <span>{t("history.menu.resumeInTerminal")}</span>
+            </button>
             <button className="context-menu-item danger" role="menuitem" onClick={handleContextMenuDelete}>
-              删除
+              <Trash2 size={13} aria-hidden="true" />
+              <span>删除</span>
             </button>
           </div>
         </Portal>

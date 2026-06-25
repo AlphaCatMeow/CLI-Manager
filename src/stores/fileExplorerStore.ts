@@ -262,6 +262,39 @@ function replaceChildren(
   });
 }
 
+function mergeLoadedSubtrees(
+  entries: ProjectFileEntry[],
+  previousEntries: ProjectFileEntry[]
+): ProjectFileEntry[] {
+  const previousByPath = new Map(previousEntries.map((entry) => [entry.path, entry]));
+  return entries.map((entry) => {
+    const previous = previousByPath.get(entry.path);
+    if (!previous?.children || entry.children) return entry;
+    return { ...entry, children: previous.children };
+  });
+}
+
+function replaceChildrenKeepingLoadedSubtrees(
+  entries: ProjectFileEntry[],
+  targetPath: string,
+  children: ProjectFileEntry[]
+): ProjectFileEntry[] {
+  if (targetPath === "") return mergeLoadedSubtrees(children, entries);
+  return entries.map((entry) => {
+    if (entry.path === targetPath) {
+      return { ...entry, children: mergeLoadedSubtrees(children, entry.children ?? []) };
+    }
+    if (entry.children) {
+      return { ...entry, children: replaceChildrenKeepingLoadedSubtrees(entry.children, targetPath, children) };
+    }
+    return entry;
+  });
+}
+
+function pathDepth(path: string): number {
+  return path ? path.split("/").length : 0;
+}
+
 function parentPath(path: string): string {
   const index = path.lastIndexOf("/");
   return index === -1 ? "" : path.slice(0, index);
@@ -603,10 +636,22 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
       name: clipboard.name,
       overwrite,
     });
-    await get().loadDir(targetParentPath);
+    const refreshPaths = clipboard.mode === "move"
+      ? [targetParentPath, parentPath(clipboard.path)]
+      : [targetParentPath];
+    const uniqueRefreshPaths = Array.from(new Set(refreshPaths)).sort((a, b) => pathDepth(a) - pathDepth(b));
+    const refreshedDirs = await Promise.all(uniqueRefreshPaths.map(async (path) => ({
+      path,
+      children: await listDir(project.path, path),
+    })));
+    set((state) => ({
+      tree: refreshedDirs.reduce(
+        (tree, dir) => replaceChildrenKeepingLoadedSubtrees(tree, dir.path, dir.children),
+        state.tree
+      ),
+    }));
     await get().refreshGitChanges();
     if (clipboard.mode === "move") {
-      await get().loadDir(parentPath(clipboard.path));
       const openFiles = get().openFiles.filter((file) => !isSameOrChildPath(file.path, clipboard.path));
       const activeFile = openFiles.find((file) => file.path === get().activeFilePath) ?? openFiles[0] ?? null;
       set({ openFiles, activeFilePath: activeFile?.path ?? null, activeFile });

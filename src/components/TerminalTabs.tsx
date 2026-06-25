@@ -1046,6 +1046,7 @@ interface PaneLeafViewProps {
   fontFamily: string;
   resolvedTheme: "dark" | "light";
   terminalThemeName: string;
+  terminalThemeBackground: string;
   lightThemePalette: ReturnType<typeof useSettingsStore.getState>["lightThemePalette"];
   darkThemePalette: ReturnType<typeof useSettingsStore.getState>["darkThemePalette"];
   terminalBackgroundEnabled: boolean;
@@ -1080,6 +1081,7 @@ function PaneLeafView({
   fontFamily,
   resolvedTheme,
   terminalThemeName,
+  terminalThemeBackground,
   lightThemePalette,
   darkThemePalette,
   terminalBackgroundEnabled,
@@ -1152,6 +1154,7 @@ function PaneLeafView({
               <FileEditorPane
                 session={session}
                 isActive={session.id === activeSessionId}
+                terminalThemeBackground={terminalThemeBackground}
                 onClose={() => onCloseSessions([session.id])}
               />
             ) : session.kind === "subagent-transcript" ? (
@@ -2030,6 +2033,7 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
       fontFamily={fontFamily}
       resolvedTheme={resolvedTheme}
       terminalThemeName={effectiveTerminalThemeName}
+      terminalThemeBackground={terminalThemeBackground}
       lightThemePalette={lightThemePalette}
       darkThemePalette={darkThemePalette}
       terminalBackgroundEnabled={terminalBackgroundEnabled}
@@ -2078,6 +2082,7 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
     sessions,
     showBackgroundForSession,
     tabNotifications,
+    terminalThemeBackground,
     terminalBackgroundEnabled,
     terminalBackgroundImagePath,
     unsplitTerminal,

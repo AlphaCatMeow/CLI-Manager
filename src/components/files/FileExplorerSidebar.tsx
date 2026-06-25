@@ -12,7 +12,7 @@ import { ConfirmDialog } from "../ConfirmDialog";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogTitle } from "../ui/dialog";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "../ui/context-menu";
-import { ChevronRight, Copy, File, Folder, FolderPlus, RefreshCw, Search, Trash2, X } from "../icons";
+import { ChevronRight, Copy, File, Folder, FolderPlus, Pencil, RefreshCw, Search, Trash2, X } from "../icons";
 
 type InputAction =
   | { kind: "create-file"; parentPath: string }
@@ -29,6 +29,10 @@ type ConfirmAction =
 type FileDisplayStatus =
   | { kind: "editing"; label: string; color: string }
   | { kind: "git"; label: string; color: string };
+
+type DraggedFileEntry = Pick<ProjectFileEntry, "kind" | "name" | "path">;
+
+const FILE_EXPLORER_ENTRY_MIME = "application/x-cli-manager-file-entry";
 
 interface AutoCollapseGroupState {
   expandedGroupPaths: Set<string>;
@@ -105,9 +109,60 @@ function splitAutoCollapsedEntries(entries: ProjectFileEntry[], ignoredPaths: Se
   return { normalEntries, collapsedEntries };
 }
 
+function collectAutoCollapsedEntries(entries: ProjectFileEntry[], ignoredPaths: Set<string>): ProjectFileEntry[] {
+  const result: ProjectFileEntry[] = [];
+
+  const walk = (items: ProjectFileEntry[]) => {
+    const { normalEntries, collapsedEntries } = splitAutoCollapsedEntries(items, ignoredPaths);
+    result.push(...collapsedEntries);
+
+    for (const entry of normalEntries) {
+      if (entry.kind === "directory" && entry.children) {
+        walk(entry.children);
+      }
+    }
+  };
+
+  walk(entries);
+  return result;
+}
+
 function parentPath(path: string): string {
   const index = path.lastIndexOf("/");
   return index === -1 ? "" : path.slice(0, index);
+}
+
+function isSameOrChildPath(path: string, targetPath: string): boolean {
+  if (!targetPath) return path === targetPath;
+  return path === targetPath || path.startsWith(`${targetPath}/`);
+}
+
+function hasFileExplorerDrag(dataTransfer: DataTransfer): boolean {
+  return Array.from(dataTransfer.types).includes(FILE_EXPLORER_ENTRY_MIME);
+}
+
+function readDraggedFileEntry(dataTransfer: DataTransfer): DraggedFileEntry | null {
+  try {
+    const raw = dataTransfer.getData(FILE_EXPLORER_ENTRY_MIME);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<DraggedFileEntry>;
+    if (
+      (value.kind === "file" || value.kind === "directory")
+      && typeof value.name === "string"
+      && typeof value.path === "string"
+    ) {
+      return { kind: value.kind, name: value.name, path: value.path };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function canMoveDraggedEntry(source: DraggedFileEntry, targetParentPath: string): boolean {
+  if (parentPath(source.path) === targetParentPath) return false;
+  if (source.kind === "directory" && isSameOrChildPath(targetParentPath, source.path)) return false;
+  return true;
 }
 
 function InlineRenameInput({
@@ -212,6 +267,8 @@ function FileNode({
   onFileKeyDown,
   onFileDragStart,
   onFileDragEnd,
+  onFileDragOver,
+  onFileDrop,
   autoCollapseGroups,
 }: {
   entry: ProjectFileEntry;
@@ -226,6 +283,8 @@ function FileNode({
   onFileKeyDown: (event: ReactKeyboardEvent<HTMLElement>, entry: ProjectFileEntry) => void;
   onFileDragStart: (event: ReactDragEvent<HTMLElement>, entry: ProjectFileEntry) => void;
   onFileDragEnd: () => void;
+  onFileDragOver: (event: ReactDragEvent<HTMLElement>, targetEntry: ProjectFileEntry) => void;
+  onFileDrop: (event: ReactDragEvent<HTMLElement>, targetEntry: ProjectFileEntry) => void;
   autoCollapseGroups: AutoCollapseGroupState;
 }) {
   const project = useFileExplorerStore((s) => s.project);
@@ -275,7 +334,10 @@ function FileNode({
       onFileKeyDown={onFileKeyDown}
       onFileDragStart={onFileDragStart}
       onFileDragEnd={onFileDragEnd}
+      onFileDragOver={onFileDragOver}
+      onFileDrop={onFileDrop}
       autoCollapseGroups={autoCollapseGroups}
+      renderAutoCollapsedGroup={false}
     />
   ) : null;
 
@@ -328,6 +390,8 @@ function FileNode({
             }}
             onDragStart={(event) => onFileDragStart(event, displayEntry)}
             onDragEnd={onFileDragEnd}
+            onDragOver={(event) => onFileDragOver(event, displayEntry)}
+            onDrop={(event) => onFileDrop(event, displayEntry)}
             onClick={() => {
               if (isDir) void toggleDir(displayEntry.path);
               else onOpenFile(displayEntry);
@@ -380,13 +444,10 @@ function FileNode({
             </>
           )}
           <ContextMenuItem onSelect={() => onInput({ kind: "rename", path: displayEntry.path, currentName: displayEntry.name })}>
-            重命名
+            <Pencil size={13} /> 重命名
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => setClipboard({ mode: "copy", path: displayEntry.path, name: displayEntry.name })}>
-            复制
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={() => setClipboard({ mode: "move", path: displayEntry.path, name: displayEntry.name })}>
-            移动
+            <Copy size={13} /> 复制
           </ContextMenuItem>
           {project && (
             <>
@@ -426,7 +487,10 @@ function FileTreeRows({
   onFileKeyDown,
   onFileDragStart,
   onFileDragEnd,
+  onFileDragOver,
+  onFileDrop,
   autoCollapseGroups,
+  renderAutoCollapsedGroup,
 }: {
   entries: ProjectFileEntry[];
   parentPath: string;
@@ -441,9 +505,15 @@ function FileTreeRows({
   onFileKeyDown: (event: ReactKeyboardEvent<HTMLElement>, entry: ProjectFileEntry) => void;
   onFileDragStart: (event: ReactDragEvent<HTMLElement>, entry: ProjectFileEntry) => void;
   onFileDragEnd: () => void;
+  onFileDragOver: (event: ReactDragEvent<HTMLElement>, targetEntry: ProjectFileEntry) => void;
+  onFileDrop: (event: ReactDragEvent<HTMLElement>, targetEntry: ProjectFileEntry) => void;
   autoCollapseGroups: AutoCollapseGroupState;
+  renderAutoCollapsedGroup: boolean;
 }) {
-  const { normalEntries, collapsedEntries } = splitAutoCollapsedEntries(entries, autoCollapseGroups.ignoredPaths);
+  const { normalEntries } = splitAutoCollapsedEntries(entries, autoCollapseGroups.ignoredPaths);
+  const collapsedEntries = renderAutoCollapsedGroup
+    ? collectAutoCollapsedEntries(entries, autoCollapseGroups.ignoredPaths)
+    : [];
   const groupOpen = autoCollapseGroups.expandedGroupPaths.has(parentPath);
 
   return (
@@ -463,6 +533,8 @@ function FileTreeRows({
           onFileKeyDown={onFileKeyDown}
           onFileDragStart={onFileDragStart}
           onFileDragEnd={onFileDragEnd}
+          onFileDragOver={onFileDragOver}
+          onFileDrop={onFileDrop}
           autoCollapseGroups={autoCollapseGroups}
         />
       ))}
@@ -489,6 +561,8 @@ function FileTreeRows({
               onFileKeyDown={onFileKeyDown}
               onFileDragStart={onFileDragStart}
               onFileDragEnd={onFileDragEnd}
+              onFileDragOver={onFileDragOver}
+              onFileDrop={onFileDrop}
               autoCollapseGroups={autoCollapseGroups}
             />
           ))}
@@ -669,6 +743,16 @@ export function FileExplorerSidebar() {
     entry.kind === "directory" ? entry.path : parentPath(entry.path)
   ), []);
 
+  const moveDraggedEntry = useCallback(async (source: DraggedFileEntry, targetParentPath: string) => {
+    if (!canMoveDraggedEntry(source, targetParentPath)) return;
+    setClipboard({ mode: "move", path: source.path, name: source.name });
+    await pasteIntoTarget(targetParentPath);
+  }, [pasteIntoTarget, setClipboard]);
+
+  const getDropTargetPath = useCallback((entry: ProjectFileEntry) => (
+    entry.kind === "directory" ? entry.path : parentPath(entry.path)
+  ), []);
+
   const handleFileKeyDown = useCallback((event: ReactKeyboardEvent<HTMLElement>, entry: ProjectFileEntry) => {
     if (event.key === "F2" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
       event.preventDefault();
@@ -708,7 +792,8 @@ export function FileExplorerSidebar() {
     if (!project) return;
     const text = formatTerminalDragPath(project, entry.path, entry.kind);
     beginTerminalFileDrag(text);
-    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.effectAllowed = "copyMove";
+    event.dataTransfer.setData(FILE_EXPLORER_ENTRY_MIME, JSON.stringify({ kind: entry.kind, name: entry.name, path: entry.path }));
     event.dataTransfer.setData(TERMINAL_FILE_PATH_MIME, text);
     event.dataTransfer.setData("text/plain", text);
   }, [project]);
@@ -716,6 +801,38 @@ export function FileExplorerSidebar() {
   const handleFileDragEnd = useCallback(() => {
     endTerminalFileDrag();
   }, []);
+
+  const handleFileDragOver = useCallback((event: ReactDragEvent<HTMLElement>, _targetEntry: ProjectFileEntry) => {
+    if (!hasFileExplorerDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "move";
+  }, []);
+
+  const handleFileDrop = useCallback((event: ReactDragEvent<HTMLElement>, targetEntry: ProjectFileEntry) => {
+    if (!hasFileExplorerDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const source = readDraggedFileEntry(event.dataTransfer);
+    if (!source) return;
+    void moveDraggedEntry(source, getDropTargetPath(targetEntry));
+  }, [getDropTargetPath, moveDraggedEntry]);
+
+  const handleRootDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!hasFileExplorerDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "move";
+  }, []);
+
+  const handleRootDrop = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!hasFileExplorerDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const source = readDraggedFileEntry(event.dataTransfer);
+    if (!source) return;
+    void moveDraggedEntry(source, "");
+  }, [moveDraggedEntry]);
 
   const requestOpenFile = (entry: ProjectFileEntry) => {
     void openFile(entry);
@@ -762,6 +879,8 @@ export function FileExplorerSidebar() {
             }}
             onDragStart={(event) => handleFileDragStart(event, entry)}
             onDragEnd={handleFileDragEnd}
+            onDragOver={(event) => handleFileDragOver(event, entry)}
+            onDrop={(event) => handleFileDrop(event, entry)}
             title={displayStatus ? `${entry.path} · ${displayStatus.label}` : entry.path}
           >
             <img src={entry.kind === "directory" ? getMaterialFolderIcon(entry.name, false) : getMaterialFileIcon(entry.name)} alt="" width={16} height={16} draggable={false} />
@@ -786,7 +905,7 @@ export function FileExplorerSidebar() {
       </ContextMenu>
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeFile?.path, cancelRename, getDisplayStatus, handleFileDragEnd, handleFileDragStart, handleFileKeyDown, openFile, project, renamingAction?.path, submitRename]);
+  }, [activeFile?.path, cancelRename, getDisplayStatus, handleFileDragEnd, handleFileDragOver, handleFileDragStart, handleFileDrop, handleFileKeyDown, openFile, project, renamingAction?.path, submitRename]);
 
   const copyRootAiPath = useCallback(() => {
     if (!project) return;
@@ -817,7 +936,10 @@ export function FileExplorerSidebar() {
           onFileKeyDown={handleFileKeyDown}
           onFileDragStart={handleFileDragStart}
           onFileDragEnd={handleFileDragEnd}
+          onFileDragOver={handleFileDragOver}
+          onFileDrop={handleFileDrop}
           autoCollapseGroups={autoCollapseGroups}
+          renderAutoCollapsedGroup
         />
       )
     ) : (
@@ -861,6 +983,8 @@ export function FileExplorerSidebar() {
             className="min-h-0 flex-1 overflow-y-auto px-1 py-1 outline-none"
             tabIndex={0}
             onKeyDown={handleRootKeyDown}
+            onDragOver={handleRootDragOver}
+            onDrop={handleRootDrop}
           >
             {renderRows}
           </div>
@@ -871,6 +995,9 @@ export function FileExplorerSidebar() {
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => openInput({ kind: "create-dir", parentPath: "" })}>
             <FolderPlus size={13} /> 新建文件夹
+          </ContextMenuItem>
+          <ContextMenuItem disabled={!clipboard} onSelect={() => void pasteIntoTarget("")}>
+            <Copy size={13} /> 粘贴
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={copyRootAiPath}>

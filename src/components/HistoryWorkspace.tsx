@@ -1,9 +1,11 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { toast } from "sonner";
 import { useHistoryStore } from "../stores/historyStore";
-import type { HistoryMessage, HistorySearchHit, HistorySessionView, HistorySourceFilter } from "../lib/types";
+import type { HistoryMessage, HistorySearchHit, HistorySessionView, HistorySourceFilter, Project } from "../lib/types";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useProjectStore } from "../stores/projectStore";
+import { useTerminalStore } from "../stores/terminalStore";
+import { useI18n } from "../lib/i18n";
 import { PromptLibrary } from "./prompts/PromptLibrary";
 import { DiffModal } from "./history/DiffModal";
 import { HistoryListPane } from "./history/HistoryListPane";
@@ -28,11 +30,75 @@ function normalizeHistorySidebarWidth(width: number): number {
   return width === HISTORY_SIDEBAR_OLD_DEFAULT_WIDTH ? HISTORY_SIDEBAR_DEFAULT_WIDTH : width;
 }
 
+function normalizePathKey(value: string): string {
+  return value.trim().replace(/\\/g, "/").replace(/\/+$/g, "").toLowerCase();
+}
+
+function pathTail(value: string): string {
+  const normalized = normalizePathKey(value);
+  return normalized.split("/").filter(Boolean).pop() ?? normalized;
+}
+
+function claudeProjectKeyFromPath(path: string): string {
+  return path
+    .trim()
+    .replace(/:/g, "-")
+    .replace(/[\\/]/g, "-")
+    .replace(/-+$/g, "")
+    .toLowerCase();
+}
+
+function isAbsolutePathLike(value: string): boolean {
+  const trimmed = value.trim();
+  return /^[a-zA-Z]:[\\/]/.test(trimmed) || trimmed.startsWith("\\\\") || trimmed.startsWith("/");
+}
+
+function parseProjectEnvVars(project?: Project): Record<string, string> | undefined {
+  if (!project) return undefined;
+  try {
+    const parsed = JSON.parse(project.env_vars || "{}");
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const entries = Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string");
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function findProjectForHistorySession(session: HistorySessionView, projects: Project[]): Project | undefined {
+  const projectKey = session.project_key.trim();
+  const normalizedProjectKey = normalizePathKey(projectKey);
+  if (!normalizedProjectKey) return undefined;
+
+  return projects.find((project) => {
+    const projectPath = normalizePathKey(project.path);
+    const projectName = project.name.trim().toLowerCase();
+    return (
+      projectPath === normalizedProjectKey ||
+      claudeProjectKeyFromPath(project.path) === normalizedProjectKey ||
+      pathTail(project.path) === normalizedProjectKey ||
+      projectName === normalizedProjectKey
+    );
+  });
+}
+
+function buildHistoryResumeCommand(session: HistorySessionView): string {
+  return session.source === "claude"
+    ? `claude --resume ${session.session_id}`
+    : `codex resume --no-alt-screen ${session.session_id}`;
+}
+
+function resolveHistoryResumeCwd(session: HistorySessionView, project?: Project): string | undefined {
+  if (project) return project.path;
+  return isAbsolutePathLike(session.project_key) ? session.project_key.trim() : undefined;
+}
+
 interface HistoryWorkspaceProps {
   active?: boolean;
 }
 
 export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
+  const { t } = useI18n();
   const loadingSessions = useHistoryStore((s) => s.loadingSessions);
   const loadingMoreSessions = useHistoryStore((s) => s.loadingMoreSessions);
   const loadingSessionDetail = useHistoryStore((s) => s.loadingSessionDetail);
@@ -69,6 +135,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
   const updateSetting = useSettingsStore((s) => s.update);
   const projects = useProjectStore((s) => s.projects);
   const groups = useProjectStore((s) => s.groups);
+  const createSession = useTerminalStore((s) => s.createSession);
 
   const globalSearchRef = useRef<HTMLInputElement | null>(null);
   const sessionSearchRef = useRef<HTMLInputElement | null>(null);
@@ -405,6 +472,30 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
       });
   }, [deleteSession, deleteTarget]);
 
+  const resumeSessionInTerminal = useCallback(
+    (session: HistorySessionView) => {
+      const project = findProjectForHistorySession(session, projects);
+      const shell = project?.shell && project.shell !== "powershell" ? project.shell : undefined;
+      const title = `${session.source === "claude" ? "Claude" : "Codex"}: ${session.displayTitle || session.session_id}`;
+
+      void createSession(
+        project?.id,
+        resolveHistoryResumeCwd(session, project),
+        title,
+        buildHistoryResumeCommand(session),
+        parseProjectEnvVars(project),
+        shell
+      )
+        .then(() => {
+          closeHistory();
+        })
+        .catch((err) => {
+          toast.error(t("history.toast.resumeTerminalFailed"), { description: String(err) });
+        });
+    },
+    [closeHistory, createSession, projects, t]
+  );
+
   const jumpToMessage = async (messageIndex: number) => {
     if (!activeView) return;
     try {
@@ -459,6 +550,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
           }}
           onGlobalQueryChange={setGlobalQuery}
           onOpenSession={openSessionSafe}
+          onResumeSession={resumeSessionInTerminal}
           onDeleteSession={setDeleteTarget}
           onOpenHit={(hit) => {
             void openByHit(hit);

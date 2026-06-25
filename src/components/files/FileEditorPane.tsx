@@ -17,6 +17,7 @@ configureMonaco();
 interface FileEditorPaneProps {
   session: TerminalSession;
   isActive: boolean;
+  terminalThemeBackground: string;
   onClose: () => void;
 }
 
@@ -27,9 +28,21 @@ type PendingAction =
 
 type MonacoEditor = Parameters<OnMount>[0];
 
-export function FileEditorPane({ session, isActive, onClose }: FileEditorPaneProps) {
+function isDarkHexColor(color: string): boolean {
+  const raw = color.trim().replace(/^#/, "");
+  const hex = raw.length === 3
+    ? raw.split("").map((char) => `${char}${char}`).join("")
+    : raw;
+  if (!/^[0-9a-fA-F]{6}$/.test(hex)) return true;
+  const red = Number.parseInt(hex.slice(0, 2), 16);
+  const green = Number.parseInt(hex.slice(2, 4), 16);
+  const blue = Number.parseInt(hex.slice(4, 6), 16);
+  const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
+  return luminance < 0.5;
+}
+
+export function FileEditorPane({ session, isActive, terminalThemeBackground, onClose }: FileEditorPaneProps) {
   const editorRef = useRef<MonacoEditor | null>(null);
-  const resolvedTheme = useSettingsStore((s) => s.resolvedTheme);
   const copyAiShortcut = useSettingsStore((s) => s.keyboardShortcuts.copyAi);
   const project = useFileExplorerStore((s) => s.project);
   const openProject = useFileExplorerStore((s) => s.openProject);
@@ -49,6 +62,10 @@ export function FileEditorPane({ session, isActive, onClose }: FileEditorPanePro
   const dirty = Boolean(visibleFile && visibleFile.content !== visibleFile.savedContent);
   const dirtyFiles = visibleFiles.filter((file) => file.content !== file.savedContent);
   const language = useMemo(() => visibleFile ? languageFromPath(visibleFile.path) : "plaintext", [visibleFile]);
+  const editorTheme = useMemo(
+    () => isDarkHexColor(terminalThemeBackground) ? "vs-dark" : "vs",
+    [terminalThemeBackground]
+  );
 
   const handleEditorMount = useCallback<OnMount>((editor) => {
     editorRef.current = editor;
@@ -214,14 +231,14 @@ export function FileEditorPane({ session, isActive, onClose }: FileEditorPanePro
       </div>
 
       {visibleFiles.length > 0 && (
-        <div className="flex h-8 shrink-0 items-center overflow-x-auto border-b border-border bg-surface-container-lowest px-1">
+        <div className="ui-file-editor-tabs flex h-8 shrink-0 items-center overflow-x-auto border-b border-border bg-surface-container-lowest px-1">
           {visibleFiles.map((file) => {
             const isActiveFile = file.path === activeFilePath;
             const isDirty = file.content !== file.savedContent;
             return (
               <div
                 key={file.path}
-                className="group flex h-7 max-w-[180px] shrink-0 items-center rounded-t text-[11px] text-on-surface-variant hover:bg-surface-container-high"
+                className="ui-file-editor-tab group flex h-7 max-w-[180px] shrink-0 items-center rounded-t text-[11px] text-on-surface-variant hover:bg-surface-container-high"
                 data-active={isActiveFile ? "true" : "false"}
                 style={isActiveFile ? { background: "var(--surface-container)", color: "var(--on-surface)" } : undefined}
                 title={file.path}
@@ -250,7 +267,7 @@ export function FileEditorPane({ session, isActive, onClose }: FileEditorPanePro
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-hidden bg-surface">
+      <div className="ui-file-editor-body min-h-0 flex-1 overflow-hidden bg-surface">
         {!visibleFile && (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-text-muted">
             <FileCode size={36} strokeWidth={1.2} />
@@ -264,7 +281,7 @@ export function FileEditorPane({ session, isActive, onClose }: FileEditorPanePro
           </div>
         )}
         {visibleFile?.previewKind === "image" && visibleFile.image && (
-          <div className="flex h-full items-center justify-center overflow-auto bg-surface-container-lowest p-4">
+          <div className="ui-file-editor-image-preview flex h-full items-center justify-center overflow-auto bg-surface-container-lowest p-4">
             <div className="flex max-h-full max-w-full flex-col items-center gap-3">
               <img
                 src={`data:${visibleFile.image.mimeType};base64,${visibleFile.image.dataBase64}`}
@@ -280,15 +297,15 @@ export function FileEditorPane({ session, isActive, onClose }: FileEditorPanePro
         )}
         {visibleFile && (visibleFile.previewKind === "text" || visibleFile.previewKind === "markdown") && (
           visibleFile.previewKind === "markdown" && previewMode === "preview" ? (
-            <div className="h-full overflow-auto p-4">
-              <MarkdownContent content={visibleFile.content} linkBehavior="preview" />
+            <div className="ui-file-editor-markdown-preview h-full overflow-auto p-4">
+              <MarkdownContent content={visibleFile.content} variant="terminal" linkBehavior="preview" />
             </div>
           ) : (
             <Editor
               path={visibleFile.path}
               value={visibleFile.content}
               language={language}
-              theme={resolvedTheme === "dark" ? "vs-dark" : "vs"}
+              theme={editorTheme}
               onMount={handleEditorMount}
               onChange={(value) => setActiveContent(value ?? "")}
               options={{

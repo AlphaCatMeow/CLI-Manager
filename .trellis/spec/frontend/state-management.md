@@ -174,4 +174,24 @@ splitSessionToPaneEdge(sessionId: string, targetPaneId: string, edge: TerminalPa
 
 ## Common Mistakes
 
-(To be filled by the team)
+### Common Mistake: Replacing a refreshed tree branch and dropping loaded descendants
+
+**Symptom**: A file tree folder is still marked expanded, but after moving/copying items the row collapses visually, the tree height changes, and the scroll container may jump toward the top.
+
+**Cause**: Backend directory listing commands usually return only one level of children. Replacing a parent directory with that shallow result drops already loaded `children` on expanded descendants.
+
+**Fix**: When refreshing one or more affected directories, preserve existing loaded descendant `children` for unchanged paths, then apply the explicitly refreshed directories from ancestor to descendant.
+
+```typescript
+const refreshPaths = Array.from(new Set([targetParentPath, sourceParentPath]))
+  .sort((a, b) => pathDepth(a) - pathDepth(b));
+
+set((state) => ({
+  tree: refreshedDirs.reduce(
+    (tree, dir) => replaceChildrenKeepingLoadedSubtrees(tree, dir.path, dir.children),
+    state.tree
+  ),
+}));
+```
+
+**Prevention**: For file-tree move/copy/rename/delete flows, check whether the refreshed path can be root or an ancestor of an expanded folder. If yes, avoid intermediate `set()` calls that temporarily drop descendant children.
