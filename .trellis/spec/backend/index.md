@@ -17,6 +17,7 @@
 | [CLI Hook Contracts](./cli-hook-contracts.md) | Claude/Codex hook install events, bridge payload fields, and sub-agent transcript routing | Active |
 | [WSL Path Contracts](./wsl-path-contracts.md) | WSL UNC 路径的 Plan 9 限制、wsl.exe 规避方案、路径转换工具签名和安全性 | Active |
 | [Project File Command Contracts](./project-file-command-contracts.md) | 项目根目录内文件浏览、读写、复制移动和路径边界校验命令合约 | Active |
+| [App Startup Contracts](./app-startup-contracts.md) | 应用启动链路、单实例约束与主窗口唤醒行为 | Active |
 
 ---
 

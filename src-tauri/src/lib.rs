@@ -14,10 +14,18 @@ use log::LevelFilter;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager,
+    AppHandle, Emitter, Manager, Runtime,
 };
 use tauri_plugin_log::{Builder as LogBuilder, Target, TargetKind, TimezoneStrategy};
 use tauri_plugin_sql::{Builder as SqlBuilder, Migration, MigrationKind};
+
+fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
 
 fn migrations() -> Vec<Migration> {
     vec![
@@ -217,6 +225,9 @@ pub fn run() {
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         .plugin({
             let mut targets = vec![Target::new(TargetKind::LogDir {
                 file_name: Some("cli-manager.log".into()),
@@ -262,11 +273,7 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "tray_show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.unminimize();
-                            let _ = window.set_focus();
-                        }
+                        show_main_window(app);
                     }
                     "tray_quit" => {
                         if let Some(window) = app.get_webview_window("main") {
@@ -285,11 +292,7 @@ pub fn run() {
                     } = event
                     {
                         let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.unminimize();
-                            let _ = window.set_focus();
-                        }
+                        show_main_window(&app);
                     }
                 })
                 .build(app)?;

@@ -18,6 +18,7 @@ const READER_FLUSH_THRESHOLD: usize = 32 * 1024;
 const READER_BUF_SIZE: usize = 16 * 1024;
 const MIN_PTY_COLS: u16 = 40;
 const MIN_PTY_ROWS: u16 = 8;
+const GIT_BASH_INITIAL_OUTPUT_DELAY_MS: u64 = 250;
 
 pub struct PtySession {
     writer: Box<dyn Write + Send>,
@@ -82,7 +83,7 @@ impl PtyManager {
             }
             "wsl" if cfg!(target_os = "windows") => Ok(("wsl.exe".to_string(), Vec::new())),
             "gitbash" if cfg!(target_os = "windows") => resolve_git_bash_exe()
-                .map(|path| (path.to_string_lossy().into_owned(), Vec::new()))
+                .map(|path| (path.to_string_lossy().into_owned(), Self::git_bash_login_args()))
                 .ok_or_else(|| GIT_BASH_NOT_FOUND_MESSAGE.to_string()),
             // Unix shells (macOS, Linux)
             "zsh" => Ok(("zsh".to_string(), Vec::new())),
@@ -119,6 +120,10 @@ impl PtyManager {
             .and_then(|vars| vars.get("CLI_MANAGER_SHELL_RUNTIME_MONITORING"))
             .map(|value| value == "1")
             .unwrap_or(false)
+    }
+
+    fn git_bash_login_args() -> Vec<String> {
+        vec!["--login".to_string(), "-i".to_string()]
     }
 
     /// 让 hook 回调环境变量跨进 WSL：把它们追加进 WSLENV（无 flag = Win↔WSL 双向共享），
@@ -213,12 +218,13 @@ if (Test-Path function:\PSConsoleHostReadLine) {
         ]
     }
 
-    /// Git Bash 的 OSC 133 集成 rcfile：先加载用户 ~/.bashrc 再追加我们的钩子，
-    /// 保证 PROMPT_COMMAND / PS0 不被用户配置覆盖。
+    /// Git Bash 的 OSC 133 集成 rcfile：先加载 Git for Windows /etc/profile 与用户 ~/.bashrc，
+    /// 再追加我们的钩子，保证 PROMPT_COMMAND / PS0 不被用户配置覆盖。
     /// PS0 仅在交互式命令真正执行前展开（bash 4.4+），用 `${PS0:0:$((var=1,0))}`
     /// 技巧完成无输出赋值，替代 DEBUG trap（trap 会被 PROMPT_COMMAND 自身误触发）。
     fn write_bash_integration_rcfile() -> Result<String, String> {
-        let script = r#"[ -f ~/.bashrc ] && . ~/.bashrc
+        let script = r#"[ -f /etc/profile ] && . /etc/profile
+[ -f ~/.bashrc ] && . ~/.bashrc
 __cli_manager_prompt() {
   local exit_code=$?
   if [ "${__cli_manager_ran:-0}" = "1" ]; then
@@ -335,6 +341,12 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
                 Self::apply_wsl_env_forwarding(vars);
             }
         }
+        if cfg!(target_os = "windows") && shell_key == "gitbash" {
+            env_vars
+                .get_or_insert_with(HashMap::new)
+                .entry("CHERE_INVOKING".to_string())
+                .or_insert_with(|| "1".to_string());
+        }
         let (exe, args) = Self::build_shell_args(shell_key, env_vars.as_ref()).map_err(|e| {
             error!(
                 "pty resolve shell failed: id={}, shell={}, error={}",
@@ -389,6 +401,7 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
         let child_for_thread = child.clone();
         let diagnostics_for_thread = diagnostics.clone();
         let session_id_owned = session_id.to_string();
+        let defer_initial_output = cfg!(target_os = "windows") && shell_key == "gitbash";
 
         self.statuses.lock().unwrap().insert(
             session_id.to_string(),
@@ -399,6 +412,11 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
         );
 
         let reader_handle = std::thread::spawn(move || {
+            if defer_initial_output {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    GIT_BASH_INITIAL_OUTPUT_DELAY_MS,
+                ));
+            }
             let mut buf = [0u8; READER_BUF_SIZE];
             let mut pending: Vec<u8> = Vec::with_capacity(READER_FLUSH_THRESHOLD * 2);
             let mut reader_end_reason = "eof".to_string();

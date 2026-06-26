@@ -167,8 +167,15 @@ export interface ShellRuntimePayload {
   - `settingsStore.DEFAULTS.shellRuntimeMonitoringEnabled` must be `false`.
   - Missing or invalid persisted values load as disabled; explicit saved booleans must be preserved (`true` stays enabled, `false` stays disabled).
   - The settings UI must keep a user-facing "通用 Shell 运行监控" switch so users can opt in.
-  - Enabling applies only to newly-created PowerShell / pwsh terminals; existing PTY sessions are not retrofitted.
+  - Enabling applies only to newly-created supported terminals; existing PTY sessions are not retrofitted.
   - Rationale: the PowerShell / pwsh implementation launches through a prompt wrapper (`-Command <script>`) to emit private OSC status markers, which can make prompt-ready time slightly slower. Do not re-enable this by default without measuring startup impact.
+
+- Git Bash startup contract:
+  - Windows `gitbash` must resolve through `resolve_git_bash_exe()` and start as an interactive Git for Windows shell.
+  - Monitoring disabled: launch as `bash.exe --login -i` so Git for Windows `/etc/profile` initialization runs.
+  - Monitoring enabled: launch as `bash.exe --rcfile <cli-manager-temp-rcfile> -i`; the temp rcfile must source `/etc/profile` before appending CLI-Manager OSC hooks.
+  - Git Bash PTYs created with a project `cwd` must set `CHERE_INVOKING=1` so Git for Windows profile initialization does not force the shell back to `$HOME`.
+  - Git Bash may emit its first prompt before React has mounted `XTermTerminal` and subscribed to `pty-output-<sessionId>`; the backend reader must defer the initial Git Bash read/emit briefly so the first prompt is not lost.
 
 - Private OSC marker format:
 
@@ -208,9 +215,13 @@ Hook-driven `attention` must win over shell runtime state until the user activat
 | Persisted `shellRuntimeMonitoringEnabled` is missing or invalid | Load as disabled (`false`); new PowerShell / pwsh PTY must not receive `CLI_MANAGER_SHELL_RUNTIME_MONITORING=1`. |
 | Persisted `shellRuntimeMonitoringEnabled` is explicit `true` | Preserve the user opt-in; newly-created PowerShell / pwsh PTY may receive `CLI_MANAGER_SHELL_RUNTIME_MONITORING=1`. |
 | Monitoring setting is disabled | New PTY must not receive `CLI_MANAGER_SHELL_RUNTIME_MONITORING=1`; frontend must ignore shell runtime events for that shell. |
-| Shell is not PowerShell / pwsh | Do not inject PowerShell prompt wrapper. Preserve the normal shell launch path. |
+| Shell is not PowerShell / pwsh | Do not inject PowerShell prompt wrapper. Use that shell's own supported launch path. |
 | Shell is omitted | Do not inject shell runtime monitoring from the frontend. The Rust PTY boundary chooses the platform default shell. |
 | Non-Windows receives a Windows-only shell key (`powershell`, `cmd`, `wsl`, `gitbash`) | Treat it as unsupported for runtime injection and fall back to the platform default shell path instead of spawning `.exe` binaries. |
+| Windows Git Bash launches with monitoring disabled | Use `--login -i`; a bare `bash.exe` can skip Git for Windows profile initialization and appear stuck before the first prompt. |
+| Windows Git Bash launches with monitoring enabled | Keep `--rcfile <temp> -i`, but the rcfile must source `/etc/profile` before registering CLI-Manager hooks. |
+| Windows Git Bash opens for a project path | Preserve the requested `cwd` by setting `CHERE_INVOKING=1`; do not let login/profile startup cd back to `$HOME`. |
+| Windows Git Bash emits its initial prompt immediately after spawn | Delay the initial Git Bash reader loop briefly before emitting PTY output; do not rely on opening additional tabs to recreate the prompt. |
 | OSC marker is split across output chunks | Buffer until `BEL`, then parse and strip before writing to xterm. |
 | OSC marker remains unterminated beyond the safety limit | Drop the buffered private marker fragment instead of writing it to xterm. |
 | Unknown event name | Ignore the marker and do not update status. |
@@ -240,6 +251,10 @@ Hook-driven `attention` must win over shell runtime state until the user activat
   - Over-limit unterminated fragments are dropped.
 - Rust boundary assertions when feasible:
   - PowerShell / pwsh with monitoring enabled includes `-NoExit -Command` and the prompt wrapper.
+  - Git Bash with monitoring disabled includes `--login -i`.
+  - Git Bash with monitoring enabled includes `--rcfile <temp> -i`, and the generated rcfile sources `/etc/profile`.
+  - Git Bash PTY env includes `CHERE_INVOKING=1` without overwriting an explicit caller-provided value.
+  - Git Bash initial reader delay exists only for Windows `gitbash`, not for PowerShell / cmd / WSL / Unix shells.
   - macOS/Linux with omitted shell or Windows-only stale shell never resolves to `powershell.exe`, `cmd.exe`, or `wsl.exe`.
   - Non-PowerShell shells keep their normal argument list.
   - `pty_create` always injects `CLI_MANAGER_TAB_ID`.
@@ -276,4 +291,18 @@ const visible = candidates.reduce(
 ```rust
 // Inject only into this PTY session.
 vec!["-NoLogo".to_string(), "-NoExit".to_string(), "-Command".to_string(), script]
+```
+
+#### Wrong
+
+```rust
+// Bare Git Bash can miss Git for Windows profile initialization.
+Ok((git_bash_path, Vec::new()))
+```
+
+#### Correct
+
+```rust
+// Plain Git Bash sessions run the normal interactive login initialization.
+Ok((git_bash_path, vec!["--login".to_string(), "-i".to_string()]))
 ```

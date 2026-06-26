@@ -40,6 +40,7 @@ zip = { version = "0.6", default-features = false, features = ["deflate"] }
 memchr = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-single-instance = "2.4.2"
 # 只读解析 cc-switch.db；复用 tauri-plugin-sql 依赖树中既有的 sqlx/libsqlite3-sys，无新增原生依赖
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 # git 仓库查询（静默读取分支，避免文件 I/O 触发安全软件弹窗）
