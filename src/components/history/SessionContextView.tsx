@@ -1,4 +1,4 @@
-import { Coins, Cpu, Database, Layers3, TrendingUp, Wrench } from "lucide-react";
+import { Coins, Cpu, Database, Info, Layers3, TrendingUp, Wrench } from "lucide-react";
 import {
   Area,
   CartesianGrid,
@@ -21,6 +21,7 @@ import {
   ProgressBar,
   SegmentedBar,
   TERM,
+  truncatePath,
 } from "../stats/termStatsUi";
 import { getContextLimit } from "../../lib/modelPricing";
 import { HISTORY_TREND_COLORS, PEAK, RECHARTS_AXIS_CURSOR } from "../stats/statsPalette";
@@ -73,6 +74,11 @@ export function SessionContextView({ session }: SessionContextViewProps) {
   const skillCallCount = sumToolCounts(usage?.skill_calls);
   const builtinCallCount = sumToolCounts(usage?.builtin_calls);
   const sessionDuration = session ? formatDuration(session.updated_at - session.created_at) : "—";
+  const sessionSource = session?.source ?? "—";
+  const sessionProject = session?.project_key || "—";
+  const sessionBranch = session?.branch?.trim() || "—";
+  const sessionLocation = session?.cwd?.trim() || session?.file_path || "—";
+  const sessionLocationLabel = sessionLocation === "—" ? "—" : truncatePath(sessionLocation, 3);
   const contextLimit = session?.usage?.context_window ?? getContextLimit(stats.dominantModel);
   const lastContextTokens = session?.usage?.last_context_tokens ?? null;
   const usageRatio = contextLimit && lastContextTokens !== null ? lastContextTokens / contextLimit : null;
@@ -185,6 +191,19 @@ export function SessionContextView({ session }: SessionContextViewProps) {
           <ContextMetric label="MCP" value={formatCompactCount(mcpCallCount)} />
           <ContextMetric label={t("history.tools.skillCommand")} value={formatCompactCount(skillCallCount)} />
           <ContextMetric label={t("history.tools.builtin")} value={formatCompactCount(builtinCallCount)} />
+        </div>
+      </section>
+
+      <section className="ui-session-process-card">
+        <div className="ui-session-process-card-title">
+          <Info size={14} />
+          {t("history.context.sessionInfo")}
+        </div>
+        <div className="ui-session-process-metrics">
+          <ContextMetric label={t("history.context.source")} value={sessionSource} />
+          <ContextMetric label={t("termStats.project")} value={sessionProject} title={sessionProject} />
+          <ContextMetric label={t("termStats.branch")} value={sessionBranch} title={sessionBranch} />
+          <ContextMetric label={t("termStats.path")} value={sessionLocationLabel} title={sessionLocation} />
         </div>
       </section>
 
