@@ -20,6 +20,17 @@ import {
   type SparkPoint,
 } from "./termStatsUi";
 
+function formatReasoningEffort(value: string | null | undefined, t: ReturnType<typeof useI18n>["t"]): string {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return "—";
+  if (normalized === "minimal") return t("termStats.reasoningEffortMinimal");
+  if (normalized === "low") return t("termStats.reasoningEffortLow");
+  if (normalized === "medium") return t("termStats.reasoningEffortMedium");
+  if (normalized === "high") return t("termStats.reasoningEffortHigh");
+  if (normalized === "xhigh") return t("termStats.reasoningEffortXHigh");
+  return value?.trim() || "—";
+}
+
 export function TokenUsageCard({ stats }: { stats: TokenStats }) {
   const { t } = useI18n();
   const animatedTotal = useCountUp(stats.totalTokens);
@@ -95,6 +106,7 @@ export function ModelContextCard({
     contextLimit && contextTokens !== null ? (contextTokens / contextLimit) * 100 : null;
   const remaining =
     contextLimit && contextTokens !== null ? Math.max(0, contextLimit - contextTokens) : null;
+  const reasoningEffort = formatReasoningEffort(session?.usage?.reasoning_effort, t);
 
   const percentColor =
     usagePercent === null
@@ -134,6 +146,11 @@ export function ModelContextCard({
           <span className="truncate">{stats.dominantModel || "—"}</span>
         </span>
       </div>
+      <Row
+        label={t("termStats.reasoningEffort")}
+        value={reasoningEffort}
+        color={reasoningEffort === "—" ? TERM.dim : TERM.magenta}
+      />
       <Row
         label={t("termStats.currentContext")}
         value={contextTokens !== null ? formatCompactCount(contextTokens) : "—"}

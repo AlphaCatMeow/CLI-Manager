@@ -255,6 +255,7 @@ function normalizeSessionUsage(raw: unknown): HistorySessionDetail["usage"] {
     dominant_model: asString(rec.dominant_model ?? rec.dominantModel ?? "") || null,
     context_window: asNumber(rec.context_window ?? rec.contextWindow) || null,
     last_context_tokens: asNumber(rec.last_context_tokens ?? rec.lastContextTokens) || null,
+    reasoning_effort: asString(rec.reasoning_effort ?? rec.reasoningEffort ?? "") || null,
     token_trend: normalizeTokenTrend(rec.token_trend ?? rec.tokenTrend),
     tool_call_count: asNumber(rec.tool_call_count ?? rec.toolCallCount),
     mcp_calls: normalizeToolCounts(rec.mcp_calls ?? rec.mcpCalls),

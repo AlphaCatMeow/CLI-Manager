@@ -27,6 +27,7 @@ import {
 } from "../stats/termStatsUi";
 import { TokenUsageCard, ModelContextCard, TrendCard, ToolsCard, TodayUsageCard } from "../stats/termStatsCards";
 import { useI18n } from "../../lib/i18n";
+import { TerminalSquare } from "../icons";
 
 interface TerminalStatsPanelProps {
   activeSessionId: string | null;
@@ -192,7 +193,7 @@ function SessionInfoCard({ session, statsSession, projectName, projectPath, curr
         title={`${projectPath}\n\n${t("termStats.openFolderHint")}`}
         onDoubleClick={handleOpenFolder}
       />
-      <Row label={t("termStats.shell")} value={shell} color={TERM.cyan} title={shell} />
+      <Row icon={<TerminalSquare size={10} strokeWidth={1.7} />} label={t("termStats.shell")} value={shell} color={TERM.cyan} title={shell} />
       <Row
         icon={<Copy size={10} />}
         label={t("termStats.sessionId")}

@@ -71,6 +71,8 @@ struct SessionStatsScan {
     context_window: Option<u64>,
     /// 最近一次请求占用的上下文 token 数。
     last_context_tokens: Option<u64>,
+    /// Codex turn_context 暴露的模型思考强度（如 high / medium）。
+    reasoning_effort: Option<String>,
     token_trend: Vec<HistoryTokenTrendPoint>,
     #[serde(default)]
     usage_events: Vec<SessionUsageEventScan>,
@@ -301,6 +303,7 @@ pub struct HistorySessionUsage {
     pub dominant_model: Option<String>,
     pub context_window: Option<u64>,
     pub last_context_tokens: Option<u64>,
+    pub reasoning_effort: Option<String>,
     pub token_trend: Vec<HistoryTokenTrendPoint>,
     pub tool_call_count: u64,
     pub mcp_calls: Vec<HistoryToolCount>,
@@ -2313,6 +2316,7 @@ fn finalize_session_detail(file_ref: &SessionFileRef, parts: SessionDetailParts)
         dominant_model: parts.computed.stats.dominant_model.clone(),
         context_window: parts.computed.stats.context_window,
         last_context_tokens: parts.computed.stats.last_context_tokens,
+        reasoning_effort: parts.computed.stats.reasoning_effort.clone(),
         token_trend: parts.computed.stats.token_trend.clone(),
         tool_call_count: parts.computed.stats.tool_call_count,
         mcp_calls: sorted_tool_counts(&parts.computed.stats.mcp_calls),
@@ -2387,6 +2391,7 @@ fn merge_session_detail_parts(
     let mut latest_context_updated_at = i64::MIN;
     let mut context_window = None;
     let mut last_context_tokens = None;
+    let mut reasoning_effort = None;
     let mut tool_call_count = 0u64;
     let mut mcp_calls: HashMap<String, u64> = HashMap::new();
     let mut skill_calls: HashMap<String, u64> = HashMap::new();
@@ -2410,6 +2415,9 @@ fn merge_session_detail_parts(
             }
             if part.computed.stats.last_context_tokens.is_some() {
                 last_context_tokens = part.computed.stats.last_context_tokens;
+            }
+            if part.computed.stats.reasoning_effort.is_some() {
+                reasoning_effort = part.computed.stats.reasoning_effort.clone();
             }
             latest_context_updated_at = part.computed.updated_at;
         }
@@ -2469,6 +2477,7 @@ fn merge_session_detail_parts(
     let mut merged_stats = SessionStatsScan {
         context_window,
         last_context_tokens,
+        reasoning_effort,
         tool_call_count,
         mcp_calls,
         skill_calls,
@@ -3409,6 +3418,7 @@ fn scan_session_inner(
     let mut codex_prev_totals: Option<CodexCumulativeUsage> = None;
     let mut context_window: Option<u64> = None;
     let mut last_context_tokens: Option<u64> = None;
+    let mut reasoning_effort: Option<String> = None;
     let mut token_trend: Vec<HistoryTokenTrendPoint> = Vec::new();
     let mut usage_events: Vec<SessionUsageEventScan> = Vec::new();
     let mut tool_call_count = 0u64;
@@ -3446,6 +3456,9 @@ fn scan_session_inner(
         if let Some(model) = &line_model {
             *model_hits.entry(model.clone()).or_insert(0) += 1;
             current_model = Some(model.clone());
+        }
+        if let Some(effort) = extract_reasoning_effort(&value) {
+            reasoning_effort = Some(effort);
         }
 
         if let Some(mut msg) = parse_message(&value) {
@@ -3581,6 +3594,7 @@ fn scan_session_inner(
             model_usage,
             context_window,
             last_context_tokens,
+            reasoning_effort,
             token_trend,
             usage_events,
             tool_call_count,
@@ -4490,6 +4504,26 @@ fn extract_model(value: &Value) -> Option<String> {
     }
 
     None
+}
+
+fn extract_reasoning_effort(value: &Value) -> Option<String> {
+    if value.get("type").and_then(Value::as_str) != Some("turn_context") {
+        return None;
+    }
+    let payload = value.get("payload")?;
+    let candidates = [
+        payload.get("effort").and_then(Value::as_str),
+        payload.get("reasoning_effort").and_then(Value::as_str),
+        payload
+            .get("collaboration_mode")
+            .and_then(|v| v.get("settings"))
+            .and_then(|v| v.get("reasoning_effort"))
+            .and_then(Value::as_str),
+    ];
+    candidates.into_iter().flatten().find_map(|effort| {
+        let normalized = effort.trim();
+        (!normalized.is_empty()).then(|| normalized.to_string())
+    })
 }
 
 fn now_millis() -> i64 {
@@ -5590,6 +5624,25 @@ mod tests {
         assert_eq!(stats.context_window, Some(272000));
         // 取最后一次 last_token_usage 的 total_tokens
         assert_eq!(stats.last_context_tokens, Some(2200));
+    }
+
+    #[test]
+    fn scan_session_combined_extracts_codex_reasoning_effort() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("rollout-session.jsonl");
+        write_text(
+            &file,
+            concat!(
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.4","effort":"medium"}}"#,
+                "\n",
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.4","effort":"high"}}"#,
+                "\n",
+            ),
+        );
+
+        let (_, stats) = scan_session_combined(&file);
+
+        assert_eq!(stats.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[test]

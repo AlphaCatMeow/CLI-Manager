@@ -230,6 +230,7 @@ export interface HistorySessionUsage {
   dominant_model?: string | null;
   context_window?: number | null;
   last_context_tokens?: number | null;
+  reasoning_effort?: string | null;
   token_trend: HistoryTokenTrendPoint[];
   tool_call_count?: number;
   mcp_calls?: HistoryToolCount[];
