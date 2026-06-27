@@ -30,6 +30,12 @@ function isShortcutMatch(combo: string, shortcut: string): boolean {
   return shortcut.trim() !== "" && combo === shortcut;
 }
 
+function getMouseTabSwitchDelta(button: number): 1 | -1 | null {
+  if (button === 3) return -1;
+  if (button === 4) return 1;
+  return null;
+}
+
 interface KeyboardShortcutOptions {
   onToggleTerminalFullscreen?: () => void;
 }
@@ -148,5 +154,35 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions = {}) {
 
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
+  }, []);
+
+  useEffect(() => {
+    const preventMouseNavigation = (e: MouseEvent) => {
+      if (getMouseTabSwitchDelta(e.button) === null) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
+    const handleMouseUp = (e: MouseEvent) => {
+      const delta = getMouseTabSwitchDelta(e.button);
+      if (delta === null) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (viewModeRef.current === "compact") return;
+      const terminalState = useTerminalStore.getState();
+      if (terminalState.sessions.length < 2) return;
+      const nextSessionId = terminalState.getNextSessionIdForShortcut(delta);
+      if (nextSessionId) terminalState.setActive(nextSessionId);
+    };
+
+    window.addEventListener("mousedown", preventMouseNavigation, true);
+    window.addEventListener("mouseup", handleMouseUp, true);
+    window.addEventListener("auxclick", preventMouseNavigation, true);
+    return () => {
+      window.removeEventListener("mousedown", preventMouseNavigation, true);
+      window.removeEventListener("mouseup", handleMouseUp, true);
+      window.removeEventListener("auxclick", preventMouseNavigation, true);
+    };
   }, []);
 }
