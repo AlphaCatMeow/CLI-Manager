@@ -74,9 +74,10 @@ const modelPricingStyles = `
   border-bottom: 1px solid color-mix(in srgb, var(--border) 42%, transparent) !important;
   color: var(--text-muted);
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
+  font-weight: 600;
+  letter-spacing: 0;
   text-transform: uppercase;
+  text-align: center !important;
   padding-top: 4px;
   padding-bottom: 10px;
 }
@@ -91,7 +92,43 @@ const modelPricingStyles = `
 .mp-num {
   font-family: var(--font-ui-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 13px;
+  font-size: 12px;
+}
+.mp-soft-button,
+.mp-soft-button .mantine-Button-label {
+  font-weight: 500;
+}
+.mp-soft-button:not([data-variant]),
+.mp-soft-button[data-variant="filled"] {
+  --button-bg: var(--primary) !important;
+  --button-hover: var(--primary-dim) !important;
+  --button-color: var(--on-primary) !important;
+  --button-bd: 1px solid var(--primary) !important;
+}
+.mp-soft-button[data-variant="light"],
+.mp-soft-button[data-variant="default"] {
+  --button-bg: color-mix(in srgb, var(--primary) 12%, var(--surface-container-lowest)) !important;
+  --button-hover: color-mix(in srgb, var(--primary) 18%, var(--surface-container-lowest)) !important;
+  --button-color: var(--primary) !important;
+  --button-bd: 1px solid color-mix(in srgb, var(--primary) 26%, transparent) !important;
+}
+.mp-soft-button[data-variant="subtle"] {
+  --button-bg: transparent !important;
+  --button-hover: color-mix(in srgb, var(--primary) 10%, transparent) !important;
+  --button-color: var(--primary) !important;
+  --button-bd: 1px solid transparent !important;
+}
+.mp-segmented {
+  --sc-color: var(--primary) !important;
+}
+.mp-segmented .mantine-SegmentedControl-indicator {
+  background: var(--primary) !important;
+}
+.mp-segmented .mantine-SegmentedControl-label {
+  font-weight: 500;
+}
+.mp-segmented .mantine-SegmentedControl-label[data-active="true"] {
+  color: var(--on-primary) !important;
 }
 `;
 
@@ -140,6 +177,18 @@ function candidateKey(candidate: ModelPriceSyncCandidate): string {
   return `${candidate.targetModel}::${candidate.remote.sourceModelId}`;
 }
 
+function uniqueModelIds(models: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const model of models) {
+    const trimmed = model.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
+}
+
 // 苹果设置页标志性的圆角图标砖（filled / soft 两种）
 function IconTile({
   icon: Icon,
@@ -175,7 +224,7 @@ function CountChip({ tone, children }: { tone: Tone; children: ReactNode }) {
   const color = TONE_COLOR[tone];
   return (
     <span
-      className="inline-flex items-center justify-center rounded-full px-2 text-xs font-bold"
+      className="inline-flex items-center justify-center rounded-full px-2 text-xs font-medium"
       style={{
         minWidth: 22,
         height: 20,
@@ -194,14 +243,14 @@ function StatChip({ icon, tone, value, label }: { icon: LucideIcon; tone: Tone; 
     <div
       className="inline-flex items-center gap-2 rounded-full"
       style={{
-        padding: "5px 12px 5px 6px",
+        padding: "4px 10px 4px 5px",
         backgroundColor: `color-mix(in srgb, ${color} 9%, var(--surface-container-lowest))`,
         border: `1px solid color-mix(in srgb, ${color} 20%, transparent)`,
       }}
     >
-      <IconTile icon={icon} tone={tone} size={22} />
-      <span style={{ fontSize: 15, fontWeight: 800, color: "var(--on-surface)", lineHeight: 1 }}>{value}</span>
-      <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)" }}>{label}</span>
+      <IconTile icon={icon} tone={tone} size={20} />
+      <span style={{ fontSize: 12, fontWeight: 500, color: "var(--on-surface)", lineHeight: 1 }}>{value}</span>
+      <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-muted)" }}>{label}</span>
     </div>
   );
 }
@@ -222,8 +271,8 @@ function SectionTitle({
   return (
     <Group justify="space-between" align="center" wrap="nowrap">
       <Group gap="sm" align="center" wrap="nowrap" className="min-w-0">
-        <IconTile icon={icon} tone={tone} size={28} />
-        <Text fz={15} fw={700} c="var(--on-surface)" style={{ letterSpacing: -0.2 }} className="truncate">
+        <IconTile icon={icon} tone={tone} size={24} />
+        <Text fz={13} fw={500} c="var(--on-surface)" className="truncate">
           {title}
         </Text>
         {count != null && <CountChip tone={tone}>{count}</CountChip>}
@@ -245,7 +294,7 @@ function SourceBadge({ source }: { source: string }) {
       }}
     >
       <span style={{ width: 6, height: 6, borderRadius: 999, backgroundColor: dot }} />
-      <span style={{ fontSize: 11, fontWeight: 700, color: "var(--on-surface-variant)" }}>{sourceLabel(source, language)}</span>
+      <span style={{ fontSize: 11, fontWeight: 500, color: "var(--on-surface-variant)" }}>{sourceLabel(source, language)}</span>
     </span>
   );
 }
@@ -290,6 +339,7 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [applyingAll, setApplyingAll] = useState(false);
+  const [syncingButton, setSyncingButton] = useState<string | null>(null);
 
   useEffect(() => {
     if (!loaded && !loading) {
@@ -327,6 +377,16 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
     () => unmatchedModels.filter((model) => !hasPrice(modelPrices, model)),
     [unmatchedModels, modelPrices]
   );
+  const savedSyncTargets = useMemo(() => uniqueModelIds(prices.map((price) => price.model)), [prices]);
+  const allSyncTargets = useMemo(() => uniqueModelIds([...savedSyncTargets, ...discoveredModels]), [savedSyncTargets, discoveredModels]);
+  const missingSyncTargets = useMemo(() => uniqueModelIds(missingModels), [missingModels]);
+  const candidateSyncTargets = useMemo(() => uniqueModelIds(candidates.map((candidate) => candidate.targetModel)), [candidates]);
+  const currentSyncTargets = useMemo(() => {
+    if (filter === "missing") return missingSyncTargets;
+    if (filter === "saved") return savedSyncTargets;
+    if (filter === "candidates") return candidateSyncTargets;
+    return allSyncTargets;
+  }, [allSyncTargets, candidateSyncTargets, filter, missingSyncTargets, savedSyncTargets]);
 
   const openAddEditor = (model = "") => {
     setEditingModel(null);
@@ -397,19 +457,25 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
     setFilter("missing");
   };
 
-  const handleSync = async () => {
+  const handleSync = async (targets = currentSyncTargets, buttonKey = "toolbar") => {
+    if (targets.length === 0) {
+      toast.info(text("当前范围没有可同步的模型", "No models to sync in the current scope"));
+      return;
+    }
+    setSyncingButton(buttonKey);
     try {
-      const targets = Array.from(new Set([...prices.map((price) => price.model), ...discoveredModels]));
       const result = await sync(targets);
       toast.success(text("远程价格同步完成", "Remote price sync complete"), {
         description: text(
-          `获取 ${result.fetchedCount} 条，自动匹配 ${result.matched.length} 条，候选 ${result.candidates.length} 条。`,
-          `Fetched ${result.fetchedCount}, auto matched ${result.matched.length}, candidates ${result.candidates.length}.`
+          `同步 ${targets.length} 个模型，获取 ${result.fetchedCount} 条，自动匹配 ${result.matched.length} 条，候选 ${result.candidates.length} 条。`,
+          `Synced ${targets.length} models, fetched ${result.fetchedCount}, auto matched ${result.matched.length}, candidates ${result.candidates.length}.`
         ),
       });
       if (result.candidates.length > 0) setFilter("candidates");
     } catch (err) {
       toast.error(text("远程价格同步失败", "Remote price sync failed"), { description: String(err) });
+    } finally {
+      setSyncingButton(null);
     }
   };
 
@@ -456,9 +522,9 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
         <Group justify="space-between" align="flex-start" gap="md" wrap="nowrap">
           <Stack gap="sm" className="min-w-0">
             <Group gap="sm" align="center" wrap="nowrap">
-              <IconTile icon={Coins} tone="primary" variant="solid" size={38} />
+              <IconTile icon={Coins} tone="primary" variant="solid" size={32} />
               <Box>
-                <Text fz={18} fw={800} c="var(--on-surface)" style={{ letterSpacing: -0.3, lineHeight: 1.15 }}>
+                <Text fz={14} fw={500} c="var(--on-surface)" style={{ lineHeight: 1.2 }}>
                   {text("模型价格", "Model Prices")}
                 </Text>
                 <Text size="xs" c="var(--text-muted)">
@@ -485,13 +551,13 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
             {error && <Text size="xs" c="var(--danger)">{text("最近错误：", "Last error: ")}{error}</Text>}
           </Stack>
           <Group gap="xs" className="shrink-0">
-            <Button variant="light" leftSection={<ScanLine size={15} />} loading={discovering} onClick={() => void handleDiscover()}>
+            <Button className="mp-soft-button" size="compact-sm" variant="light" color="cliPrimary" leftSection={<ScanLine size={15} />} loading={discovering} onClick={() => void handleDiscover()}>
               {text("识别本地模型", "Discover Local Models")}
             </Button>
-            <Button variant="light" leftSection={<RefreshCw size={15} />} loading={syncing} onClick={() => void handleSync()}>
+            <Button className="mp-soft-button" size="compact-sm" variant="light" color="cliPrimary" leftSection={<RefreshCw size={15} />} loading={syncingButton === "toolbar"} disabled={syncing && syncingButton !== "toolbar"} onClick={() => void handleSync()}>
               {text("同步远程价格", "Sync Remote Prices")}
             </Button>
-            <Button leftSection={<Plus size={15} />} onClick={() => openAddEditor()}>
+            <Button className="mp-soft-button" size="compact-sm" color="cliPrimary" leftSection={<Plus size={15} />} onClick={() => openAddEditor()}>
               {text("手动添加", "Add Manually")}
             </Button>
           </Group>
@@ -501,6 +567,7 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
       <section className="ui-surface-card rounded-2xl border border-border p-4" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
         <Group justify="space-between" align="center" mb="md">
           <SegmentedControl<FilterMode>
+            className="mp-segmented"
             value={filter}
             onChange={setFilter}
             color="cliPrimary"
@@ -514,12 +581,12 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
           />
           <Group gap="xs">
             {candidateTargetCount > 0 && (
-              <Button size="compact-sm" leftSection={<CircleCheck size={14} />} loading={applyingAll} onClick={() => void handleApplyAllCandidates()}>
+              <Button className="mp-soft-button" size="compact-sm" color="cliPrimary" leftSection={<CircleCheck size={14} />} loading={applyingAll} onClick={() => void handleApplyAllCandidates()}>
                 {text(`全部应用候选 (${candidateTargetCount})`, `Apply All Candidates (${candidateTargetCount})`)}
               </Button>
             )}
             {candidates.length > 0 && (
-              <Button size="compact-sm" variant="subtle" leftSection={<X size={14} />} onClick={clearCandidates}>
+              <Button className="mp-soft-button" size="compact-sm" variant="subtle" color="cliPrimary" leftSection={<X size={14} />} onClick={clearCandidates}>
                 {text("清空候选", "Clear Candidates")}
               </Button>
             )}
@@ -541,7 +608,9 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {filteredPrices.map((price) => (
+              {filteredPrices.map((price) => {
+                const rowSyncKey = `row:${price.model}`;
+                return (
                 <Table.Tr key={price.model}>
                   <Table.Td>
                     <Group gap="sm" wrap="nowrap" align="center">
@@ -552,7 +621,7 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
                         <VendorIcon vendor={inferVendor(price.model)} size={18} fallback={Coins} />
                       </span>
                       <Box className="min-w-0">
-                        <Text fw={600} size="sm" c="var(--on-surface)" className="break-all">{price.model}</Text>
+                        <Text fw={500} size="sm" c="var(--on-surface)" className="break-all">{price.model}</Text>
                         {price.sourceModelId && price.sourceModelId !== price.model && (
                           <Text size="xs" c="var(--text-muted)" className="break-all">{text("源 ID：", "Source ID: ")}{price.sourceModelId}</Text>
                         )}
@@ -566,6 +635,11 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
                   <Table.Td ta="right"><PriceCell value={price.cacheCreationPer1m} /></Table.Td>
                   <Table.Td>
                     <Group justify="flex-end" gap={4} wrap="nowrap">
+                      <Tooltip label={text("同步远程价格", "Sync Remote Price")} withArrow>
+                        <ActionIcon variant="subtle" color="cliPrimary" loading={syncingButton === rowSyncKey} disabled={syncing && syncingButton !== rowSyncKey} onClick={() => void handleSync([price.model], rowSyncKey)} aria-label={text("同步远程价格", "Sync Remote Price")}>
+                          <RefreshCw size={15} />
+                        </ActionIcon>
+                      </Tooltip>
                       <Tooltip label={text("编辑", "Edit")} withArrow>
                         <ActionIcon variant="subtle" color="gray" onClick={() => openEditEditor(price)} aria-label={text("编辑", "Edit")}>
                           <Pencil size={15} />
@@ -579,7 +653,8 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
                     </Group>
                   </Table.Td>
                 </Table.Tr>
-              ))}
+                );
+              })}
               {filteredPrices.length === 0 && (
                 <Table.Tr><Table.Td colSpan={7}><Text ta="center" c="var(--text-muted)" py="md">{text("没有匹配的模型价格。", "No matching model prices.")}</Text></Table.Td></Table.Tr>
               )}
@@ -604,11 +679,11 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
                 <Group gap="sm" wrap="nowrap" className="min-w-0">
                   <IconTile icon={Coins} tone="warning" size={30} />
                   <Box className="min-w-0">
-                    <Text size="sm" fw={600} c="var(--on-surface)" className="break-all">{model}</Text>
+                    <Text size="sm" fw={500} c="var(--on-surface)" className="break-all">{model}</Text>
                     <Text size="xs" c="var(--text-muted)">{text("费用会计入未定价 Token，直到添加或同步价格。", "Usage is counted as unpriced tokens until a price is added or synced.")}</Text>
                   </Box>
                 </Group>
-                <Button size="compact-sm" variant="light" leftSection={<Plus size={14} />} className="shrink-0" onClick={() => openAddEditor(model)}>
+                <Button size="compact-sm" variant="light" color="cliPrimary" leftSection={<Plus size={14} />} className="mp-soft-button shrink-0" onClick={() => openAddEditor(model)}>
                   {text("添加价格", "Add Price")}
                 </Button>
               </Group>
@@ -624,7 +699,7 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
               title={text("同步候选确认", "Sync Candidate Review")}
               count={candidateTargetCount}
               action={
-                <Button size="compact-sm" leftSection={<CircleCheck size={14} />} loading={applyingAll} onClick={() => void handleApplyAllCandidates()}>
+                <Button className="mp-soft-button" size="compact-sm" color="cliPrimary" leftSection={<CircleCheck size={14} />} loading={applyingAll} onClick={() => void handleApplyAllCandidates()}>
                   {text(`全部应用 (${candidateTargetCount})`, `Apply All (${candidateTargetCount})`)}
                 </Button>
               }
@@ -648,25 +723,28 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
                   <Group justify="space-between" align="flex-start" gap="md" wrap="nowrap">
                     <Stack gap={8} className="min-w-0 flex-1">
                       <Group gap="sm" align="center" wrap="nowrap" className="min-w-0">
-                        <IconTile icon={Sparkles} tone="primary" size={26} />
-                        <Text fw={700} c="var(--on-surface)" className="truncate">{targetModel}</Text>
+                        <IconTile icon={Sparkles} tone="primary" size={24} />
+                        <Text fw={500} size="sm" c="var(--on-surface)" className="truncate">{targetModel}</Text>
                       </Group>
-                      <Select
-                        label={text("候选远程价格", "Candidate Remote Price")}
-                        data={data}
-                        value={candidateSelections[targetModel] ?? data[0]?.value ?? null}
-                        allowDeselect={false}
-                        onChange={(value) => value && setCandidateSelections((prev) => ({ ...prev, [targetModel]: value }))}
-                      />
+                      <Group gap="sm" align="flex-end" wrap="nowrap" className="min-w-0">
+                        <Select
+                          className="min-w-0 flex-1"
+                          label={text("候选远程价格", "Candidate Remote Price")}
+                          data={data}
+                          value={candidateSelections[targetModel] ?? data[0]?.value ?? null}
+                          allowDeselect={false}
+                          onChange={(value) => value && setCandidateSelections((prev) => ({ ...prev, [targetModel]: value }))}
+                        />
+                        <Button size="compact-sm" color="cliPrimary" leftSection={<CircleCheck size={14} />} className="mp-soft-button shrink-0" onClick={() => void handleApplyCandidate(targetModel, items)}>
+                          {text("确认应用", "Apply")}
+                        </Button>
+                      </Group>
                       {selected && (
                         <Text size="xs" c="var(--text-muted)">
                           {text("输入", "Input")} {formatPrice(selected.remote.inputPer1m)} · {text("输出", "Output")} {formatPrice(selected.remote.outputPer1m)} · {text("缓存命中", "Cache hit")} {formatPrice(selected.remote.cacheReadPer1m)} · {text("缓存写入", "Cache write")} {formatPrice(selected.remote.cacheCreationPer1m)}
                         </Text>
                       )}
                     </Stack>
-                    <Button mt={28} leftSection={<CircleCheck size={15} />} className="shrink-0" onClick={() => void handleApplyCandidate(targetModel, items)}>
-                      {text("确认应用", "Apply")}
-                    </Button>
                   </Group>
                 </Card>
               );
