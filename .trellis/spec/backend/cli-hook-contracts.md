@@ -21,7 +21,8 @@ Concrete contracts for Claude/Codex hook integration.
 
 ### 3. Contracts
 
-- Common payload fields: `tabId`, `source`, `event`, `title`, `message`, `sessionId`, `cwd`, `timestamp`, optional `wslDistroName`.
+- Common payload fields: `tabId`, `source`, `event`, `title`, `message`, `sessionId`, `cwd`, `timestamp`, optional `wslDistroName`, optional `reasoningEffort`.
+- Claude Code effort display is hook-derived, not history-derived: `__hook` reads `effort.level` (plus flat legacy keys such as `reasoning_effort` / `effort_level`) and falls back to `$CLAUDE_EFFORT`. The frontend may use that value as a realtime-only fallback when `HistorySessionUsage.reasoning_effort` is absent.
 - Claude Agent tool fallback events are normalized as `AgentToolStart` from `PreToolUse` and `AgentToolStop` from `PostToolUse`; hook installer must use a matcher limited to `Agent`/`Task`.
 - Claude sub-agent fields: `agentId`, `toolUseId`, `agentType`, `agentTranscriptPath`.
 - Codex sub-agent fields: `agentId`, `agentType`, `transcriptPath`.
@@ -57,9 +58,11 @@ Concrete contracts for Claude/Codex hook integration.
 - Good: Claude `SubagentStart` misses an independent child path, then `SubagentStop` provides `agentTranscriptPath`; frontend upgrades the existing pane before finish instead of ending in degraded state.
 - Base: Claude `SubagentStart` includes `agent_transcript_path`; frontend uses it unchanged.
 - Good: `SubagentStop` includes `agent_id`; frontend marks the pane ended and closes it after the grace delay.
+- Good: Claude hook stdin includes `effort.level = "high"`; the bridge emits `reasoningEffort: "high"` and the current terminal's stats card shows the effort even when the JSONL history usage lacks `reasoning_effort`.
 - Bad: `SubagentStop` calls `finishSubagentTranscript` before awaiting the late child transcript subscription; the pane can close with empty output.
 - Bad: A new hook event is installed but not added to the bridge whitelist; the hook silently posts but the bridge rejects it.
 - Bad: `SubagentStop` has no `agent_id` while multiple child panes share one parent; frontend must not close all of them.
+- Bad: deriving Claude effort from the model name or global settings when the current hook payload/env has no effort; concurrent sessions can use different `/effort` values.
 
 ### 6. Tests Required
 
@@ -68,6 +71,7 @@ Concrete contracts for Claude/Codex hook integration.
 - Rust unit test: explicit `/Users/...` transcript paths stay native without `wslDistroName`; explicit `/home/...` paths convert to WSL UNC only when a distro is provided.
 - Rust unit test: non-Windows hook exe paths with spaces or single quotes are POSIX single-quote escaped.
 - Rust compile check must pass after bridge payload or command signature changes.
+- Rust unit test: `hook_client` extracts `reasoningEffort` from Claude `effort.level`.
 - TypeScript type-check must pass after `CliHookPayload` field changes.
 
 ### 7. Wrong vs Correct

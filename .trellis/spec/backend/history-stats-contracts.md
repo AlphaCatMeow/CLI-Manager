@@ -129,8 +129,10 @@ interface TerminalSession {
 - Aggregated token trend must be rebuilt from merged usage events ordered by event timestamp (fallback to each transcript file `updated_at`), not by concatenating per-file `token_trend` arrays.
 - Aggregated tool counts must sum the per-transcript usage counters; do not recompute them from merged `tool_events`, because diagnostic end/error rows are not equivalent to tool-call count events.
 - Aggregated context window / last context tokens should follow the most recently updated transcript that exposed those values, while aggregated `cwd` continues to prefer the parent session metadata.
+- `HistorySessionUsage.context_window` is an exact log-derived limit only. Codex reads explicit `payload.info.model_context_window`; Claude may read explicit fields such as `context_window`, `max_input_tokens`, `max_context_tokens`, or `model_context_window` from known log/usage locations. When the log does not expose an explicit limit, backend history parsing must leave `context_window` as `null`; frontend model metadata/local rules own display fallback.
 - Terminal realtime stats bind strictly to the current terminal's `TerminalSession.cliSessionId` (from CLI hook payload). When a session id is present, look up **only** that session; if it is not yet found in history (e.g. JSONL not flushed), keep that terminal's own empty/loading state and **never** fall back to a different session. Project-level "latest session" lookup is used only when the terminal has no session id at all.
 - When the CLI hook chain is known to be active (any terminal has bound a `cliSessionId` this run) but the current CLI terminal has not yet received its own id, the realtime panel shows an explicit "awaiting session identification" empty state instead of borrowing the project's latest session — so newly opened sessions never display a neighbor window's data. Only a true no-hook environment (no terminal ever bound an id) keeps the project latest-session fallback.
+- Realtime model/context-limit display may use the loaded session's model or exact limit and then fall back through model metadata/local rules, but current context usage and token totals must stay gated by `tokensBound` so another terminal's token counts are never shown.
 - Stats date ranges may cover up to 366 days and must reject larger ranges with `date_range_too_large`.
 - History index builds scan cache-miss files in parallel (`std::thread::scope`, worker count = `available_parallelism`); fingerprint-hit entries must still be reused without rescanning.
 
@@ -159,6 +161,8 @@ interface TerminalSession {
 | `aggregate_subtasks=true` but no sibling `subagents/agent-*.jsonl` exists | Return the parent single-file detail unchanged. |
 | `aggregate_subtasks=true` and a child transcript has no timestamps | Order its usage/message/tool rows by that child file `updated_at` fallback. |
 | Aggregated `tool_events` includes MCP end/error diagnostics | Keep them in diagnostics, but do not let them inflate `tool_call_count` / tool buckets. |
+| Claude log has usage tokens but no explicit context limit field | Return `context_window: null`; frontend resolver may display a metadata/local limit separately. |
+| Claude/Codex log exposes an explicit positive context limit field | Return that value as `context_window`; most recent exposed value wins during a scan. |
 | History cache invalidation runs | Clear file, stats, project, and aggregate caches together. |
 
 ### 5. Good/Base/Bad Cases
@@ -169,6 +173,7 @@ interface TerminalSession {
 - Good: a history detail payload includes `tool_events` for Claude `tool_use` and Codex `function_call` rows; missing per-call duration remains `null` and the frontend says no duration data is available.
 - Good: a Codex rollout file with `session_meta.payload.id` returns that UUID as `session_id`, allowing realtime stats strict binding to match the hook session id; a Claude file with a similar metadata id still keeps its original file-stem identity.
 - Good: realtime stats requests `history_get_session(..., aggregate_subtasks = Some(true))` for a parent session with `subagents/agent-*.jsonl`, and the returned token totals / trend / tool counts equal parent + child aggregate while `session_id` still matches the parent hook session id.
+- Good: a Claude assistant usage row with `max_context_tokens` returns `usage.context_window`, while the same row without explicit context metadata leaves it `null`.
 - Base: a Codex session without model pricing still appears in stats with token totals and `unpriced_tokens`; a single-day stats view can map `hourly_activity` into 24 hourly trend and heatmap buckets.
 - Bad: frontend assumes a newly added numeric field is always present and renders `NaN` when older cached payloads omit it; realtime stats uses only project latest-session lookup and shows another window's current context.
 - Bad: realtime stats concatenates parent and child `token_trend` arrays directly or derives tool totals from merged `tool_events`, causing out-of-order trend points or inflated tool-call counts.
@@ -187,10 +192,12 @@ interface TerminalSession {
   - Codex cumulative `token_count` events produce delta totals and matching `token_trend` points.
   - History stats bucket cross-day session usage by usage event timestamp while counting the session once for range totals.
   - Tool event extraction returns bounded diagnostic rows for Claude `tool_use`, Codex `function_call`, `function_call_output`, and MCP end/error events without changing aggregate tool counts.
+  - Claude explicit context-window fields populate `SessionStatsScan.context_window`; Claude usage without those fields keeps it `None`.
 - Frontend checks:
   - `npm run build` must pass after payload/type changes.
   - Stats UI must render missing token/cost fields as zero, not `NaN`.
   - Realtime terminal stats passes `cliSessionId` into history lookup when present and keeps project fallback when absent.
+  - Realtime model/context cards can show model and context limit from loaded session/metadata while current context usage stays blank until tokens are bound.
   - Token trend UI renders explicit empty/single-point states when there are fewer than two trend points.
   - Tool diagnostics renders `tool_events` when present and renders a missing-duration state when `duration_ms` is absent.
   - History resume creates a new internal terminal with `claude --resume <id>` or `codex resume <id>` only after resolving a `cwd` from detail payload or configured project match.

@@ -1,7 +1,7 @@
 import { Activity, CalendarClock, Coins, Cpu, FileCode2, Wrench } from "lucide-react";
 import type { HistoryFileChangeSummary, HistorySessionDetail, HistoryToolCount } from "../../lib/types";
 import { VendorIcon, inferVendor } from "../VendorIcon";
-import { getContextLimit } from "../../lib/modelPricing";
+import { resolveContextLimit } from "../../lib/modelPricing";
 import type { TodayProjectStats } from "../../stores/historyStore";
 import { useI18n } from "../../lib/i18n";
 import {
@@ -20,14 +20,7 @@ import {
   type SparkPoint,
 } from "./termStatsUi";
 
-function formatReasoningEffort(value: string | null | undefined, t: ReturnType<typeof useI18n>["t"]): string {
-  const normalized = value?.trim().toLowerCase();
-  if (!normalized) return "—";
-  if (normalized === "minimal") return t("termStats.reasoningEffortMinimal");
-  if (normalized === "low") return t("termStats.reasoningEffortLow");
-  if (normalized === "medium") return t("termStats.reasoningEffortMedium");
-  if (normalized === "high") return t("termStats.reasoningEffortHigh");
-  if (normalized === "xhigh") return t("termStats.reasoningEffortXHigh");
+function formatReasoningEffort(value: string | null | undefined): string {
   return value?.trim() || "—";
 }
 
@@ -79,13 +72,19 @@ export function TokenUsageCard({ stats }: { stats: TokenStats }) {
 export function ModelContextCard({
   stats,
   session,
+  displayModel,
+  exactContextLimit,
+  reasoningEffort,
 }: {
   stats: TokenStats;
   session: HistorySessionDetail | null;
+  displayModel?: string | null;
+  exactContextLimit?: number | null;
+  reasoningEffort?: string | null;
 }) {
   const { t } = useI18n();
-  // 上限：优先 Codex token_count 事件携带的精确窗口，回退模型映射（含 [1m] → 1M）
-  const contextLimit = session?.usage?.context_window ?? getContextLimit(stats.dominantModel);
+  const model = displayModel ?? stats.dominantModel;
+  const contextLimit = resolveContextLimit(model, exactContextLimit ?? session?.usage?.context_window);
 
   // 当前占用：优先后端扫描的最近一次请求上下文，回退前端逐消息查找
   let contextTokens: number | null = session?.usage?.last_context_tokens ?? null;
@@ -106,7 +105,7 @@ export function ModelContextCard({
     contextLimit && contextTokens !== null ? (contextTokens / contextLimit) * 100 : null;
   const remaining =
     contextLimit && contextTokens !== null ? Math.max(0, contextLimit - contextTokens) : null;
-  const reasoningEffort = formatReasoningEffort(session?.usage?.reasoning_effort, t);
+  const displayedReasoningEffort = formatReasoningEffort(session?.usage?.reasoning_effort ?? reasoningEffort);
 
   const percentColor =
     usagePercent === null
@@ -120,7 +119,7 @@ export function ModelContextCard({
   // 未绑定空态（session 为 null）补骨架占位（徽章/剩余行/进度条），高度与有数据时一致；
   // 非空会话维持原生行为，历史会话面板不受影响
   const isEmpty = !session;
-  const modelVendor = inferVendor(stats.dominantModel);
+  const modelVendor = inferVendor(model);
 
   return (
     <StatCard
@@ -140,16 +139,16 @@ export function ModelContextCard({
         <span
           className="flex min-w-0 items-center gap-1 truncate text-right"
           style={{ color: TERM_PANEL.magenta }}
-          title={stats.dominantModel || "—"}
+          title={model || "—"}
         >
           {modelVendor && <VendorIcon vendor={modelVendor} size={12} />}
-          <span className="truncate">{stats.dominantModel || "—"}</span>
+          <span className="truncate">{model || "—"}</span>
         </span>
       </div>
       <Row
         label={t("termStats.reasoningEffort")}
-        value={reasoningEffort}
-        color={reasoningEffort === "—" ? TERM_PANEL.dim : TERM_PANEL.magenta}
+        value={displayedReasoningEffort}
+        color={displayedReasoningEffort === "—" ? TERM_PANEL.dim : TERM_PANEL.magenta}
       />
       <Row
         label={t("termStats.currentContext")}

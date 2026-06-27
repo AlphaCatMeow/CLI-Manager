@@ -92,6 +92,7 @@ fn try_notify(source: &str, event: &str) -> Option<()> {
             )
         });
     let transcript_path = first_string(&hook_input, &["transcript_path"]);
+    let reasoning_effort = extract_reasoning_effort(&hook_input);
     let wsl_distro_name = non_empty_env("WSL_DISTRO_NAME");
     let cwd = env::current_dir()
         .ok()
@@ -112,6 +113,7 @@ fn try_notify(source: &str, event: &str) -> Option<()> {
         "agentType": agent_type,
         "agentTranscriptPath": agent_transcript_path,
         "transcriptPath": transcript_path,
+        "reasoningEffort": reasoning_effort,
         "wslDistroName": wsl_distro_name,
     });
     let body = serde_json::to_vec(&payload).ok()?;
@@ -172,6 +174,30 @@ fn deep_first_string(value: &Value, keys: &[&str]) -> Option<String> {
     }
 }
 
+fn extract_reasoning_effort(hook_input: &Value) -> Option<String> {
+    let candidates = [
+        hook_input.get("effort").and_then(Value::as_str),
+        hook_input
+            .get("effort")
+            .and_then(|value| value.get("level"))
+            .and_then(Value::as_str),
+        hook_input.get("reasoning_effort").and_then(Value::as_str),
+        hook_input.get("reasoningEffort").and_then(Value::as_str),
+        hook_input.get("effort_level").and_then(Value::as_str),
+        hook_input.get("effortLevel").and_then(Value::as_str),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find_map(non_empty_trimmed)
+        .or_else(|| non_empty_env("CLAUDE_EFFORT").and_then(|value| non_empty_trimmed(&value)))
+}
+
+fn non_empty_trimmed(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 /// 与旧 PowerShell 脚本保持一致的标题文案；前端在缺省时会自行兜底（App.tsx）。
 fn title_for(source: &str, event: &str) -> &'static str {
     match (source, event) {
@@ -190,5 +216,31 @@ fn title_for(source: &str, event: &str) -> &'static str {
         (_, "AgentToolStart") => "Claude Code Agent tool started",
         (_, "AgentToolStop") => "Claude Code Agent tool done",
         (_, _) => "Claude Code needs attention", // Notification
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn extract_reasoning_effort_reads_claude_hook_effort_level() {
+        let input = json!({
+            "session_id": "abc",
+            "effort": { "level": " high " }
+        });
+
+        assert_eq!(extract_reasoning_effort(&input).as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn extract_reasoning_effort_reads_flat_legacy_keys() {
+        let input = json!({
+            "session_id": "abc",
+            "reasoning_effort": "xhigh"
+        });
+
+        assert_eq!(extract_reasoning_effort(&input).as_deref(), Some("xhigh"));
     }
 }

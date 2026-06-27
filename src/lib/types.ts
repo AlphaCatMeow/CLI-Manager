@@ -77,6 +77,8 @@ export interface TerminalSession {
   envVars?: Record<string, string>;
   startupCmd?: string;
   cliSessionId?: string;
+  /** CLI hook 上报的当前 effort，仅用于实时统计展示，不作为历史解析来源。 */
+  cliReasoningEffort?: string;
   /** 会话类型；缺省视为 "pty"。"subagent-transcript" 为只读转录伪会话（无 PTY、不持久化）。 */
   kind?: TerminalSessionKind;
   /** 仅 kind="subagent-transcript" 时存在：子 Agent 元数据。 */

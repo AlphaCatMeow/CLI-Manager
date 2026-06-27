@@ -23,7 +23,7 @@ import {
   TERM,
   truncatePath,
 } from "../stats/termStatsUi";
-import { getContextLimit } from "../../lib/modelPricing";
+import { resolveContextLimit } from "../../lib/modelPricing";
 import { HISTORY_TREND_COLORS, PEAK, RECHARTS_AXIS_CURSOR } from "../stats/statsPalette";
 
 const RECHARTS_TOOLTIP_STYLE = {
@@ -79,7 +79,7 @@ export function SessionContextView({ session }: SessionContextViewProps) {
   const sessionBranch = session?.branch?.trim() || "—";
   const sessionLocation = session?.cwd?.trim() || session?.file_path || "—";
   const sessionLocationLabel = sessionLocation === "—" ? "—" : truncatePath(sessionLocation, 3);
-  const contextLimit = session?.usage?.context_window ?? getContextLimit(stats.dominantModel);
+  const contextLimit = resolveContextLimit(stats.dominantModel, session?.usage?.context_window);
   const lastContextTokens = session?.usage?.last_context_tokens ?? null;
   const usageRatio = contextLimit && lastContextTokens !== null ? lastContextTokens / contextLimit : null;
   const trend = session?.usage?.token_trend ?? [];

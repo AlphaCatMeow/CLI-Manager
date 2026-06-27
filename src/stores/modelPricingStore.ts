@@ -1,7 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { getDb } from "../lib/db";
-import { DEFAULT_MODEL_PRICES, normalizeModelId, registerModelPriceProvider, type ModelPrice } from "../lib/modelPricing";
+import {
+  DEFAULT_MODEL_PRICES,
+  extractModelContextWindow,
+  normalizeContextLimit,
+  normalizeModelId,
+  registerModelPriceProvider,
+  type ModelPrice,
+} from "../lib/modelPricing";
 import { logWarn } from "../lib/logger";
 import { fetchDiscoveredModels } from "./historyStore";
 
@@ -11,6 +18,7 @@ export interface RemoteModelPrice {
   outputPer1m: number;
   cacheReadPer1m: number;
   cacheCreationPer1m: number;
+  contextWindow?: number | null;
   source: "litellm" | "openrouter" | string;
   sourceModelId: string;
   rawJson: string;
@@ -108,6 +116,7 @@ function normalizePrice(price: ModelPrice): ModelPrice {
     outputPer1m: sanitizePrice(price.outputPer1m),
     cacheReadPer1m: sanitizePrice(price.cacheReadPer1m),
     cacheCreationPer1m: sanitizePrice(price.cacheCreationPer1m),
+    contextWindow: resolvePriceContextWindow(price.source, price.rawJson, price.contextWindow),
     source: price.source || "manual",
     sourceModelId: price.sourceModelId ?? null,
     rawJson: price.rawJson ?? null,
@@ -120,6 +129,10 @@ function sanitizePrice(value: number): number {
   return Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
+function resolvePriceContextWindow(source: string | null | undefined, rawJson: string | null, exact?: unknown): number | null {
+  return normalizeContextLimit(exact) ?? extractModelContextWindow(rawJson, source ?? undefined);
+}
+
 function rowToPrice(row: ModelPriceRow): ModelPrice {
   return {
     model: row.model,
@@ -127,6 +140,7 @@ function rowToPrice(row: ModelPriceRow): ModelPrice {
     outputPer1m: row.output_per_1m,
     cacheReadPer1m: row.cache_read_per_1m,
     cacheCreationPer1m: row.cache_creation_per_1m,
+    contextWindow: resolvePriceContextWindow(row.source, row.raw_json),
     source: row.source,
     sourceModelId: row.source_model_id,
     rawJson: row.raw_json,
@@ -185,6 +199,7 @@ function remoteToPrice(targetModel: string, remote: RemoteModelPrice): ModelPric
     outputPer1m: sanitizePrice(remote.outputPer1m),
     cacheReadPer1m: sanitizePrice(remote.cacheReadPer1m),
     cacheCreationPer1m: sanitizePrice(remote.cacheCreationPer1m),
+    contextWindow: resolvePriceContextWindow(remote.source, remote.rawJson, remote.contextWindow),
     source: remote.source,
     sourceModelId: remote.sourceModelId || remote.model,
     rawJson: remote.rawJson,

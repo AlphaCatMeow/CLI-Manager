@@ -6,6 +6,7 @@ export interface ModelPrice {
   outputPer1m: number;
   cacheReadPer1m: number;
   cacheCreationPer1m: number;
+  contextWindow?: number | null;
   source: ModelPriceSource;
   sourceModelId: string | null;
   rawJson: string | null;
@@ -19,6 +20,9 @@ interface ModelPricingLike {
   outputPer1m: number;
   cacheReadPer1m: number;
   cacheCreationPer1m: number;
+  contextWindow?: number | null;
+  source?: ModelPriceSource;
+  rawJson?: string | null;
 }
 
 interface ModelPriceProviderState {
@@ -39,6 +43,7 @@ function seed(model: string, inputPer1m: number, outputPer1m: number, cacheReadP
     outputPer1m,
     cacheReadPer1m,
     cacheCreationPer1m,
+    contextWindow: null,
     source: "builtin",
     sourceModelId: model,
     rawJson: null,
@@ -112,6 +117,22 @@ const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "o4-mini": 128_000,
 };
 
+const LITELLM_CONTEXT_KEYS = ["max_input_tokens", "context_window", "max_tokens"] as const;
+const OPENROUTER_CONTEXT_KEYS = ["context_length"] as const;
+const GENERIC_CONTEXT_KEYS = [
+  "model_context_window",
+  "context_window",
+  "contextWindow",
+  "max_context_tokens",
+  "maxContextTokens",
+  "max_input_tokens",
+  "maxInputTokens",
+  "context_length",
+  "contextLength",
+  "max_tokens",
+  "maxTokens",
+] as const;
+
 export function normalizeModelId(model: string): string | null {
   let value = model.toLowerCase().trim();
   value = value.replace(/\s*\([^)]*\)$/, "");
@@ -160,6 +181,60 @@ function isPricingVariantOf(normalizedModel: string, normalizedPricingKey: strin
   return /^\d{8}$/.test(suffix) || /^\d{4}-\d{2}-\d{2}$/.test(suffix) || /^v\d+$/i.test(suffix) || suffix === "latest";
 }
 
+export function normalizeContextLimit(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
+  }
+  return null;
+}
+
+function contextKeysForSource(source: ModelPriceSource | null | undefined): readonly string[] {
+  if (source === "litellm") return LITELLM_CONTEXT_KEYS;
+  if (source === "openrouter") return OPENROUTER_CONTEXT_KEYS;
+  return GENERIC_CONTEXT_KEYS;
+}
+
+function readContextLimit(record: Record<string, unknown>, keys: readonly string[]): number | null {
+  for (const key of keys) {
+    const limit = normalizeContextLimit(record[key]);
+    if (limit !== null) return limit;
+  }
+  return null;
+}
+
+function extractTierCutoffContextLimit(record: Record<string, unknown>): number | null {
+  let cutoff: number | null = null;
+  for (const key of Object.keys(record)) {
+    const match = key.match(/_above_(\d+)k_tokens(?:_|$)/);
+    if (!match) continue;
+    const value = Number(match[1]) * 1_000;
+    if (Number.isFinite(value) && value > 0) {
+      cutoff = cutoff === null ? value : Math.min(cutoff, value);
+    }
+  }
+  return cutoff;
+}
+
+export function extractModelContextWindow(rawJson: string | null | undefined, source?: ModelPriceSource): number | null {
+  if (!rawJson) return null;
+  try {
+    const parsed = JSON.parse(rawJson) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    if (source === "litellm") {
+      const tierCutoff = extractTierCutoffContextLimit(record);
+      if (tierCutoff !== null) return tierCutoff;
+    }
+    return readContextLimit(record, contextKeysForSource(source)) ?? readContextLimit(record, GENERIC_CONTEXT_KEYS);
+  } catch {
+    return null;
+  }
+}
+
 export function calculateCost(
   inputTokens: number,
   outputTokens: number,
@@ -199,6 +274,10 @@ export function inferDominantModel(messages: { model?: string }[]): string | nul
 }
 
 export function getContextLimit(model: string | null): number | null {
+  return resolveContextLimit(model);
+}
+
+function getLocalContextLimit(model: string | null): number | null {
   if (!model) return null;
   if (/\[1m\]/i.test(model)) return 1_000_000;
   const normalized = normalizeModelId(model);
@@ -215,4 +294,17 @@ export function getContextLimit(model: string | null): number | null {
   }
 
   return null;
+}
+
+export function resolveContextLimit(model: string | null, exactLimit?: number | null): number | null {
+  const exact = normalizeContextLimit(exactLimit);
+  if (exact !== null) return exact;
+
+  const pricing = model ? findModelPricing(model) : null;
+  const metadataLimit =
+    extractModelContextWindow(pricing?.rawJson, pricing?.source)
+    ?? normalizeContextLimit(pricing?.contextWindow);
+  if (metadataLimit !== null) return metadataLimit;
+
+  return getLocalContextLimit(model);
 }

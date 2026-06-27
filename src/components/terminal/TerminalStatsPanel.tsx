@@ -11,7 +11,7 @@ import {
 } from "../../stores/historyStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useTerminalStore } from "../../stores/terminalStore";
-import { useSettingsStore } from "../../stores/settingsStore";
+import { useSettingsStore, type TerminalStatsCardKey } from "../../stores/settingsStore";
 import {
   TERM,
   StatCard,
@@ -348,6 +348,7 @@ function SessionInfoCard({ session, statsSession, projectName, projectPath, curr
 export function TerminalStatsPanel({ activeSessionId, open, visible = true, embedded = false }: TerminalStatsPanelProps) {
   const { t } = useI18n();
   const terminalStatsCardVisibility = useSettingsStore((state) => state.terminalStatsCardVisibility);
+  const terminalStatsCardOrder = useSettingsStore((state) => state.terminalStatsCardOrder);
   const terminalSessions = useTerminalStore((state) => state.sessions);
   const projects = useProjectStore((state) => state.projects);
 
@@ -507,8 +508,61 @@ export function TerminalStatsPanel({ activeSessionId, open, visible = true, embe
   // 未绑定 hook 会话时，4 张会话级卡片照常渲染但数据置空（保留图形骨架）
   const boundSession = tokensBound ? latestSession : null;
   const boundStats = tokensBound ? stats : EMPTY_TOKEN_STATS;
+  const modelContextStats = tokensBound || !latestSession
+    ? boundStats
+    : { ...EMPTY_TOKEN_STATS, dominantModel: stats.dominantModel };
   const latestChangesSummary = useMemo(() => buildLatestChangesSummary(boundSession), [boundSession]);
-  const hasVisibleCard = Object.values(terminalStatsCardVisibility).some(Boolean);
+  const hasVisibleCard = terminalStatsCardOrder.some((key) => terminalStatsCardVisibility[key]);
+
+  const renderStatsCard = (cardKey: TerminalStatsCardKey) => {
+    if (!terminalStatsCardVisibility[cardKey]) return null;
+    const session = latestSession;
+    const resolvedProjectPath = projectPath;
+    if (!session || !resolvedProjectPath) return null;
+
+    switch (cardKey) {
+      case "session":
+        return (
+          <SessionInfoCard
+            key={cardKey}
+            session={session}
+            statsSession={boundSession}
+            projectName={projectName || "—"}
+            projectPath={resolvedProjectPath}
+            currentBranch={currentBranch}
+            shell={shellLabel || "—"}
+            sessionId={terminalSession?.cliSessionId ?? session.session_id}
+          />
+        );
+      case "tokenUsage":
+        return <TokenUsageCard key={cardKey} stats={boundStats} />;
+      case "tokenTrend":
+        return <TrendCard key={cardKey} session={boundSession} />;
+      case "modelContext":
+        return (
+          <ModelContextCard
+            key={cardKey}
+            stats={modelContextStats}
+            session={boundSession}
+            displayModel={stats.dominantModel}
+            exactContextLimit={session.usage?.context_window ?? null}
+            reasoningEffort={terminalSession?.cliReasoningEffort ?? null}
+          />
+        );
+      case "tools":
+        return <ToolsCard key={cardKey} session={boundSession} />;
+      case "latestChanges":
+        return (
+          <LatestChangesCard
+            key={cardKey}
+            summary={latestChangesSummary}
+            onOpenDiff={(fileChange) => setDiffFileChanges([fileChange])}
+          />
+        );
+      case "todayUsage":
+        return <TodayUsageCard key={cardKey} stats={todayStats} loading={loadingToday} />;
+    }
+  };
 
   const containerClassName = embedded
     ? "flex h-full min-h-0 flex-col gap-2 overflow-y-auto p-2 font-mono ui-thin-scroll"
@@ -556,28 +610,7 @@ export function TerminalStatsPanel({ activeSessionId, open, visible = true, embe
         <EmptyHint text={t("termStats.noVisibleCards")} />
       ) : (
         <>
-          {terminalStatsCardVisibility.session && (
-            <SessionInfoCard
-              session={latestSession}
-              statsSession={boundSession}
-              projectName={projectName}
-              projectPath={projectPath}
-              currentBranch={currentBranch}
-              shell={shellLabel}
-              sessionId={terminalSession?.cliSessionId ?? latestSession.session_id}
-            />
-          )}
-          {terminalStatsCardVisibility.tokenUsage && <TokenUsageCard stats={boundStats} />}
-          {terminalStatsCardVisibility.tokenTrend && <TrendCard session={boundSession} />}
-          {terminalStatsCardVisibility.modelContext && <ModelContextCard stats={boundStats} session={boundSession} />}
-          {terminalStatsCardVisibility.tools && <ToolsCard session={boundSession} />}
-          {terminalStatsCardVisibility.latestChanges && (
-            <LatestChangesCard
-              summary={latestChangesSummary}
-              onOpenDiff={(fileChange) => setDiffFileChanges([fileChange])}
-            />
-          )}
-          {terminalStatsCardVisibility.todayUsage && <TodayUsageCard stats={todayStats} loading={loadingToday} />}
+          {terminalStatsCardOrder.map(renderStatsCard)}
         </>
       )}
       <DiffModal

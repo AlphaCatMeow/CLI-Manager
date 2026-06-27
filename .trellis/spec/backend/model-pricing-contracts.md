@@ -86,6 +86,8 @@ fn calculate_usage_cost(model: Option<&str>, usage: UsageTokenScan) -> UsageStat
 - Hardcoded prices are seed data only: when `model_prices` is empty, insert default rows with `source='builtin'`. Runtime cost calculation must not maintain a second hardcoded pricing table.
 - Remote sync is advisory. `model_prices_sync` fetches LiteLLM and OpenRouter, parses remote rows, matches targets, and returns matched/candidate/unmatched results. The command does **not** write SQLite; the frontend writes accepted prices and then pushes the cache.
 - Auto-apply sync matches only when confidence is deterministic (exact or case-insensitive identity after normalization). Tail, alnum, and Levenshtein similarity matches must be presented as candidates for user confirmation.
+- Model context limits for UI display use a shared frontend resolver: exact log value first, then model metadata cached in `model_prices.raw_json`, then local model-name rules, then unknown. Do not add a database migration only for context-window metadata unless a future feature needs querying/sorting by that field.
+- Context metadata parsing is field-whitelisted. LiteLLM rows may use `max_input_tokens`, `context_window`, or `max_tokens`; OpenRouter rows may use `context_length`. If a LiteLLM row has tiered pricing keys like `input_cost_per_token_above_272k_tokens`, use that lowest `above_<N>k_tokens` cutoff as the standard context display limit before `max_input_tokens`. Unknown/missing fields are ignored instead of guessed.
 - `ccusage` reports keep using the external ccusage tool's own cost fields. Do not override ccusage costs with the local `model_prices` table unless a future task explicitly changes that contract.
 
 ### 4. Validation & Error Matrix
@@ -98,6 +100,9 @@ fn calculate_usage_cost(model: Option<&str>, usage: UsageTokenScan) -> UsageStat
 | Remote source fails but another source succeeds | Return partial success with source status/error; do not fail the entire sync if at least one source yielded data. |
 | All remote sources fail | Return a clear error from `model_prices_sync`; frontend keeps existing prices unchanged. |
 | Remote row lacks input/output/cache price fields | Skip that row or mark source skipped; never store a row with accidental zero prices unless zero was explicitly present. |
+| Remote row lacks context-window metadata | Keep the model price usable; context limit falls through to local rules or unknown. |
+| Remote row exposes a supported positive context-window field | Cache it in memory from `raw_json` and let `resolveContextLimit` use it before local rules. |
+| LiteLLM row exposes both `max_input_tokens` and tier cutoff fields such as `*_above_272k_tokens` | Display the tier cutoff as the standard context limit; do not show the larger theoretical maximum for normal context cards. |
 | Too many sync targets | Deduplicate and cap targets before remote matching to avoid UI-triggered expensive matching work. |
 | Candidate accepted | Upsert accepted price, clear stale candidates for that target, push backend cache. |
 | Explicit cost exists in history JSONL | Do not use it as billing authority; calculate from local model prices when possible, otherwise mark tokens unpriced. |
@@ -107,9 +112,13 @@ fn calculate_usage_cost(model: Option<&str>, usage: UsageTokenScan) -> UsageStat
 
 - Good: first launch after migration creates `model_prices`, seeds builtin rows, pushes backend cache, and both terminal realtime stats and history stats use the same edited price.
 - Good: `anthropic/claude-sonnet-4-5` from LiteLLM is suggested as a candidate for local `claude-sonnet-4-5`; the user confirms it before DB write.
+- Good: a synced LiteLLM row with `max_input_tokens` or an OpenRouter row with `context_length` lets context UI show the model limit even when history logs omit `context_window`.
+- Good: a synced LiteLLM `gpt-5.5` row with `max_input_tokens: 1050000` and `*_above_272k_tokens` tier keys displays `272K`, not `1.1M`, in normal context cards.
 - Base: network is offline; the settings page can still show existing/manual prices and users can edit them.
 - Base: a model appears in history `model_distribution` but has no row in `model_prices`; UI lists it as missing and history stats count its tokens as unpriced.
+- Base: a model has prices but no context metadata; cost calculation still works and context UI falls through to local rules/unknown.
 - Bad: deleting `claude-sonnet-4-5` causes cost calculation to use the hardcoded seed row anyway. Once the table is loaded, missing means unpriced.
+- Bad: UI components duplicate provider-specific context-window parsing instead of calling `resolveContextLimit(model, exactLimit)`.
 - Bad: Rust opens `cli-manager.db` directly by guessing a filesystem path, creating a second persistence path that can drift from `tauri-plugin-sql`.
 
 ### 6. Tests Required
@@ -117,6 +126,7 @@ fn calculate_usage_cost(model: Option<&str>, usage: UsageTokenScan) -> UsageStat
 - Frontend type/build checks:
   - `npx tsc --noEmit` must pass after changing pricing types/store/UI.
   - Verify `calculateCost` uses loaded store prices and falls back only before `priceTableReady`.
+  - Verify `resolveContextLimit(model, exactLimit)` prefers exact values, then cached metadata from `raw_json`, then local model-name rules, then `null`.
 - Rust checks:
   - `cd src-tauri && cargo check` must pass after changing command signatures or history pricing.
   - Unit tests (when added) should assert exact/case-insensitive matches auto-apply while tail/Levenshtein matches remain candidates.

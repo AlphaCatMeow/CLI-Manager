@@ -35,6 +35,7 @@ struct ClaudeHookRequest {
     agent_type: Option<String>,
     agent_transcript_path: Option<String>,
     transcript_path: Option<String>,
+    reasoning_effort: Option<String>,
     wsl_distro_name: Option<String>,
 }
 
@@ -54,6 +55,7 @@ pub struct ClaudeHookPayload {
     agent_type: Option<String>,
     agent_transcript_path: Option<String>,
     transcript_path: Option<String>,
+    reasoning_effort: Option<String>,
     wsl_distro_name: Option<String>,
 }
 
@@ -161,6 +163,7 @@ fn handle_stream(mut stream: TcpStream, app_handle: AppHandle, token: &str) {
         agent_type: payload.agent_type,
         agent_transcript_path: payload.agent_transcript_path,
         transcript_path: payload.transcript_path,
+        reasoning_effort: payload.reasoning_effort,
         wsl_distro_name: payload.wsl_distro_name,
     };
 

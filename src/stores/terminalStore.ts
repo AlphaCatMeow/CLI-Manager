@@ -96,6 +96,7 @@ export interface CliHookPayload {
   agentType?: string | null;
   agentTranscriptPath?: string | null;
   transcriptPath?: string | null;
+  reasoningEffort?: string | null;
   wslDistroName?: string | null;
 }
 
@@ -897,11 +898,18 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     const tabId = resolvePrimaryTabId(payload.tabId, get().splits);
     if (!get().sessions.some((session) => session.id === tabId)) return null;
     const cliSessionId = payload.sessionId?.trim();
-    if (cliSessionId && get().sessions.some((session) => session.id === rawTabId)) {
+    const cliReasoningEffort = payload.reasoningEffort?.trim();
+    if ((cliSessionId || cliReasoningEffort) && get().sessions.some((session) => session.id === rawTabId)) {
       set((state) => ({
         sessions: state.sessions.map((session) =>
-          session.id === rawTabId && session.cliSessionId !== cliSessionId
-            ? { ...session, cliSessionId }
+          session.id === rawTabId
+            ? {
+                ...session,
+                ...(cliSessionId && session.cliSessionId !== cliSessionId ? { cliSessionId } : {}),
+                ...(cliReasoningEffort && session.cliReasoningEffort !== cliReasoningEffort
+                  ? { cliReasoningEffort }
+                  : {}),
+              }
             : session
         ),
       }));

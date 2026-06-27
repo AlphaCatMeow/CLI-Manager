@@ -67,7 +67,7 @@ struct SessionStatsScan {
     unpriced_tokens: u64,
     dominant_model: Option<String>,
     model_usage: HashMap<String, UsageStatsScan>,
-    /// 模型上下文窗口大小（Codex token_count 事件的 model_context_window）。
+    /// 模型上下文窗口大小（日志显式字段，如 Codex model_context_window / Claude context_window）。
     context_window: Option<u64>,
     /// 最近一次请求占用的上下文 token 数。
     last_context_tokens: Option<u64>,
@@ -2339,7 +2339,10 @@ fn scan_session_detail_parts(file_ref: &SessionFileRef) -> SessionDetailParts {
     }
 }
 
-fn finalize_session_detail(file_ref: &SessionFileRef, parts: SessionDetailParts) -> HistorySessionDetail {
+fn finalize_session_detail(
+    file_ref: &SessionFileRef,
+    parts: SessionDetailParts,
+) -> HistorySessionDetail {
     let usage = HistorySessionUsage {
         input_tokens: parts.computed.stats.input_tokens,
         output_tokens: parts.computed.stats.output_tokens,
@@ -2488,7 +2491,12 @@ fn merge_session_detail_parts(
                 .as_deref()
                 .and_then(parse_timestamp_millis_str)
                 .unwrap_or(part.computed.updated_at);
-            message_rows.push((message.timestamp.is_none(), ts, part_index * 10_000 + message_index, message));
+            message_rows.push((
+                message.timestamp.is_none(),
+                ts,
+                part_index * 10_000 + message_index,
+                message,
+            ));
         }
         for (event_index, tool_event) in part.tool_events.into_iter().enumerate() {
             let ts = tool_event
@@ -2560,7 +2568,9 @@ fn merge_session_detail_parts(
         if let Some(model) = event.model.clone() {
             let entry = merged_stats.model_usage.entry(model).or_default();
             entry.input_tokens = entry.input_tokens.saturating_add(event.usage.input_tokens);
-            entry.output_tokens = entry.output_tokens.saturating_add(event.usage.output_tokens);
+            entry.output_tokens = entry
+                .output_tokens
+                .saturating_add(event.usage.output_tokens);
             entry.cache_read_tokens = entry
                 .cache_read_tokens
                 .saturating_add(event.usage.cache_read_tokens);
@@ -2613,7 +2623,11 @@ fn merge_session_detail_parts(
 
     SessionDetailParts {
         computed: CachedSessionComputation {
-            created_at: if created_at == i64::MAX { 0 } else { created_at },
+            created_at: if created_at == i64::MAX {
+                0
+            } else {
+                created_at
+            },
             updated_at,
             session_id: parent_session_id,
             title: parent_title,
@@ -2638,7 +2652,8 @@ fn collect_subtask_session_file_refs(parent_file_ref: &SessionFileRef) -> Vec<Se
     let subagents_dir = parent_dir.join("subagents");
     let mut paths = list_subagent_transcript_files(&subagents_dir);
     paths.sort();
-    paths.into_iter()
+    paths
+        .into_iter()
         .map(|path| SessionFileRef {
             source: parent_file_ref.source.clone(),
             project_key: parent_file_ref.project_key.clone(),
@@ -3521,6 +3536,9 @@ fn scan_session_inner(
         if let Some(effort) = extract_reasoning_effort(&value) {
             reasoning_effort = Some(effort);
         }
+        if let Some(window) = extract_context_window(&value) {
+            context_window = Some(window);
+        }
 
         if let Some(mut msg) = parse_message(&value) {
             message_count += 1;
@@ -4148,9 +4166,12 @@ fn derive_file_change_status(operation: &HistoryFileChangeOperation) -> String {
 }
 
 fn extract_file_path_from_value(value: &Value) -> Option<String> {
-    extract_string_field(value, &["file_path", "filePath", "path", "target_file", "targetFile"])
-        .map(|path| path.trim().to_string())
-        .filter(|path| !path.is_empty())
+    extract_string_field(
+        value,
+        &["file_path", "filePath", "path", "target_file", "targetFile"],
+    )
+    .map(|path| path.trim().to_string())
+    .filter(|path| !path.is_empty())
 }
 
 fn extract_string_field(value: &Value, keys: &[&str]) -> Option<String> {
@@ -4503,10 +4524,7 @@ fn extract_codex_context_info(value: &Value) -> (Option<u64>, Option<u64>) {
     let Some(info) = value.get("payload").and_then(|payload| payload.get("info")) else {
         return (None, None);
     };
-    let window = info
-        .get("model_context_window")
-        .and_then(extract_positive_u64)
-        .filter(|window| *window > 0);
+    let window = extract_context_window_from_value(info);
     let last_context = info
         .get("last_token_usage")
         .and_then(Value::as_object)
@@ -4522,6 +4540,42 @@ fn extract_codex_context_info(value: &Value) -> (Option<u64>, Option<u64>) {
         })
         .filter(|tokens| *tokens > 0);
     (window, last_context)
+}
+
+fn extract_context_window(value: &Value) -> Option<u64> {
+    let candidates = [
+        Some(value),
+        value.get("usage"),
+        value.get("message"),
+        value.get("message").and_then(|v| v.get("usage")),
+        value.get("payload"),
+        value.get("payload").and_then(|v| v.get("info")),
+        value.get("payload").and_then(|v| v.get("usage")),
+        value.get("response"),
+        value.get("response").and_then(|v| v.get("usage")),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find_map(extract_context_window_from_value)
+}
+
+fn extract_context_window_from_value(value: &Value) -> Option<u64> {
+    let map = value.as_object()?;
+    extract_u64_by_keys(
+        map,
+        &[
+            "context_window",
+            "contextWindow",
+            "max_input_tokens",
+            "maxInputTokens",
+            "max_context_tokens",
+            "maxContextTokens",
+            "model_context_window",
+            "modelContextWindow",
+        ],
+    )
+    .filter(|window| *window > 0)
 }
 
 /// 统计工具调用：Claude content 块的 tool_use（按块 id 去重，流式重复行只计一次）、
@@ -6027,10 +6081,7 @@ mod tests {
     fn build_session_detail_aggregates_subtasks_for_realtime_stats() {
         let temp_dir = TempDir::new().unwrap();
         let parent_file = temp_dir.path().join("rollout-session.jsonl");
-        let child_file = temp_dir
-            .path()
-            .join("subagents")
-            .join("agent-child.jsonl");
+        let child_file = temp_dir.path().join("subagents").join("agent-child.jsonl");
         write_text(
             &parent_file,
             concat!(
@@ -6300,6 +6351,26 @@ mod tests {
         assert_eq!(stats.context_window, Some(272000));
         // 取最后一次 last_token_usage 的 total_tokens
         assert_eq!(stats.last_context_tokens, Some(2200));
+    }
+
+    #[test]
+    fn scan_session_combined_extracts_claude_explicit_context_window() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("claude-session.jsonl");
+        write_text(
+            &file,
+            concat!(
+                r#"{"type":"assistant","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4-5","usage":{"input_tokens":10,"cache_read_input_tokens":90000,"cache_creation_input_tokens":5000,"output_tokens":200,"context_window":200000}}}"#,
+                "\n",
+                r#"{"type":"assistant","requestId":"r2","message":{"id":"m2","model":"claude-sonnet-4-5","usage":{"input_tokens":20,"cache_read_input_tokens":95000,"cache_creation_input_tokens":1000,"output_tokens":300,"max_context_tokens":1000000}}}"#,
+                "\n",
+            ),
+        );
+
+        let (_, stats) = scan_session_combined(&file);
+
+        assert_eq!(stats.context_window, Some(1_000_000));
+        assert_eq!(stats.last_context_tokens, Some(96_020));
     }
 
     #[test]
