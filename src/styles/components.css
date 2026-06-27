@@ -101,6 +101,37 @@
     0 14px 36px color-mix(in srgb, var(--primary) 20%, transparent);
 }
 
+.ui-terminal-well .ui-empty-state {
+  color: color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 68%, var(--terminal-theme-muted, #64748b) 32%);
+}
+
+.ui-terminal-well .ui-empty-state::before {
+  display: none;
+}
+
+.ui-terminal-well .ui-empty-state-icon {
+  opacity: 1;
+  color: color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 84%, var(--terminal-theme-muted, #64748b) 16%);
+  border-color: color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 14%, transparent);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--terminal-theme-background, #0c0e10) 78%, var(--terminal-theme-foreground, #f8fafc) 22%),
+      color-mix(in srgb, var(--terminal-theme-background, #0c0e10) 88%, var(--terminal-theme-foreground, #f8fafc) 12%)
+    );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 12%, transparent),
+    0 14px 36px color-mix(in srgb, var(--terminal-theme-accent, var(--primary)) 16%, transparent);
+}
+
+.ui-terminal-well .ui-empty-state-title {
+  color: var(--terminal-theme-foreground, #f8fafc);
+}
+
+.ui-terminal-well .ui-empty-state-description {
+  color: color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 64%, var(--terminal-theme-muted, #64748b) 36%);
+}
+
 .ui-stats-panel {
   position: relative;
   isolation: isolate;
