@@ -27,7 +27,7 @@ export function SettingsNav<T extends string>({ tabs, activeTab, onChange }: Set
               key={tab.id}
               onClick={() => onChange(tab.id)}
               className={`ui-interactive whitespace-nowrap rounded-xl px-3 py-2 text-left text-sm ${
-                active ? "font-semibold text-on-surface" : "font-medium text-on-surface-variant"
+                active ? "font-[800] text-on-surface" : "font-[700] text-on-surface-variant"
               }`}
               style={
                 active
