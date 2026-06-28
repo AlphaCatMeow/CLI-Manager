@@ -17,8 +17,6 @@ import {
   applyTransparency,
   getTerminalBackground,
   getTerminalBackgroundOverlayColor,
-  getTerminalFontWeight,
-  getTerminalFontWeightBold,
   getTerminalMinimumContrastRatio,
   getTerminalTheme,
   isLightTerminalTheme,
@@ -738,16 +736,14 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     if (!terminal) return;
     const baseTheme = getTerminalTheme(terminalThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
     const minimumContrastRatio = getTerminalMinimumContrastRatio(baseTheme);
-    const terminalFontWeight = getTerminalFontWeight(baseTheme);
-    const terminalFontWeightBold = getTerminalFontWeightBold(baseTheme);
     terminal.options.theme = isTransparent ? applyTransparency(baseTheme, background.overlayDarken) : baseTheme;
     if (terminal.options.minimumContrastRatio !== minimumContrastRatio) {
       terminal.options.minimumContrastRatio = minimumContrastRatio;
     }
-    const weightChanged = terminal.options.fontWeight !== terminalFontWeight || terminal.options.fontWeightBold !== terminalFontWeightBold;
+    const weightChanged = terminal.options.fontWeight !== "normal" || terminal.options.fontWeightBold !== "bold";
     if (weightChanged) {
-      terminal.options.fontWeight = terminalFontWeight;
-      terminal.options.fontWeightBold = terminalFontWeightBold;
+      terminal.options.fontWeight = "normal";
+      terminal.options.fontWeightBold = "bold";
     }
     syncWebglRenderer(terminal, baseTheme);
     const sizeChanged = terminal.options.fontSize !== fontSize || terminal.options.fontFamily !== fontFamily;
@@ -811,8 +807,8 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       cursorWidth: 1,
       fontSize,
       fontFamily,
-      fontWeight: getTerminalFontWeight(baseTheme),
-      fontWeightBold: getTerminalFontWeightBold(baseTheme),
+      fontWeight: "normal",
+      fontWeightBold: "bold",
       scrollback: terminalScrollbackRows,
       scrollOnEraseInDisplay: true,
       allowProposedApi: true,

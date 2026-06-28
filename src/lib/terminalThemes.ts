@@ -68,14 +68,6 @@ export function getTerminalMinimumContrastRatio(theme: ITheme): number {
   return isLightTerminalTheme(theme) ? 6 : 1;
 }
 
-export function getTerminalFontWeight(theme: ITheme): number {
-  return isLightTerminalTheme(theme) ? 500 : 400;
-}
-
-export function getTerminalFontWeightBold(_theme: ITheme): number {
-  return 700;
-}
-
 export type LightTerminalPalette =
   | "warm-paper"
   | "cream-green"
