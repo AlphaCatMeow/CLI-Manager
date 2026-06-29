@@ -3,7 +3,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::process::Output;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const REGISTRY_MIRROR: &str = "https://registry.npmmirror.com";
 const DAILY_REPORT_KIND: &str = "daily";
@@ -79,6 +79,55 @@ fn output_text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
+fn truncate_for_log(value: &str, max_chars: usize) -> String {
+    let trimmed = value.trim();
+    let mut result = String::new();
+    for (index, ch) in trimmed.chars().enumerate() {
+        if index >= max_chars {
+            result.push_str("...");
+            return result;
+        }
+        result.push(ch);
+    }
+    result
+}
+
+fn target_label(target: &RuntimeTarget) -> String {
+    match target {
+        RuntimeTarget::Host => "host".to_string(),
+        RuntimeTarget::Wsl { distro } => format!("wsl:{distro}"),
+    }
+}
+
+fn format_command_for_log(program: &str, args: &[&str]) -> String {
+    if args.is_empty() {
+        program.to_string()
+    } else {
+        format!("{program} {}", args.join(" "))
+    }
+}
+
+fn ccusage_envs_for_log(envs: &[(&str, String)]) -> String {
+    let items = envs
+        .iter()
+        .filter_map(|(key, value)| match *key {
+            "CLAUDE_CONFIG_DIR" | "CODEX_HOME" => {
+                Some(format!("{key}={}", truncate_for_log(value, 240)))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        "(none)".to_string()
+    } else {
+        items.join(", ")
+    }
+}
+
+fn should_log_wsl_flow(use_wsl: bool, target: &RuntimeTarget) -> bool {
+    use_wsl || matches!(target, RuntimeTarget::Wsl { .. })
+}
+
 fn base_envs() -> Vec<(&'static str, String)> {
     vec![
         ("NPM_CONFIG_REGISTRY", REGISTRY_MIRROR.to_string()),
@@ -120,6 +169,14 @@ fn wsl_command_output(
     envs: &[(&str, String)],
 ) -> Result<Output, String> {
     let wsl_exe = crate::wsl::find_wsl_exe().unwrap_or_else(|| PathBuf::from("wsl.exe"));
+    let started = Instant::now();
+    log::debug!(
+        "[ccusage:wsl] 启动 wsl.exe: distro={} program={} args_count={} env_count={}",
+        distro,
+        program,
+        args.len(),
+        envs.len()
+    );
     let mut command = silent_command(&wsl_exe.to_string_lossy());
     command.args(["-d", distro, "--exec", "env"]);
     for (key, value) in envs {
@@ -127,9 +184,24 @@ fn wsl_command_output(
     }
     command.arg(program);
     command.args(args);
-    command
-        .output()
-        .map_err(|err| format!("执行 wsl.exe -d {distro} --exec {program} 失败: {err}"))
+    let output = command.output().map_err(|err| {
+        log::warn!(
+            "[ccusage:wsl] wsl.exe 启动失败: distro={} program={} elapsed_ms={} error={}",
+            distro,
+            program,
+            started.elapsed().as_millis(),
+            err
+        );
+        format!("执行 wsl.exe -d {distro} --exec {program} 失败: {err}")
+    })?;
+    log::debug!(
+        "[ccusage:wsl] wsl.exe 结束: distro={} program={} status={} elapsed_ms={}",
+        distro,
+        program,
+        output.status,
+        started.elapsed().as_millis()
+    );
+    Ok(output)
 }
 
 fn detect_default_wsl_context() -> Result<Option<DefaultWslContext>, String> {
@@ -141,10 +213,23 @@ fn detect_default_wsl_context() -> Result<Option<DefaultWslContext>, String> {
         "-lc",
         r#"printf '%s\n%s' "$WSL_DISTRO_NAME" "$HOME""#,
     ]);
-    let output = command
-        .output()
-        .map_err(|err| format!("执行 wsl.exe 探测默认发行版失败: {err}"))?;
+    let started = Instant::now();
+    log::info!("[ccusage:wsl] 开始探测默认 WSL 发行版");
+    let output = command.output().map_err(|err| {
+        log::warn!(
+            "[ccusage:wsl] 默认 WSL 发行版探测启动失败: elapsed_ms={} error={}",
+            started.elapsed().as_millis(),
+            err
+        );
+        format!("执行 wsl.exe 探测默认发行版失败: {err}")
+    })?;
     if !output.status.success() {
+        log::warn!(
+            "[ccusage:wsl] 默认 WSL 发行版探测失败: status={} elapsed_ms={} output={}",
+            output.status,
+            started.elapsed().as_millis(),
+            truncate_for_log(&output_text(&output), 300)
+        );
         return Ok(None);
     }
 
@@ -153,9 +238,20 @@ fn detect_default_wsl_context() -> Result<Option<DefaultWslContext>, String> {
     let distro = lines.next().map(str::trim).unwrap_or_default();
     let home = lines.next().map(str::trim).unwrap_or_default();
     if distro.is_empty() || home.is_empty() {
+        log::warn!(
+            "[ccusage:wsl] 默认 WSL 发行版探测结果为空: elapsed_ms={} stdout={}",
+            started.elapsed().as_millis(),
+            truncate_for_log(&stdout, 300)
+        );
         return Ok(None);
     }
 
+    log::info!(
+        "[ccusage:wsl] 默认 WSL 发行版探测成功: distro={} home={} elapsed_ms={}",
+        distro,
+        home,
+        started.elapsed().as_millis()
+    );
     Ok(Some(DefaultWslContext {
         distro: distro.to_string(),
         home: home.to_string(),
@@ -178,10 +274,14 @@ fn fallback_default_wsl_context(
     codex_config_dir: Option<&String>,
     use_wsl: bool,
 ) -> Result<Option<DefaultWslContext>, String> {
-    if !use_wsl || config_value_present(claude_config_dir) || config_value_present(codex_config_dir)
-    {
+    if !use_wsl {
         return Ok(None);
     }
+    if config_value_present(claude_config_dir) || config_value_present(codex_config_dir) {
+        log::debug!("[ccusage:wsl] 跳过默认 WSL fallback: 已显式配置 Claude/Codex 目录");
+        return Ok(None);
+    }
+    log::info!("[ccusage:wsl] Claude/Codex 配置目录为空，尝试使用默认 WSL fallback");
     detect_default_wsl_context()
 }
 
@@ -206,6 +306,17 @@ fn wsl_command_with_bun_path_output(
     command.extend(args.iter().map(|arg| shell_escape(arg)));
     script_parts.push(format!("exec {}", command.join(" ")));
     let script = script_parts.join("; ");
+    log::info!(
+        "[ccusage:wsl] 准备执行 Bun 命令: distro={} command={} envs={}",
+        distro,
+        format_command_for_log(program, args),
+        ccusage_envs_for_log(envs)
+    );
+    log::debug!(
+        "[ccusage:wsl] Bun shell script: distro={} script={}",
+        distro,
+        script
+    );
     wsl_command_output(distro, "sh", &["-lc", &script], &[])
 }
 
@@ -337,16 +448,32 @@ fn resolve_config_dir_for_runtime(
     use_wsl: bool,
 ) -> Result<Option<ConfigDir>, String> {
     let Some(path) = existing_dir(value, label)? else {
+        if use_wsl {
+            log::debug!("[ccusage:wsl] {label} 配置目录未设置");
+        }
         return Ok(None);
     };
     let raw = path.to_string_lossy().into_owned();
     if use_wsl && crate::wsl::is_wsl_config_dir(&raw) {
-        let (distro, linux_path) = crate::wsl::parse_wsl_unc_path(&raw)
-            .ok_or_else(|| format!("无法解析 {label} 的 WSL 配置目录"))?;
+        let (distro, linux_path) = match crate::wsl::parse_wsl_unc_path(&raw) {
+            Some(result) => result,
+            None => {
+                log::warn!("[ccusage:wsl] 无法解析 {label} 的 WSL 配置目录: path={raw}");
+                return Err(format!("无法解析 {label} 的 WSL 配置目录"));
+            }
+        };
+        log::info!(
+            "[ccusage:wsl] {label} 配置目录解析为 WSL: distro={} linux_path={}",
+            distro,
+            linux_path
+        );
         return Ok(Some(ConfigDir {
             runtime: RuntimeTarget::Wsl { distro },
             path: linux_path,
         }));
+    }
+    if use_wsl {
+        log::info!("[ccusage:wsl] {label} 配置目录按 host 处理: path={raw}");
     }
     Ok(Some(ConfigDir {
         runtime: RuntimeTarget::Host,
@@ -360,6 +487,9 @@ fn resolve_runtime_for_source(
     codex_config_dir: Option<String>,
     use_wsl: bool,
 ) -> Result<(RuntimeTarget, Vec<(&'static str, String)>), String> {
+    if use_wsl {
+        log::info!("[ccusage:wsl] 开始解析 ccusage runtime: source={source}");
+    }
     let default_wsl = fallback_default_wsl_context(
         claude_config_dir.as_ref(),
         codex_config_dir.as_ref(),
@@ -418,11 +548,19 @@ fn resolve_runtime_for_source(
             }
 
             if has_host && !wsl_distros.is_empty() {
+                log::warn!(
+                    "[ccusage:wsl] runtime 冲突: source=all has_host=true wsl_distros={}",
+                    wsl_distros.join(",")
+                );
                 return Err(
                     "当前“全部”来源暂不支持混合 Windows / WSL 环境，请切换到 Claude 或 Codex 单独刷新".to_string(),
                 );
             }
             if wsl_distros.len() > 1 {
+                log::warn!(
+                    "[ccusage:wsl] runtime 冲突: source=all multi_wsl_distros={}",
+                    wsl_distros.join(",")
+                );
                 return Err(
                     "当前“全部”来源检测到多个 WSL 发行版，请切换到 Claude 或 Codex 单独刷新"
                         .to_string(),
@@ -437,6 +575,14 @@ fn resolve_runtime_for_source(
         _ => RuntimeTarget::Host,
     };
 
+    if should_log_wsl_flow(use_wsl, &target) {
+        log::info!(
+            "[ccusage:wsl] ccusage runtime 解析完成: source={} target={} envs={}",
+            source,
+            target_label(&target),
+            ccusage_envs_for_log(&envs)
+        );
+    }
     Ok((target, envs))
 }
 
@@ -449,16 +595,59 @@ fn ccusage_report_payload(
 ) -> Result<Value, String> {
     let (program, args) = ccusage_command(source, report_kind, include_breakdown);
     let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let should_log = matches!(target, RuntimeTarget::Wsl { .. });
+    let started = Instant::now();
+    if should_log {
+        log::info!(
+            "[ccusage:wsl] 开始执行 ccusage report: source={} report={} target={} command={} breakdown={} envs={}",
+            source,
+            report_kind,
+            target_label(target),
+            format_command_for_log(program, &arg_refs),
+            include_breakdown,
+            ccusage_envs_for_log(envs)
+        );
+    }
     let output = command_output(target, program, &arg_refs, envs)?;
     if !output.status.success() {
-        return Err(format!(
-            "运行 ccusage {report_kind} 失败: {}",
-            output_text(&output)
-        ));
+        let output_text = output_text(&output);
+        if should_log {
+            log::warn!(
+                "[ccusage:wsl] ccusage report 执行失败: source={} report={} target={} status={} elapsed_ms={} output={}",
+                source,
+                report_kind,
+                target_label(target),
+                output.status,
+                started.elapsed().as_millis(),
+                truncate_for_log(&output_text, 500)
+            );
+        }
+        return Err(format!("运行 ccusage {report_kind} 失败: {}", output_text));
     }
 
-    serde_json::from_slice(&output.stdout)
-        .map_err(|err| format!("解析 ccusage {report_kind} JSON 失败: {err}"))
+    if should_log {
+        log::info!(
+            "[ccusage:wsl] ccusage report 执行成功: source={} report={} target={} elapsed_ms={} stdout_bytes={}",
+            source,
+            report_kind,
+            target_label(target),
+            started.elapsed().as_millis(),
+            output.stdout.len()
+        );
+    }
+    serde_json::from_slice(&output.stdout).map_err(|err| {
+        if should_log {
+            log::warn!(
+                "[ccusage:wsl] ccusage report JSON 解析失败: source={} report={} target={} elapsed_ms={} error={}",
+                source,
+                report_kind,
+                target_label(target),
+                started.elapsed().as_millis(),
+                err
+            );
+        }
+        format!("解析 ccusage {report_kind} JSON 失败: {err}")
+    })
 }
 
 fn ccusage_command(
@@ -531,9 +720,33 @@ pub async fn ccusage_refresh_report(
     use_wsl: bool,
 ) -> Result<CcusageReportResponse, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let source = normalize_source(source)?;
+        let refresh_started = Instant::now();
+        let source = match normalize_source(source) {
+            Ok(source) => source,
+            Err(err) => {
+                if use_wsl {
+                    log::warn!("[ccusage:wsl] 刷新请求来源无效: error={err}");
+                }
+                return Err(err);
+            }
+        };
+        if use_wsl {
+            log::info!(
+                "[ccusage:wsl] 开始刷新 ccusage 报告: source={} use_wsl=true",
+                source
+            );
+        }
         let (target, envs) =
             resolve_runtime_for_source(&source, claude_config_dir, codex_config_dir, use_wsl)?;
+        let should_log = should_log_wsl_flow(use_wsl, &target);
+        if should_log {
+            log::info!(
+                "[ccusage:wsl] 刷新目标已确定: source={} target={} envs={}",
+                source,
+                target_label(&target),
+                ccusage_envs_for_log(&envs)
+            );
+        }
         let daily_payload =
             ccusage_report_payload(&target, &source, DAILY_REPORT_KIND, &envs, true)?;
         let session_payload =
@@ -541,6 +754,14 @@ pub async fn ccusage_refresh_report(
         let blocks_payload =
             ccusage_report_payload(&target, &source, BLOCKS_REPORT_KIND, &envs, false)?;
 
+        if should_log {
+            log::info!(
+                "[ccusage:wsl] ccusage 报告刷新完成: source={} target={} elapsed_ms={}",
+                source,
+                target_label(&target),
+                refresh_started.elapsed().as_millis()
+            );
+        }
         Ok(CcusageReportResponse {
             source,
             report_kind: REPORT_KIND.to_string(),
