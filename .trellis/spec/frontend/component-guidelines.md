@@ -687,6 +687,29 @@ invoke("pty_write", { sessionId, data: `${clearBeforeLaunch}${command}\r` });
 
 **Prevention**: When a TUI appears to scroll inside a partial screen, reproduce with prior shell output still visible. If old output remains above the TUI, fix the launch input sequence before changing scrollbar styles, TERM, alternate-screen flags, or xterm construction.
 
+### Common Mistake: Clearing xterm directly for user-facing clear screen
+
+**Symptom**: After a right-click "clear screen" action, the terminal output is cleared but IME candidate windows still open at the old pre-clear cursor position.
+
+**Cause**: `terminal.clear()` mutates the xterm buffer directly and bypasses the normal PTY/shell input path. In `XTermTerminal`, IME positioning depends on xterm's helper textarea and composition anchoring. Bypassing the input path can leave the helper textarea anchored to stale pre-clear geometry.
+
+**Wrong**:
+
+```tsx
+terminal.clear();
+terminal.focus();
+```
+
+**Correct**:
+
+```tsx
+useTerminalStore.getState().markAttentionInputHandled(sessionId);
+invoke("pty_write", { sessionId, data: "\x0c" });
+terminal.focus();
+```
+
+**Prevention**: For user-facing terminal clear actions, send Ctrl+L (`\x0c`) through `pty_write` so the shell/TUI clears or redraws through the same path as keyboard input. Reserve `terminal.clear()` for internal buffer maintenance where IME/helper textarea position is irrelevant.
+
 ### Common Mistake: Treating `cursorBlink` as full cursor visibility control
 
 **Symptom**: A TUI such as Codex still shows rapid cursor flashing after `cursorBlink` is set to `false`.

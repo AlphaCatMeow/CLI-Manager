@@ -23,6 +23,7 @@ import {
 } from "../lib/terminalThemes";
 import { backgroundAssetUrl } from "../lib/assetUrl";
 import { TERMINAL_FILE_PATH_MIME } from "../lib/aiPathFormatter";
+import { useI18n } from "../lib/i18n";
 import { isDirectCodexStartupCommand } from "../lib/projectStartupCommand";
 import { endTerminalFileDrag, getTerminalFileDragText } from "../lib/terminalFileDrag";
 import {
@@ -271,6 +272,7 @@ interface Props extends TerminalContextMenuActions {
 }
 
 export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fontSize = 14, fontFamily = "Cascadia Code, Consolas, monospace", resolvedTheme = "dark", terminalThemeName = "auto", lightThemePalette = "warm-paper", darkThemePalette = "night-indigo", onNewTab, onCloseSession, onCloseOthers, onCloseToLeft, onCloseToRight, onSplitRight, onSplitDown }: Props) {
+  const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -1768,6 +1770,15 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     terminal.focus();
   };
 
+  const handleMenuClear = () => {
+    const terminal = terminalRef.current;
+    closeContextMenu();
+    if (!terminal) return;
+    useTerminalStore.getState().markAttentionInputHandled(sessionId);
+    invoke("pty_write", { sessionId, data: "\x0c" }).catch((err) => reportPtyWriteError("clear", err));
+    terminal.focus();
+  };
+
   const runMenuAction = (action?: () => void) => {
     closeContextMenu();
     action?.();
@@ -1934,7 +1945,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
               disabled={!menuState.hasSelection}
               onClick={handleMenuCopy}
             >
-              <span>复制</span>
+              <span>{t("terminal.contextMenu.copy")}</span>
               <span className="terminal-context-menu-hint">Ctrl+C</span>
             </button>
             <button
@@ -1943,7 +1954,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
               className="terminal-context-menu-item"
               onClick={handleMenuPaste}
             >
-              <span>粘贴</span>
+              <span>{t("terminal.contextMenu.paste")}</span>
               <span className="terminal-context-menu-hint">Ctrl+V</span>
             </button>
             <button
@@ -1952,7 +1963,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
               className="terminal-context-menu-item"
               onClick={handleMenuSelectAll}
             >
-              <span>全选</span>
+              <span>{t("terminal.contextMenu.selectAll")}</span>
             </button>
             <button
               type="button"
@@ -1960,7 +1971,15 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
               className="terminal-context-menu-item"
               onClick={handleMenuCopyAll}
             >
-              <span>复制全部输出</span>
+              <span>{t("terminal.contextMenu.copyAll")}</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="terminal-context-menu-item"
+              onClick={handleMenuClear}
+            >
+              <span>{t("terminal.contextMenu.clear")}</span>
             </button>
             {hasManageActions && (
               <>
@@ -1972,7 +1991,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
                     className="terminal-context-menu-item"
                     onClick={() => runMenuAction(onNewTab)}
                   >
-                    <span>新建终端</span>
+                    <span>{t("terminal.toolbar.newTerminal")}</span>
                   </button>
                 )}
                 {onCloseSession && (
@@ -1982,7 +2001,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
                     className="terminal-context-menu-item"
                     onClick={() => runMenuAction(onCloseSession)}
                   >
-                    <span>关闭终端</span>
+                    <span>{t("terminal.tab.closeCurrent")}</span>
                   </button>
                 )}
                 {onCloseOthers && (
@@ -1992,7 +2011,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
                     className="terminal-context-menu-item"
                     onClick={() => runMenuAction(onCloseOthers)}
                   >
-                    <span>关闭其它终端</span>
+                    <span>{t("terminal.tab.closeOthers")}</span>
                   </button>
                 )}
                 {onCloseToLeft && (
@@ -2002,7 +2021,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
                     className="terminal-context-menu-item"
                     onClick={() => runMenuAction(onCloseToLeft)}
                   >
-                    <span>关闭左侧终端</span>
+                    <span>{t("terminal.tab.closeLeft")}</span>
                   </button>
                 )}
                 {onCloseToRight && (
@@ -2012,7 +2031,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
                     className="terminal-context-menu-item"
                     onClick={() => runMenuAction(onCloseToRight)}
                   >
-                    <span>关闭右侧终端</span>
+                    <span>{t("terminal.tab.closeRight")}</span>
                   </button>
                 )}
                 {(onSplitRight || onSplitDown) && <div className="terminal-context-menu-separator" role="separator" />}
@@ -2023,7 +2042,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
                     className="terminal-context-menu-item"
                     onClick={() => runSplitMenuAction(onSplitRight)}
                   >
-                    <span>向右分屏</span>
+                    <span>{t("terminal.tab.splitRight")}</span>
                   </button>
                 )}
                 {onSplitDown && (
@@ -2033,7 +2052,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
                     className="terminal-context-menu-item"
                     onClick={() => runSplitMenuAction(onSplitDown)}
                   >
-                    <span>向下分屏</span>
+                    <span>{t("terminal.tab.splitDown")}</span>
                   </button>
                 )}
               </>
