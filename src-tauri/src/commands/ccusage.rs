@@ -650,6 +650,10 @@ fn ccusage_report_payload(
     })
 }
 
+fn source_supports_blocks_report(source: &str) -> bool {
+    source != "codex"
+}
+
 fn ccusage_command(
     source: &str,
     report_kind: &str,
@@ -751,8 +755,11 @@ pub async fn ccusage_refresh_report(
             ccusage_report_payload(&target, &source, DAILY_REPORT_KIND, &envs, true)?;
         let session_payload =
             ccusage_report_payload(&target, &source, SESSION_REPORT_KIND, &envs, false)?;
-        let blocks_payload =
-            ccusage_report_payload(&target, &source, BLOCKS_REPORT_KIND, &envs, false)?;
+        let blocks_payload = if source_supports_blocks_report(&source) {
+            ccusage_report_payload(&target, &source, BLOCKS_REPORT_KIND, &envs, false)?
+        } else {
+            Value::Null
+        };
 
         if should_log {
             log::info!(
@@ -825,5 +832,12 @@ mod tests {
                 "--breakdown".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn codex_source_does_not_request_blocks_report() {
+        assert!(!source_supports_blocks_report("codex"));
+        assert!(source_supports_blocks_report("claude"));
+        assert!(source_supports_blocks_report("all"));
     }
 }

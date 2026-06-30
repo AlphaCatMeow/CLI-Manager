@@ -63,6 +63,7 @@ function resolveCcusageRuntimeScope(
 - `CcusageStatsPanel` must derive readiness, prepare-card warnings, mixed-runtime warnings, and WSL install hints from the explicit runtime scope, not merely from the existence of any WSL config path.
 - Host install CTA (`installTools()` without WSL target) must only show when the active runtime scope is `host`.
 - Report refresh execution must invoke `bun x ccusage ...`, not `bunx ccusage ...`. This avoids PATH / wrapper drift where WSL resolves `ccusage` through a Node global entrypoint that fails on locale JSON ESM imports.
+- Codex report refresh must not request `blocks`. `ccusage codex` only exposes `daily`, `monthly`, and `session`; `ccusage codex blocks` exits with `The "blocks" report is only available for Claude Code usage.` Return `blocksPayload: null` for `source=codex` and let the frontend normalize it as empty hourly data.
 
 ### 4. Validation & Error Matrix
 
@@ -77,6 +78,8 @@ function resolveCcusageRuntimeScope(
 | `ccusageUseWsl = true` + source `all` sees multiple WSL distros | Return the existing multi-distro error; frontend must show the conflict hint |
 | `ccusageUseWsl = true` + current source runtime is WSL but bunx missing | Refresh stays disabled; prepare card shows WSL manual hint |
 | `ccusageUseWsl = true` + no current source WSL runtime | Fall back to host for that source; do not show unrelated WSL install hint |
+| `source = codex` | Run `daily` and `session`; skip `blocks`; return `blocksPayload: null` |
+| `source = claude` or `source = all` | Keep the existing `blocks` report request |
 
 ### 5. Good / Base / Bad Cases
 
@@ -131,6 +134,7 @@ const runtimeScope = resolveCcusageRuntimeScope(source, claudeDir, codexDir);
   - Assert `ccusage_refresh_report(..., use_wsl = true)` still converts WSL UNC config dirs to Linux paths and runs via WSL target.
   - Assert default fallback is used only when both config dirs are empty.
   - Assert report command construction uses `bun` with `["x", "ccusage", ...]` so refresh does not depend on `bunx` / `ccusage` shell wrappers.
+  - Assert Codex refresh does not request a blocks report and still preserves Claude/all blocks behavior.
 
 ### 7. Wrong vs Correct
 
@@ -157,4 +161,20 @@ let default_wsl = fallback_default_wsl_context(
     use_wsl,
 )?;
 // Only when both config dirs are empty may the runtime fall back to the default WSL distro.
+```
+
+#### Wrong
+
+```rust
+let blocks_payload = ccusage_report_payload(&target, "codex", "blocks", &envs, false)?;
+```
+
+#### Correct
+
+```rust
+let blocks_payload = if source_supports_blocks_report(&source) {
+    ccusage_report_payload(&target, &source, "blocks", &envs, false)?
+} else {
+    serde_json::Value::Null
+};
 ```

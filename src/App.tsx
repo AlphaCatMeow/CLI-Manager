@@ -373,6 +373,7 @@ function App() {
   const viewMode = useSettingsStore((s) => s.viewMode);
   const closeBehavior = useSettingsStore((s) => s.closeBehavior);
   const ccusageAnalyticsEnabled = useSettingsStore((s) => s.ccusageAnalyticsEnabled);
+  const projectScopedTerminalViewEnabled = useSettingsStore((s) => s.projectScopedTerminalViewEnabled);
   const lastSettingsTab = useSettingsStore((s) => s.lastSettingsTab);
   const updateSetting = useSettingsStore((s) => s.update);
   const openHistory = useHistoryStore((s) => s.openHistory);
@@ -384,10 +385,17 @@ function App() {
   const [statsOpen, setStatsOpen] = useState(false);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const [terminalFullscreen, setTerminalFullscreen] = useState(false);
+  const [terminalScopeProjectId, setTerminalScopeProjectId] = useState<string | null>(null);
   const [isMacOs, setIsMacOs] = useState(isLikelyMacOs);
   const terminalFullscreenMaximizedRef = useRef(false);
   const restoreWindowWidthRef = useRef<number | null>(null);
   const closeBehaviorRef = useRef(closeBehavior);
+
+  useEffect(() => {
+    if (!projectScopedTerminalViewEnabled) {
+      setTerminalScopeProjectId(null);
+    }
+  }, [projectScopedTerminalViewEnabled]);
 
   const handleOpenSettings = useCallback((tab?: SettingsTab) => {
     const nextTab = tab ?? lastSettingsTab;
@@ -503,8 +511,13 @@ function App() {
     if (!IN_TAURI) return;
     const unlistenHook = listen<CliHookPayload>("claude-hook-notification", (event) => {
       void useReplayStore.getState().recordCliHookEvent(event.payload);
+      const isClaudeToolSubagentEvent =
+        event.payload.source === "claude" &&
+        (event.payload.event === "ToolStart" || event.payload.event === "ToolStop") &&
+        Boolean(event.payload.agentId?.trim());
+
       // SubagentStart / AgentToolStart：开/更新子 Agent 转录分屏，独立于 Tab 状态机与 toast。
-      if (event.payload.event === "SubagentStart" || event.payload.event === "AgentToolStart") {
+      if (event.payload.event === "SubagentStart" || event.payload.event === "AgentToolStart" || isClaudeToolSubagentEvent) {
         void useTerminalStore.getState().openSubagentTranscript(event.payload);
         return;
       }
@@ -876,6 +889,9 @@ function App() {
             onOpenSettings={handleOpenSettings}
             onOpenStats={handleOpenStats}
             compactMode
+            projectScopedTerminalViewEnabled={projectScopedTerminalViewEnabled}
+            terminalScopeProjectId={terminalScopeProjectId}
+            onTerminalScopeChange={setTerminalScopeProjectId}
           />
         </div>
       ) : (
@@ -884,10 +900,18 @@ function App() {
             <Sidebar
               onOpenSettings={handleOpenSettings}
               onOpenStats={handleOpenStats}
+              projectScopedTerminalViewEnabled={projectScopedTerminalViewEnabled}
+              terminalScopeProjectId={terminalScopeProjectId}
+              onTerminalScopeChange={setTerminalScopeProjectId}
             />
           )}
           <main id="main-content" className="ui-main-shell flex min-w-0 flex-1 flex-col" tabIndex={-1}>
-            <TerminalTabs fullscreen={terminalFullscreen} onToggleFullscreen={handleToggleTerminalFullscreen} />
+            <TerminalTabs
+              fullscreen={terminalFullscreen}
+              onToggleFullscreen={handleToggleTerminalFullscreen}
+              projectScopedTerminalViewEnabled={projectScopedTerminalViewEnabled}
+              projectScopeProjectId={terminalScopeProjectId}
+            />
           </main>
         </div>
       )}

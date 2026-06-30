@@ -233,6 +233,18 @@ function trimOptional(value: string | null | undefined): string | null {
   return trimmed ? trimmed : null;
 }
 
+function inferWslDistroFromCwd(cwd: string | null | undefined): string | null {
+  const value = trimOptional(cwd);
+  if (!value) return null;
+  const normalized = value.replace(/\//g, "\\");
+  const match = normalized.match(/^\\\\wsl(?:\.localhost|\$)\\([^\\]+)(?:\\|$)/i);
+  return match?.[1]?.trim() || null;
+}
+
+function resolveHookWslDistroName(payload: CliHookPayload): string | null {
+  return trimOptional(payload.wslDistroName) ?? inferWslDistroFromCwd(payload.cwd);
+}
+
 function normalizePathForCompare(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/g, "");
 }
@@ -341,7 +353,9 @@ function shouldSubscribeSubagentSource(previous: SubagentTranscriptSource | unde
 }
 
 function shouldAttemptDerivedChildTranscript(payload: CliHookPayload, source: SubagentTranscriptSource): boolean {
-  return payload.event === "AgentToolStop" && source.kind !== "child-jsonl" && Boolean(trimOptional(payload.agentId));
+  if (source.kind === "child-jsonl" || !trimOptional(payload.agentId)) return false;
+  if (payload.event === "AgentToolStop") return true;
+  return payload.source === "claude" && payload.event === "ToolStop";
 }
 
 /** AgentToolStart pending 兜底：短时轮询 subagents 目录发现新 child JSONL。 */
@@ -1431,6 +1445,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
     const agentId = trimOptional(payload.agentId);
     const toolUseId = trimOptional(payload.toolUseId);
+    const resolvedWslDistroName = resolveHookWslDistroName(payload);
     const resolvedSource = resolveSubagentTranscriptSource(payload);
     const existingSessionId = findSubagentSessionId(sessions, payload);
     const pseudoId = existingSessionId ?? createSubagentPaneId(parentTabId, agentId, toolUseId, resolvedSource.kind === "child-jsonl" ? resolvedSource.transcriptPath ?? null : null);
@@ -1446,7 +1461,9 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       toolUseId,
       sessionId: payload.sessionId ?? null,
       cwd: payload.cwd ?? null,
-      wslDistroName: payload.wslDistroName ?? null,
+      wslDistroName: resolvedWslDistroName,
+      payloadWslDistroName: trimOptional(payload.wslDistroName),
+      inferredWslDistroName: inferWslDistroFromCwd(payload.cwd),
       sourceKind: source.kind,
       transcriptPath: source.transcriptPath ?? null,
       parentTranscriptPath: source.parentTranscriptPath ?? null,
@@ -1468,7 +1485,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
           toolUseId,
           sourceKind: source.kind,
           reason: source.reason,
-          wslDistroName: payload.wslDistroName ?? null,
+          wslDistroName: resolvedWslDistroName,
         });
         return false;
       }
@@ -1479,7 +1496,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
           cwd: payload.cwd ?? null,
           sessionId: payload.sessionId ?? null,
           agentId,
-          wslDistroName: payload.wslDistroName ?? null,
+          wslDistroName: resolvedWslDistroName,
         });
         if (result.initialContent) {
           useTerminalStore.getState().appendSubagentTranscript(pseudoId, result.initialContent, true);
@@ -1503,7 +1520,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
           pseudoId,
           agentId,
           sourceKind: source.kind,
-          wslDistroName: payload.wslDistroName ?? null,
+          wslDistroName: resolvedWslDistroName,
         });
         return false;
       }
@@ -1514,7 +1531,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
           cwd: payload.cwd ?? null,
           sessionId: payload.sessionId ?? null,
           agentId,
-          wslDistroName: payload.wslDistroName ?? null,
+          wslDistroName: resolvedWslDistroName,
         });
         const childSource: SubagentTranscriptSource = {
           kind: "child-jsonl",
@@ -1558,6 +1575,19 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
       try {
         const codexConfigDir = useSettingsStore.getState().codexHookConfigDir ?? undefined;
+        logInfo("[subagent_transcript] codex rollout discovery requested", {
+          pseudoId,
+          agentId,
+          parentSessionId: payload.sessionId,
+          codexConfigDir: codexConfigDir ?? null,
+          cwd: payload.cwd ?? null,
+          resolvedWslDistroName,
+          sourceKind: source.kind,
+          sourceReason: source.reason ?? null,
+          parentTranscriptPath: source.parentTranscriptPath ?? null,
+          payloadTranscriptPath: trimOptional(payload.transcriptPath),
+          payloadAgentTranscriptPath: trimOptional(payload.agentTranscriptPath),
+        });
         const discoveredPath = await invoke<string | null>("codex_subagent_transcript_discover", {
           parentSessionId: payload.sessionId,
           agentId,
@@ -1568,17 +1598,28 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
             pseudoId,
             agentId,
             parentSessionId: payload.sessionId,
+            codexConfigDir: codexConfigDir ?? null,
+            sourceKind: source.kind,
+            sourceReason: source.reason ?? null,
+            parentTranscriptPath: source.parentTranscriptPath ?? null,
           });
           return false;
         }
 
+        logInfo("[subagent_transcript] codex rollout discovered path", {
+          pseudoId,
+          agentId,
+          parentSessionId: payload.sessionId,
+          discoveredPath,
+          codexConfigDir: codexConfigDir ?? null,
+        });
         const result = await invoke<SubagentTranscriptSubscribeResult>("subagent_transcript_subscribe", {
           key: pseudoId,
           transcriptPath: discoveredPath,
           cwd: payload.cwd ?? null,
           sessionId: payload.sessionId ?? null,
           agentId,
-          wslDistroName: payload.wslDistroName ?? null,
+          wslDistroName: resolvedWslDistroName,
         });
         const childSource: SubagentTranscriptSource = {
           kind: "child-jsonl",
@@ -1673,16 +1714,17 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
     // AgentToolStart/AgentToolStop 在并发场景下无法可靠关联到 SubagentStart（前者只有 toolUseId，后者只有 agentId）。
     // 策略：这两个事件只触发 discovery，不创建 UI；SubagentStart 创建真实 Tab，discovery 负责升级内容源。
+    // Claude 在部分 WSL 场景只发 ToolStart/ToolStop + agentId，因此这类事件允许创建降级 pane 并尝试派生订阅。
     if (payload.event === "AgentToolStart" || payload.event === "AgentToolStop") {
       if (!agentId && (resolvedSource.kind === "pending" || resolvedSource.kind === "lifecycle-only")) {
-        startSubagentDiscovery(parentTabId, payload.sessionId ?? null, payload.cwd ?? null, payload.wslDistroName ?? null);
+        startSubagentDiscovery(parentTabId, payload.sessionId ?? null, payload.cwd ?? null, resolvedWslDistroName);
       } else {
         logInfo("[subagent_discovery] not started for AgentTool event", {
           event: payload.event,
           parentTabId,
           agentId,
           resolvedSourceKind: resolvedSource.kind,
-          wslDistroName: payload.wslDistroName ?? null,
+          wslDistroName: resolvedWslDistroName,
         });
       }
       return;

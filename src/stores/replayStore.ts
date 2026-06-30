@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { getDb } from "../lib/db";
 import { translateCurrent } from "../lib/i18n";
-import { logError } from "../lib/logger";
+import { logError, logWarn } from "../lib/logger";
 import type { CliHookPayload, CliHookEventName } from "./terminalStore";
 
 export type ReplayEventKind =
@@ -366,6 +366,12 @@ interface ReplaySessionDraft {
   projectPath: string | null;
 }
 
+const REPLAY_EVENT_INSERT_ATTEMPTS = 3;
+
+function isUniqueEventIndexError(err: unknown): boolean {
+  return String(err).includes("UNIQUE constraint failed: ai_replay_events.session_key, ai_replay_events.event_index");
+}
+
 async function persistReplayEvent(
   sessionKey: string,
   sessionDraft: ReplaySessionDraft,
@@ -375,12 +381,40 @@ async function persistReplayEvent(
   const db = await getDb();
   const existing = await fetchSession(sessionKey);
   const timestamp = normalizeTimestamp(eventDraft.timestamp);
-  const nextIndexRows = await db.select<Array<{ next_index: number | null }>>(
-    "SELECT COALESCE(MAX(event_index), 0) + 1 AS next_index FROM ai_replay_events WHERE session_key = $1",
-    [sessionKey]
-  );
-  const eventIndex = nextIndexRows[0]?.next_index ?? 1;
   const startedAt = existing?.startedAt ?? timestamp;
+  let eventIndex = 1;
+
+  for (let attempt = 1; attempt <= REPLAY_EVENT_INSERT_ATTEMPTS; attempt += 1) {
+    const nextIndexRows = await db.select<Array<{ next_index: number | null }>>(
+      "SELECT COALESCE(MAX(event_index), 0) + 1 AS next_index FROM ai_replay_events WHERE session_key = $1",
+      [sessionKey]
+    );
+    eventIndex = nextIndexRows[0]?.next_index ?? 1;
+
+    try {
+      await db.execute(
+        `INSERT INTO ai_replay_events
+          (session_key, event_index, kind, title, detail, timestamp, duration_ms, status, tags_json, payload_json)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          sessionKey,
+          eventIndex,
+          eventDraft.kind,
+          eventDraft.title,
+          eventDraft.detail,
+          timestamp,
+          eventDraft.durationMs,
+          eventDraft.status,
+          JSON.stringify(eventDraft.tags),
+          JSON.stringify(eventDraft.payload),
+        ]
+      );
+      break;
+    } catch (err) {
+      if (!isUniqueEventIndexError(err) || attempt === REPLAY_EVENT_INSERT_ATTEMPTS) throw err;
+      logWarn("AI replay event index conflict, retrying", { sessionKey, eventIndex, attempt, err });
+    }
+  }
 
   await db.execute(
     `INSERT OR REPLACE INTO ai_replay_sessions
@@ -397,23 +431,6 @@ async function persistReplayEvent(
       timestamp,
       eventDraft.status,
       eventIndex,
-    ]
-  );
-  await db.execute(
-    `INSERT INTO ai_replay_events
-      (session_key, event_index, kind, title, detail, timestamp, duration_ms, status, tags_json, payload_json)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-    [
-      sessionKey,
-      eventIndex,
-      eventDraft.kind,
-      eventDraft.title,
-      eventDraft.detail,
-      timestamp,
-      eventDraft.durationMs,
-      eventDraft.status,
-      JSON.stringify(eventDraft.tags),
-      JSON.stringify(eventDraft.payload),
     ]
   );
 
