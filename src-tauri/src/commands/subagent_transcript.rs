@@ -390,10 +390,21 @@ fn list_native_codex_rollout_candidates(root: &Path, agent_id: &str) -> Vec<Path
     let expected_suffix = format!("-{agent_id}.jsonl");
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
+    let mut scanned_dirs = 0usize;
+    let mut scanned_files = 0usize;
 
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
+        scanned_dirs += 1;
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                warn!(
+                    "[subagent_transcript:codex] native scan read_dir failed: dir={} agentId={} error={err}",
+                    dir.to_string_lossy(),
+                    agent_id
+                );
+                continue;
+            }
         };
         for entry in entries.flatten() {
             let path = entry.path();
@@ -404,6 +415,7 @@ fn list_native_codex_rollout_candidates(root: &Path, agent_id: &str) -> Vec<Path
             if !path.is_file() {
                 continue;
             }
+            scanned_files += 1;
             let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
                 continue;
             };
@@ -413,6 +425,15 @@ fn list_native_codex_rollout_candidates(root: &Path, agent_id: &str) -> Vec<Path
         }
     }
 
+    info!(
+        "[subagent_transcript:codex] native scan result: root={} agentId={} suffix={} dirs={} files={} matched={}",
+        root.to_string_lossy(),
+        agent_id,
+        expected_suffix,
+        scanned_dirs,
+        scanned_files,
+        out.len()
+    );
     out
 }
 
@@ -432,6 +453,10 @@ fn list_wsl_codex_rollout_candidates(root: &Path, agent_id: &str) -> Vec<PathBuf
         "-printf",
         "%p\n",
     ];
+    info!(
+        "[subagent_transcript:codex] wsl scan start: root={} distro={} linuxRoot={} pattern={}",
+        root_str, distro, linux_root, pattern
+    );
     match wsl_command_text(&distro, &args) {
         Ok((stdout, stderr)) => {
             if !stderr.trim().is_empty() {
@@ -440,12 +465,24 @@ fn list_wsl_codex_rollout_candidates(root: &Path, agent_id: &str) -> Vec<PathBuf
                     stderr.trim()
                 );
             }
-            stdout
+            let candidates: Vec<PathBuf> = stdout
                 .lines()
                 .map(str::trim)
                 .filter(|line| !line.is_empty())
                 .map(|line| PathBuf::from(crate::wsl::linux_to_unc_wsl_path(line, &distro)))
-                .collect()
+                .collect();
+            info!(
+                "[subagent_transcript:codex] wsl scan result: root={} agentId={} count={} files={:?}",
+                root_str,
+                agent_id,
+                candidates.len(),
+                candidates
+                    .iter()
+                    .take(20)
+                    .map(|path| path.to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+            );
+            candidates
         }
         Err(err) => {
             warn!(
@@ -460,23 +497,84 @@ fn list_wsl_codex_rollout_candidates(root: &Path, agent_id: &str) -> Vec<PathBuf
 fn list_codex_rollout_candidates(root: &Path, agent_id: &str) -> Vec<PathBuf> {
     let root_str = root.to_string_lossy().to_string();
     if crate::wsl::is_wsl_config_dir(&root_str) {
+        info!(
+            "[subagent_transcript:codex] rollout scan mode=wsl root={} agentId={}",
+            root_str, agent_id
+        );
         return list_wsl_codex_rollout_candidates(root, agent_id);
     }
+    info!(
+        "[subagent_transcript:codex] rollout scan mode=native root={} agentId={}",
+        root_str, agent_id
+    );
     list_native_codex_rollout_candidates(root, agent_id)
 }
 
 fn codex_rollout_parent_thread_id(path: &Path) -> Option<String> {
-    let file = File::open(path).ok()?;
+    let path_text = path.to_string_lossy();
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) => {
+            warn!(
+                "[subagent_transcript:codex] inspect rollout open failed: path={} error={err}",
+                path_text
+            );
+            return None;
+        }
+    };
     let mut reader = std::io::BufReader::new(file);
     let mut first_line = String::new();
     use std::io::BufRead;
-    reader.read_line(&mut first_line).ok()?;
-    let json: Value = serde_json::from_str(first_line.trim()).ok()?;
-    if json.get("type")?.as_str()? != "session_meta" {
+    if let Err(err) = reader.read_line(&mut first_line) {
+        warn!(
+            "[subagent_transcript:codex] inspect rollout read first line failed: path={} error={err}",
+            path_text
+        );
         return None;
     }
-    let payload = json.get("payload")?;
-    trimmed_str(payload.get("parent_thread_id").and_then(Value::as_str))
+    let trimmed = first_line.trim();
+    if trimmed.is_empty() {
+        warn!(
+            "[subagent_transcript:codex] inspect rollout empty first line: path={}",
+            path_text
+        );
+        return None;
+    }
+    let json: Value = match serde_json::from_str(trimmed) {
+        Ok(json) => json,
+        Err(err) => {
+            warn!(
+                "[subagent_transcript:codex] inspect rollout parse failed: path={} firstLineBytes={} error={err}",
+                path_text,
+                trimmed.len()
+            );
+            return None;
+        }
+    };
+    let event_type = json.get("type").and_then(Value::as_str);
+    if event_type != Some("session_meta") {
+        info!(
+            "[subagent_transcript:codex] inspect rollout first line is not session_meta: path={} type={:?}",
+            path_text, event_type
+        );
+        return None;
+    }
+    let Some(payload) = json.get("payload") else {
+        warn!(
+            "[subagent_transcript:codex] inspect rollout missing payload: path={}",
+            path_text
+        );
+        return None;
+    };
+    let parent_thread_id = trimmed_str(payload.get("parent_thread_id").and_then(Value::as_str));
+    info!(
+        "[subagent_transcript:codex] inspect rollout session_meta: path={} payloadId={:?} parentThreadId={:?} threadId={:?}",
+        path_text,
+        payload.get("id").and_then(Value::as_str),
+        parent_thread_id,
+        payload.get("thread_id").and_then(Value::as_str)
+    );
+    parent_thread_id
 }
 
 /// 解析转录路径：优先显式 `agentTranscriptPath`，否则由 cwd+sessionId+agentId 推导。

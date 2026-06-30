@@ -1575,6 +1575,19 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
       try {
         const codexConfigDir = useSettingsStore.getState().codexHookConfigDir ?? undefined;
+        logInfo("[subagent_transcript] codex rollout discovery requested", {
+          pseudoId,
+          agentId,
+          parentSessionId: payload.sessionId,
+          codexConfigDir: codexConfigDir ?? null,
+          cwd: payload.cwd ?? null,
+          resolvedWslDistroName,
+          sourceKind: source.kind,
+          sourceReason: source.reason ?? null,
+          parentTranscriptPath: source.parentTranscriptPath ?? null,
+          payloadTranscriptPath: trimOptional(payload.transcriptPath),
+          payloadAgentTranscriptPath: trimOptional(payload.agentTranscriptPath),
+        });
         const discoveredPath = await invoke<string | null>("codex_subagent_transcript_discover", {
           parentSessionId: payload.sessionId,
           agentId,
@@ -1585,10 +1598,21 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
             pseudoId,
             agentId,
             parentSessionId: payload.sessionId,
+            codexConfigDir: codexConfigDir ?? null,
+            sourceKind: source.kind,
+            sourceReason: source.reason ?? null,
+            parentTranscriptPath: source.parentTranscriptPath ?? null,
           });
           return false;
         }
 
+        logInfo("[subagent_transcript] codex rollout discovered path", {
+          pseudoId,
+          agentId,
+          parentSessionId: payload.sessionId,
+          discoveredPath,
+          codexConfigDir: codexConfigDir ?? null,
+        });
         const result = await invoke<SubagentTranscriptSubscribeResult>("subagent_transcript_subscribe", {
           key: pseudoId,
           transcriptPath: discoveredPath,
