@@ -1736,6 +1736,7 @@ export function TerminalTabs({
     () => resolveProjectForSession(activeSession, sessions, projects, projectById),
     [activeSession, projectById, projects, sessions]
   );
+  const sidePanelProjectPath = panelSession?.cwd ?? filePanelProject?.path ?? null;
   const activeDragSession = useMemo(
     () => activeDragSessionId ? sessions.find((session) => session.id === activeDragSessionId) ?? null : null,
     [activeDragSessionId, sessions]
@@ -2704,7 +2705,7 @@ export function TerminalTabs({
               open={sidePanelOpen}
               activeTab={sidePanelTab}
               activeSessionId={panelSessionId}
-              projectPath={panelSession?.cwd ?? null}
+              projectPath={sidePanelProjectPath}
               filesTabDisabled={!filePanelProject}
               filesPanelContent={<FileExplorerSidebar mode="panel" onClosePanel={closeFilesPanel} />}
               onTabChange={handleSidePanelTabChange}
@@ -2729,7 +2730,7 @@ export function TerminalTabs({
                   resizeTitle={t("terminal.panel.resizeGitTitle")}
                 >
                   <Suspense fallback={null}>
-                    <GitChangesPanel open={gitOpen} projectPath={panelSession?.cwd ?? null} embedded />
+                    <GitChangesPanel open={gitOpen} projectPath={sidePanelProjectPath} embedded />
                   </Suspense>
                 </ResizableTerminalPanelFrame>
               )}

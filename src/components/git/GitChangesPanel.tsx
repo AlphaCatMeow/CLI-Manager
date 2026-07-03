@@ -12,6 +12,8 @@ import { StageCheckbox, type StageState } from "./StageCheckbox";
 import { STATUS_CONFIG } from "./GitStatusIcon";
 import { DiffViewerModal } from "./DiffViewerModal";
 import { ConfirmDialog } from "../ConfirmDialog";
+import { useFileExplorerStore } from "../../stores/fileExplorerStore";
+import { useTerminalStore } from "../../stores/terminalStore";
 import { TERM, EmptyHint, panelColorTint } from "../stats/termStatsUi";
 import { useI18n, type TranslationKey } from "../../lib/i18n";
 import { findProjectByPath } from "../../lib/terminalProject";
@@ -98,6 +100,9 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
     setAddedDeselection,
   } = useGitStore();
   const { gitGroupBy, update: updateSettings } = useSettingsStore();
+  const openFileProject = useFileExplorerStore((state) => state.openProject);
+  const openFile = useFileExplorerStore((state) => state.openFile);
+  const openFileEditorPane = useTerminalStore((state) => state.openFileEditorPane);
   const [diffModalOpen, setDiffModalOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState<{ path: string; name: string; status: string } | null>(null);
   const [confirmAllOpen, setConfirmAllOpen] = useState(false);
@@ -225,6 +230,18 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
     if (fileChange) {
       setSelectedFile({ path: filePath, name: fileName, status: fileChange.status });
       setDiffModalOpen(true);
+    }
+  };
+
+  const handleOpenSourceFile = async (filePath: string, status: string) => {
+    if (!project || status === "D") return;
+    const fileName = filePath.split(/[\\/]/).pop() || filePath;
+    try {
+      await openFileProject(project);
+      await openFile({ name: fileName, path: filePath, kind: "file", sizeBytes: 0 });
+      openFileEditorPane(project);
+    } catch (err) {
+      toast.error(t("files.toast.openFileFailed"), { description: String(err) });
     }
   };
 
@@ -602,6 +619,7 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
                   nodes={tree}
                   treeId="tracked"
                   onFileClick={handleFileClick}
+                  onOpenSourceFile={handleOpenSourceFile}
                   onRequestDiscard={handleRequestDiscard}
                   onToggleStage={handleToggleStage}
                   onToggleStagePaths={handleToggleStagePaths}
@@ -619,6 +637,7 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
                   nodes={untrackedTree}
                   treeId="untracked"
                   onFileClick={handleFileClick}
+                  onOpenSourceFile={handleOpenSourceFile}
                   onRequestDiscard={handleRequestDiscard}
                   onToggleStage={handleToggleStage}
                   onToggleStagePaths={handleToggleStagePaths}
