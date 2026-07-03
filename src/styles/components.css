@@ -4493,6 +4493,42 @@
   border-radius: 2px;
 }
 
+.ui-file-tree-status-badge {
+  display: inline-flex;
+  min-width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid;
+  border-radius: 4px;
+  padding: 0 3px;
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+}
+
+.ui-file-editor-pane .ui-file-editor-git-line-added,
+.ui-file-editor-pane .ui-file-editor-git-line-modified,
+.ui-file-editor-pane .ui-file-editor-git-line-deleted {
+  width: 5px !important;
+  margin-left: 3px;
+  border-radius: 2px;
+}
+
+.ui-file-editor-pane .ui-file-editor-git-line-added {
+  background: #35c46b;
+}
+
+.ui-file-editor-pane .ui-file-editor-git-line-modified {
+  background: #4f8cff;
+}
+
+.ui-file-editor-pane .ui-file-editor-git-line-deleted {
+  background: #f7768e;
+}
+
 .ui-file-editor-markdown-preview {
   background-color: var(--terminal-theme-background, var(--surface));
   color: var(--terminal-theme-foreground, var(--on-surface));

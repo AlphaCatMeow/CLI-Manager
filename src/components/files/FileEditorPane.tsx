@@ -1,10 +1,11 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
+import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { eventToCombo } from "../../hooks/useKeyboardShortcuts";
 import { copyAiText } from "../../lib/aiClipboard";
 import { formatAiAnchor, formatAiContextBlock, type AiTextSelection } from "../../lib/aiPathFormatter";
 import { useI18n } from "../../lib/i18n";
-import type { TerminalSession } from "../../lib/types";
+import type { GitFileChange, TerminalSession } from "../../lib/types";
 import { configureMonaco, languageFromPath } from "../../lib/monacoSetup";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useFileExplorerStore } from "../../stores/fileExplorerStore";
@@ -12,6 +13,7 @@ import { MarkdownContent } from "../ui/MarkdownContent";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "../ui/dialog";
 import { Copy, FileCode, Image, Save, X } from "../icons";
+import { STATUS_CONFIG } from "../git/GitStatusIcon";
 
 configureMonaco();
 
@@ -28,6 +30,12 @@ type PendingAction =
   | null;
 
 type MonacoEditor = Parameters<OnMount>[0];
+type GitLineChangeKind = "added" | "modified" | "deleted";
+
+interface GitLineMarker {
+  lineNumber: number;
+  kind: GitLineChangeKind;
+}
 
 function clearSearchDecorations(editor: MonacoEditor, decorationIdsRef: MutableRefObject<string[]>): void {
   if (decorationIdsRef.current.length === 0) return;
@@ -68,6 +76,80 @@ function openFindWidget(editor: MonacoEditor, searchQuery: string): void {
   void editor.getAction("actions.find")?.run();
 }
 
+function clampLine(lineNumber: number, maxLine: number): number {
+  if (maxLine <= 0) return 1;
+  return Math.min(Math.max(lineNumber, 1), maxLine);
+}
+
+function parseGitDiffLineMarkers(diffText: string, maxLine: number): GitLineMarker[] {
+  const markers = new Map<number, GitLineChangeKind>();
+  const pendingDeletes: number[] = [];
+  let newLine = 0;
+
+  const priority: Record<GitLineChangeKind, number> = { deleted: 1, added: 2, modified: 3 };
+  const setMarker = (lineNumber: number, kind: GitLineChangeKind) => {
+    const line = clampLine(lineNumber, maxLine);
+    const current = markers.get(line);
+    if (!current || priority[kind] > priority[current]) markers.set(line, kind);
+  };
+  const flushDeletes = () => {
+    for (const line of pendingDeletes.splice(0)) {
+      setMarker(line, "deleted");
+    }
+  };
+
+  for (const line of diffText.split(/\r?\n/)) {
+    const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) {
+      flushDeletes();
+      newLine = Number.parseInt(hunk[1], 10);
+      continue;
+    }
+    if (newLine === 0 || line.startsWith("---") || line.startsWith("+++")) continue;
+
+    if (line.startsWith("-")) {
+      pendingDeletes.push(Math.max(newLine, 1));
+      continue;
+    }
+    if (line.startsWith("+")) {
+      setMarker(newLine, pendingDeletes.length > 0 ? "modified" : "added");
+      if (pendingDeletes.length > 0) pendingDeletes.shift();
+      newLine += 1;
+      continue;
+    }
+
+    flushDeletes();
+    if (line.startsWith(" ")) newLine += 1;
+  }
+
+  flushDeletes();
+  return Array.from(markers.entries()).map(([lineNumber, kind]) => ({ lineNumber, kind }));
+}
+
+function gitLineDecorationColor(kind: GitLineChangeKind): string {
+  if (kind === "added") return STATUS_CONFIG.A.color;
+  if (kind === "deleted") return STATUS_CONFIG.D.color;
+  return STATUS_CONFIG.M.color;
+}
+
+function makeGitLineDecorations(markers: GitLineMarker[]) {
+  return markers.map((marker) => ({
+    range: {
+      startLineNumber: marker.lineNumber,
+      startColumn: 1,
+      endLineNumber: marker.lineNumber,
+      endColumn: 1,
+    },
+    options: {
+      linesDecorationsClassName: `ui-file-editor-git-line-${marker.kind}`,
+      overviewRuler: {
+        color: gitLineDecorationColor(marker.kind),
+        position: 4,
+      },
+    },
+  }));
+}
+
 function isDarkHexColor(color: string): boolean {
   const raw = color.trim().replace(/^#/, "");
   const hex = raw.length === 3
@@ -85,6 +167,7 @@ export function FileEditorPane({ session, isActive, terminalThemeBackground, onC
   const { t } = useI18n();
   const editorRef = useRef<MonacoEditor | null>(null);
   const searchDecorationIdsRef = useRef<string[]>([]);
+  const gitDecorationIdsRef = useRef<string[]>([]);
   const [editorReadyNonce, setEditorReadyNonce] = useState(0);
   const copyAiShortcut = useSettingsStore((s) => s.keyboardShortcuts.copyAi);
   const project = useFileExplorerStore((s) => s.project);
@@ -93,6 +176,7 @@ export function FileEditorPane({ session, isActive, terminalThemeBackground, onC
   const activeFilePath = useFileExplorerStore((s) => s.activeFilePath);
   const activeFile = useFileExplorerStore((s) => s.activeFile);
   const searchQuery = useFileExplorerStore((s) => s.searchQuery);
+  const gitChanges = useFileExplorerStore((s) => s.gitChanges);
   const searchNavigationTarget = useFileExplorerStore((s) => s.searchNavigationTarget);
   const setActiveFilePath = useFileExplorerStore((s) => s.setActiveFilePath);
   const clearSearchNavigationTarget = useFileExplorerStore((s) => s.clearSearchNavigationTarget);
@@ -107,6 +191,10 @@ export function FileEditorPane({ session, isActive, terminalThemeBackground, onC
   const visibleFile = ownsFileState ? activeFile : null;
   const dirty = Boolean(visibleFile && visibleFile.content !== visibleFile.savedContent);
   const dirtyFiles = visibleFiles.filter((file) => file.content !== file.savedContent);
+  const activeGitChange = useMemo<GitFileChange | null>(
+    () => visibleFile ? gitChanges.find((change) => change.path === visibleFile.path) ?? null : null,
+    [gitChanges, visibleFile?.path]
+  );
   const language = useMemo(() => visibleFile ? languageFromPath(visibleFile.path) : "plaintext", [visibleFile]);
   const editorTheme = useMemo(
     () => isDarkHexColor(terminalThemeBackground) ? "vs-dark" : "vs",
@@ -132,7 +220,54 @@ export function FileEditorPane({ session, isActive, terminalThemeBackground, onC
     const editor = editorRef.current;
     if (!editor) return;
     clearSearchDecorations(editor, searchDecorationIdsRef);
+    clearSearchDecorations(editor, gitDecorationIdsRef);
   }, [visibleFile?.path]);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (!editor || !model) return;
+
+    clearSearchDecorations(editor, gitDecorationIdsRef);
+    if (!project || !visibleFile || !activeGitChange) return;
+    if (visibleFile.previewKind !== "text" && visibleFile.previewKind !== "markdown") return;
+    if (visibleFile.previewKind === "markdown" && previewMode !== "source") return;
+
+    let cancelled = false;
+    void invoke<string>("git_get_file_diff", {
+      projectPath: project.path,
+      filePath: visibleFile.path,
+      status: activeGitChange.status,
+    })
+      .then((diffText) => {
+        if (cancelled || editorRef.current !== editor) return;
+        const currentModel = editor.getModel();
+        if (!currentModel) return;
+        const markers = parseGitDiffLineMarkers(diffText, currentModel.getLineCount());
+        gitDecorationIdsRef.current = editor.deltaDecorations(
+          gitDecorationIdsRef.current,
+          makeGitLineDecorations(markers)
+        );
+      })
+      .catch((err) => {
+        if (!cancelled) console.warn("[FileEditorPane] Failed to load git diff markers:", err);
+      });
+
+    return () => {
+      cancelled = true;
+      if (editorRef.current === editor) clearSearchDecorations(editor, gitDecorationIdsRef);
+    };
+  }, [
+    activeGitChange?.path,
+    activeGitChange?.status,
+    editorReadyNonce,
+    previewMode,
+    project?.path,
+    visibleFile?.modifiedMs,
+    visibleFile?.path,
+    visibleFile?.previewKind,
+    visibleFile?.sizeBytes,
+  ]);
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -417,6 +552,7 @@ export function FileEditorPane({ session, isActive, terminalThemeBackground, onC
               options={{
                 automaticLayout: true,
                 fontSize: 13,
+                glyphMargin: true,
                 minimap: { enabled: true },
                 scrollBeyondLastLine: false,
                 wordWrap: "on",

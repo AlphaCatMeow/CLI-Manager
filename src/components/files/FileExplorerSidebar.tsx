@@ -38,8 +38,8 @@ type ConfirmAction =
   | { kind: "overwrite-paste"; targetParentPath: string };
 
 type FileDisplayStatus =
-  | { kind: "editing"; label: string; color: string }
-  | { kind: "git"; label: string; color: string };
+  | { kind: "editing"; label: string; color: string; symbol: string }
+  | { kind: "git"; label: string; color: string; symbol: string; status: GitFileChange["status"] };
 
 type DraggedFileEntry = Pick<ProjectFileEntry, "kind" | "name" | "path">;
 type Translate = ReturnType<typeof useI18n>["t"];
@@ -63,6 +63,7 @@ const GIT_STATUS_LABELS: Record<GitFileChange["status"], TranslationKey> = {
   U: "files.status.untracked",
   "??": "files.status.untracked",
 };
+const GIT_DIRECTORY_STATUS_PRIORITY: GitFileChange["status"][] = ["C", "D", "M", "R", "A", "U", "??"];
 
 const SEARCH_MODES: Array<{ value: ProjectFileSearchMode; labelKey: TranslationKey }> = [
   { value: "files", labelKey: "files.search.modeFiles" },
@@ -97,6 +98,27 @@ function makeGitDisplayStatus(change: GitFileChange, t: Translate): FileDisplayS
     kind: "git",
     label: t(GIT_STATUS_LABELS[change.status]),
     color: config.color,
+    symbol: config.symbol,
+    status: change.status,
+  };
+}
+
+function getDirectoryGitChange(path: string, changes: GitFileChange[]): GitFileChange | null {
+  const prefix = `${path}/`;
+  const matches = changes.filter((change) => change.path.startsWith(prefix));
+  if (matches.length === 0) return null;
+  for (const status of GIT_DIRECTORY_STATUS_PRIORITY) {
+    const match = matches.find((change) => change.status === status);
+    if (match) return match;
+  }
+  return matches[0];
+}
+
+function statusBadgeStyle(status: FileDisplayStatus): CSSProperties {
+  return {
+    color: status.color,
+    borderColor: `${status.color}66`,
+    backgroundColor: `${status.color}18`,
   };
 }
 
@@ -466,6 +488,16 @@ function FileNode({
                 </span>
               )}
             </span>
+            {displayStatus && (
+              <span
+                className="ui-file-tree-status-badge"
+                style={statusBadgeStyle(displayStatus)}
+                title={displayStatus.label}
+                aria-label={displayStatus.label}
+              >
+                {displayStatus.symbol}
+              </span>
+            )}
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent className="file-explorer-menu" portalContainer={menuPortalContainer}>
@@ -733,9 +765,13 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
   const hasSearchQuery = Boolean(searchQuery.trim());
   const visibleRows = hasSearchQuery && searchMode === "files" ? searchResults : tree;
   const gitChangeByPath = useMemo(() => new Map(gitChanges.map((change) => [change.path, change])), [gitChanges]);
-  const dirtyFilePaths = useMemo(
-    () => new Set(openFiles.filter((file) => file.content !== file.savedContent).map((file) => file.path)),
+  const dirtyFilePathList = useMemo(
+    () => openFiles.filter((file) => file.content !== file.savedContent).map((file) => file.path),
     [openFiles]
+  );
+  const dirtyFilePaths = useMemo(
+    () => new Set(dirtyFilePathList),
+    [dirtyFilePathList]
   );
   const ignoredPaths = useMemo(
     () => new Set(project ? fileExplorerIgnoredPaths[project.id] ?? [] : []),
@@ -789,13 +825,17 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
   }), [expandedAutoCollapseGroups, ignoredPaths, toggleAutoCollapseGroup, ignorePath, unignorePath]);
 
   const getDisplayStatus = useCallback((entry: ProjectFileEntry): FileDisplayStatus | null => {
-    if (entry.kind !== "file") return null;
     if (dirtyFilePaths.has(entry.path)) {
-      return { kind: "editing", label: t("files.status.editing"), color: "#7dcfff" };
+      return { kind: "editing", label: t("files.status.editing"), color: "#7dcfff", symbol: "*" };
     }
-    const change = gitChangeByPath.get(entry.path);
+    if (entry.kind === "directory" && dirtyFilePathList.some((path) => path.startsWith(`${entry.path}/`))) {
+      return { kind: "editing", label: t("files.status.editing"), color: "#7dcfff", symbol: "*" };
+    }
+    const change = entry.kind === "file"
+      ? gitChangeByPath.get(entry.path)
+      : getDirectoryGitChange(entry.path, gitChanges);
     return change ? makeGitDisplayStatus(change, t) : null;
-  }, [dirtyFilePaths, gitChangeByPath, t]);
+  }, [dirtyFilePathList, dirtyFilePaths, gitChangeByPath, gitChanges, t]);
 
   const openInput = (action: InputAction) => {
     if (action.kind === "rename") {
@@ -1089,6 +1129,16 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
             >
               {entry.path}
             </span>
+            {displayStatus && (
+              <span
+                className="ui-file-tree-status-badge"
+                style={statusBadgeStyle(displayStatus)}
+                title={displayStatus.label}
+                aria-label={displayStatus.label}
+              >
+                {displayStatus.symbol}
+              </span>
+            )}
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent className="file-explorer-menu" portalContainer={menuPortalContainer}>
