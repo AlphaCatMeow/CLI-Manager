@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { getMaterialFileIcon, getMaterialFolderIcon } from "@baybreezy/file-extension-icon";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import { copyAiText } from "../../lib/aiClipboard";
 import { formatAiPathBlock, formatAiRootTree, formatAiTree, formatTerminalDragPath, TERMINAL_FILE_PATH_MIME } from "../../lib/aiPathFormatter";
@@ -67,6 +68,7 @@ const SEARCH_MODES: Array<{ value: ProjectFileSearchMode; labelKey: TranslationK
   { value: "files", labelKey: "files.search.modeFiles" },
   { value: "content", labelKey: "files.search.modeCode" },
 ];
+const FALLBACK_POLL_INTERVAL_MS = 15000;
 
 function getDisplayPathName(path: string): string {
   const normalized = path.trim().replace(/[\\/]+$/g, "");
@@ -645,6 +647,7 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
   const clipboard = useFileExplorerStore((s) => s.clipboard);
   const closeProject = useFileExplorerStore((s) => s.closeProject);
   const refresh = useFileExplorerStore((s) => s.refresh);
+  const refreshVisibleState = useFileExplorerStore((s) => s.refreshVisibleState);
   const setSearchMode = useFileExplorerStore((s) => s.setSearchMode);
   const setSearchQuery = useFileExplorerStore((s) => s.setSearchQuery);
   const openFile = useFileExplorerStore((s) => s.openFile);
@@ -673,6 +676,59 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
   useEffect(() => {
     if (searchQuery.trim()) setSearchControlsVisible(true);
   }, [searchQuery]);
+
+  useEffect(() => {
+    if (!project?.path) return;
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    let fallbackTimer: number | undefined;
+
+    const isActive = () => document.visibilityState === "visible" && document.hasFocus();
+    const refreshIfActive = () => {
+      if (isActive()) void refreshVisibleState();
+    };
+    const startFallback = () => {
+      if (fallbackTimer === undefined) {
+        fallbackTimer = window.setInterval(refreshIfActive, FALLBACK_POLL_INTERVAL_MS);
+      }
+    };
+    const stopFallback = () => {
+      if (fallbackTimer !== undefined) {
+        window.clearInterval(fallbackTimer);
+        fallbackTimer = undefined;
+      }
+    };
+
+    void listen<{ projectPath: string }>("project-files-changed", (event) => {
+      if (disposed) return;
+      if (event.payload.projectPath === project.path) refreshIfActive();
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+
+    void invoke("file_watch_start", { projectPath: project.path }).catch((err) => {
+      console.warn("[FileExplorerSidebar] file_watch_start failed, falling back to polling:", err);
+      if (!disposed) startFallback();
+    });
+
+    const onFocus = () => refreshIfActive();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") refreshIfActive();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      disposed = true;
+      stopFallback();
+      if (unlisten) unlisten();
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+      void invoke("file_watch_stop", { projectPath: project.path }).catch(() => {});
+    };
+  }, [project?.path, refreshVisibleState]);
 
   const hasSearchQuery = Boolean(searchQuery.trim());
   const visibleRows = hasSearchQuery && searchMode === "files" ? searchResults : tree;
