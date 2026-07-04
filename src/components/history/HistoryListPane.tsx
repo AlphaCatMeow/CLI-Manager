@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import type { Group, HistorySearchHit, HistorySessionView, HistorySourceFilter, Project } from "../../lib/types";
 import { useI18n, type TranslationKey } from "../../lib/i18n";
 import { useSettingsStore } from "../../stores/settingsStore";
-import { VendorIcon, inferVendor } from "../VendorIcon";
+import { VendorIcon, inferVendor, type VendorKey } from "../VendorIcon";
 import { Portal } from "../ui/Portal";
 import { buildHistorySessionChildMap, formatTime } from "./historyViewUtils";
 
@@ -217,7 +217,9 @@ function ProjectFilterIcon({ project, size = 13 }: { project: Project; size?: nu
 }
 
 function SessionSourceIcon({ source, size = 14 }: { source: string; size?: number }) {
-  const vendor = inferVendor(source);
+  const normalized = source.trim().toLowerCase();
+  const vendor: VendorKey | null =
+    normalized === "claude" ? "claude" : normalized === "codex" ? "openai" : inferVendor(source);
   return vendor ? <VendorIcon vendor={vendor} size={size} /> : <Terminal size={size} strokeWidth={1.5} />;
 }
 
