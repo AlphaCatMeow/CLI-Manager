@@ -3041,13 +3041,16 @@
   --terminal-action-color: #b83280;
 }
 
-[data-theme="light"] .ui-action-command-history,
-[data-theme="light"] .ui-action-session-history {
-  --terminal-action-color: #2563eb;
+[data-theme="light"] .ui-action-command-history {
+  --terminal-action-color: #0891b2;
 }
 
 [data-theme="light"] .ui-action-fullscreen {
-  --terminal-action-color: #1d4ed8;
+  --terminal-action-color: #2563eb;
+}
+
+[data-theme="light"] .ui-action-session-history {
+  --terminal-action-color: #a16207;
 }
 
 [data-theme="light"] .ui-action-git {
