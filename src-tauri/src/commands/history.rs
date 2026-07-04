@@ -3839,6 +3839,7 @@ fn scan_session_inner(
             }
         }
 
+        let mut codex_message_usage = None;
         let usage = if let Some(current) = extract_codex_token_count(&value) {
             let (window, last_context) = extract_codex_context_info(&value);
             if window.is_some() {
@@ -3849,6 +3850,7 @@ fn scan_session_inner(
             }
             let usage = codex_usage_delta(codex_prev_totals, current);
             codex_prev_totals = Some(current);
+            codex_message_usage = Some(usage);
             usage
         } else {
             let usage = extract_usage_tokens(&value);
@@ -3868,6 +3870,15 @@ fn scan_session_inner(
         if let Some(key) = extract_usage_dedup_key(&value) {
             if !seen_usage_keys.insert(key) {
                 continue;
+            }
+        }
+        if collect_messages {
+            if let Some(message_usage) = codex_message_usage {
+                backfill_latest_assistant_message_usage(
+                    &mut messages,
+                    message_usage,
+                    extract_timestamp(&value),
+                );
             }
         }
         token_trend.push(usage_trend_point(usage));
@@ -5360,6 +5371,42 @@ fn usage_total_tokens(usage: UsageTokenScan) -> u64 {
         .saturating_add(usage.cache_creation_tokens)
 }
 
+fn message_has_token_usage(message: &HistoryMessage) -> bool {
+    message.input_tokens.unwrap_or(0) > 0
+        || message.output_tokens.unwrap_or(0) > 0
+        || message.cache_read_tokens.unwrap_or(0) > 0
+        || message.cache_creation_tokens.unwrap_or(0) > 0
+}
+
+fn positive_usage_token(value: u64) -> Option<u64> {
+    (value > 0).then_some(value)
+}
+
+fn backfill_latest_assistant_message_usage(
+    messages: &mut [HistoryMessage],
+    usage: UsageTokenScan,
+    timestamp: Option<String>,
+) {
+    if usage_total_tokens(usage) == 0 {
+        return;
+    }
+    let Some(message) = messages
+        .iter_mut()
+        .rev()
+        .find(|message| message.role == "assistant" && !message_has_token_usage(message))
+    else {
+        return;
+    };
+
+    if message.timestamp.is_none() {
+        message.timestamp = timestamp;
+    }
+    message.input_tokens = positive_usage_token(usage.input_tokens);
+    message.output_tokens = positive_usage_token(usage.output_tokens);
+    message.cache_read_tokens = positive_usage_token(usage.cache_read_tokens);
+    message.cache_creation_tokens = positive_usage_token(usage.cache_creation_tokens);
+}
+
 fn usage_stats_total_tokens(usage: UsageStatsScan) -> u64 {
     usage
         .input_tokens
@@ -5581,7 +5628,11 @@ fn parse_message(value: &Value) -> Option<HistoryMessage> {
                 .unwrap_or_default();
             if payload_type == "message" {
                 if let Some(payload_value) = payload {
-                    return parse_message(payload_value);
+                    let mut message = parse_message(payload_value)?;
+                    if message.timestamp.is_none() {
+                        message.timestamp = extract_timestamp(value);
+                    }
+                    return Some(message);
                 }
                 return None;
             }
@@ -5624,6 +5675,10 @@ fn parse_message(value: &Value) -> Option<HistoryMessage> {
 
     if let Some(payload) = value.get("payload") {
         if let Some(message) = parse_message(payload) {
+            let mut message = message;
+            if message.timestamp.is_none() {
+                message.timestamp = extract_timestamp(value);
+            }
             return Some(message);
         }
     }
@@ -6999,7 +7054,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let file = temp_dir.path().join("rollout-session.jsonl");
         let turn_context = r#"{"type":"turn_context","payload":{"model":"gpt-5-codex"}}"#;
-        let message = r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}"#;
+        let message = r#"{"type":"response_item","timestamp":"2026-03-08T06:32:00Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}"#;
         write_text(&file, &format!("{turn_context}\n{message}\n"));
 
         let (_, _, messages) = scan_session_detail(&file);
@@ -7007,5 +7062,29 @@ mod tests {
         // 消息行不带 model，回填最近 turn_context 的模型（detail 单遍路径与 iter_session_messages 一致）
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].model.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(
+            messages[0].timestamp.as_deref(),
+            Some("2026-03-08T06:32:00Z")
+        );
+    }
+
+    #[test]
+    fn scan_session_detail_backfills_codex_token_count_to_latest_assistant_message() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("rollout-session.jsonl");
+        let message = r#"{"type":"response_item","timestamp":"2026-03-08T06:32:00Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}"#;
+        let token_count = r#"{"type":"event_msg","timestamp":"2026-03-08T06:32:01Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":50,"total_tokens":150}}}}"#;
+        write_text(&file, &format!("{message}\n{token_count}\n"));
+
+        let (_, stats, messages) = scan_session_detail(&file);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].input_tokens, Some(90));
+        assert_eq!(messages[0].output_tokens, Some(50));
+        assert_eq!(messages[0].cache_read_tokens, Some(10));
+        assert_eq!(messages[0].cache_creation_tokens, None);
+        assert_eq!(stats.input_tokens, 90);
+        assert_eq!(stats.output_tokens, 50);
+        assert_eq!(stats.cache_read_tokens, 10);
     }
 }

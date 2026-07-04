@@ -108,6 +108,7 @@ interface TerminalSession {
 - Token fields are non-negative counts. Missing usage data must normalize to `0`.
 - Claude Code JSONL streams one assistant message as multiple lines sharing the same `message.id` + `requestId`, each carrying identical usage. Usage must be counted **once** per `(message.id, requestId)` — both in aggregate stats (`scan_session_combined`) and per-message detail (`iter_session_messages` blanks token fields on duplicate lines). Without dedup, totals inflate ~3x on real data.
 - Codex rollout token usage comes from `event_msg.payload.info.total_token_usage`, which is a **cumulative** session counter. Per-turn usage = adjacent diff; a shrinking cumulative value means session reset (take current value as the delta). Do not sum `last_token_usage` (duplicate events inflate it 2-5%).
+- For `history_get_session` message details, Codex `response_item` messages must inherit an outer wrapper timestamp when the inner payload has none, and deduped Codex `token_count` deltas should backfill the latest assistant message that has no token fields. This keeps transcript bubbles able to show `MM/DD HH:mm  in N / out N / cache N` without changing aggregate totals.
 - `HistorySessionUsage.token_trend` exposes per-usage **delta** points after the same dedup/diff rules used for totals. Skip zero-token points. Do not synthesize frontend trend points from final totals.
 - Codex `input_tokens` **includes** `cached_input_tokens`. Extraction normalizes to non-cached input + `cache_read_tokens` (Claude semantics), so pricing applies uniformly with no source-specific input deduction.
 - Usage lines without a model (e.g. Codex `token_count` events) attribute to the most recent model seen in the session (e.g. from `turn_context.payload.model`).
@@ -169,6 +170,7 @@ interface TerminalSession {
 
 - Good: a Claude session with input/output/cache usage and known model produces complete totals, cost, model distribution, daily trend, and per-session message token fields.
 - Good: a Codex session with multiple cumulative `token_count` events returns `token_trend` as adjacent deltas, and two Codex windows in the same project show different realtime session details after their hook `sessionId` values arrive.
+- Good: a Codex `response_item` assistant message followed by a `token_count` event returns the assistant `HistoryMessage` with inherited timestamp and normalized per-turn `input_tokens` / `output_tokens` / `cache_read_tokens`.
 - Good: a history detail payload exposes `cwd` when the JSONL contains session metadata, allowing the frontend to create a resume terminal in the original project directory.
 - Good: a history detail payload includes `tool_events` for Claude `tool_use` and Codex `function_call` rows; missing per-call duration remains `null` and the frontend says no duration data is available.
 - Good: a Codex rollout file with `session_meta.payload.id` returns that UUID as `session_id`, allowing realtime stats strict binding to match the hook session id; a Claude file with a similar metadata id still keeps its original file-stem identity.
@@ -190,6 +192,7 @@ interface TerminalSession {
   - Case-insensitive ASCII search avoids per-message lowercasing regressions.
   - Claude streamed duplicate usage lines produce one total and one matching `token_trend` point.
   - Codex cumulative `token_count` events produce delta totals and matching `token_trend` points.
+  - Codex detail messages inherit outer `response_item` timestamps and receive the matching `token_count` delta on the latest assistant message for transcript metadata display.
   - History stats bucket cross-day session usage by usage event timestamp while counting the session once for range totals.
   - Tool event extraction returns bounded diagnostic rows for Claude `tool_use`, Codex `function_call`, `function_call_output`, and MCP end/error events without changing aggregate tool counts.
   - Claude explicit context-window fields populate `SessionStatsScan.context_window`; Claude usage without those fields keeps it `None`.
