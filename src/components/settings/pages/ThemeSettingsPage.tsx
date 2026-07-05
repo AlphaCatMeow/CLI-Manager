@@ -22,7 +22,7 @@ import {
   TERMINAL_THEME_GROUPS,
   TERMINAL_THEME_PRESETS,
   getTerminalTheme,
-  resolveAutoTerminalThemeId,
+  resolveTerminalThemeId,
   type TerminalThemeGroupId,
 } from "../../../lib/terminalThemes";
 import { debugConsoleWarn } from "../../../lib/debugConsole";
@@ -173,17 +173,14 @@ export function ThemeSettingsPage() {
     setTerminalScrollbackRowsDraft(terminalScrollbackRows);
   }, [terminalScrollbackRows]);
 
-  const autoThemeId = useMemo(
-    () => resolveAutoTerminalThemeId(resolvedTheme, lightThemePalette, darkThemePalette),
-    [darkThemePalette, lightThemePalette, resolvedTheme]
-  );
   const effectiveThemeName = terminalThemeMode === "follow-app" ? "auto" : terminalThemeName;
 
   const filtered = useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    if (!keyword) return TERMINAL_THEME_PRESETS;
-    return TERMINAL_THEME_PRESETS.filter((preset) => preset.name.toLowerCase().includes(keyword));
-  }, [query]);
+    const themedPresets = TERMINAL_THEME_PRESETS.filter((preset) => preset.tone === resolvedTheme);
+    if (!keyword) return themedPresets;
+    return themedPresets.filter((preset) => preset.name.toLowerCase().includes(keyword));
+  }, [query, resolvedTheme]);
 
   const groupedThemes = useMemo(
     () =>
@@ -196,8 +193,9 @@ export function ThemeSettingsPage() {
 
   const selectedTheme = useMemo(() => {
     const effective = getTerminalTheme(effectiveThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
+    const resolvedThemeId = resolveTerminalThemeId(effectiveThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
     const selectedPreset =
-      TERMINAL_THEME_PRESETS.find((item) => item.id === (effectiveThemeName === "auto" ? autoThemeId : effectiveThemeName)) ??
+      TERMINAL_THEME_PRESETS.find((item) => item.id === resolvedThemeId) ??
       null;
     return {
       label:
@@ -206,7 +204,7 @@ export function ThemeSettingsPage() {
           : selectedPreset?.name ?? text("独立终端主题", "Independent terminal theme"),
       theme: effective,
     };
-  }, [autoThemeId, darkThemePalette, effectiveThemeName, language, lightThemePalette, resolvedTheme, terminalThemeMode]);
+  }, [darkThemePalette, effectiveThemeName, language, lightThemePalette, resolvedTheme, terminalThemeMode]);
 
   const fontFamilyOptions = useMemo(
     () =>

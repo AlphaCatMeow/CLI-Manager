@@ -40,7 +40,7 @@ import {
 import { Portal } from "./ui/Portal";
 import { useCommandHistoryStore } from "../stores/commandHistoryStore";
 import { useProjectStore } from "../stores/projectStore";
-import { useTerminalStore, type ShellRuntimeEventName } from "../stores/terminalStore";
+import { formatStartupInputForPty, useTerminalStore, type ShellRuntimeEventName } from "../stores/terminalStore";
 import { useSettingsStore, type LightThemePalette, type DarkThemePalette } from "../stores/settingsStore";
 
 const FONT_SIZE_MIN = 8;
@@ -1241,6 +1241,23 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
     scheduleFit(true);
+    const sessionSnapshot = useTerminalStore.getState().sessions.find((item) => item.id === sessionId);
+    const initialTerminalOutput = sessionSnapshot?.initialTerminalOutput;
+    const writeDeferredStartup = () => {
+      if (!sessionSnapshot?.deferStartupUntilInitialOutput || !sessionSnapshot.startupCmd) return;
+      invoke("pty_write", {
+        sessionId,
+        data: formatStartupInputForPty(sessionSnapshot.startupCmd, normalizeShellKey(sessionSnapshot.shell) ?? null),
+      }).catch((err) => reportPtyWriteError("deferredStartup", err));
+    };
+    if (initialTerminalOutput) {
+      terminal.write(initialTerminalOutput, () => {
+        terminal.scrollToBottom();
+        writeDeferredStartup();
+      });
+    } else {
+      writeDeferredStartup();
+    }
     if (isActive) {
       terminal.focus();
     }
