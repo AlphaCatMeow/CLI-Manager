@@ -2120,7 +2120,7 @@ pub(crate) fn invalidate_history_stats_caches() {
 // 内存索引（HISTORY_SESSION_INDEX）每次 App 启动后为空，首个 history_get_stats 必须
 // 全量解析所有 JSONL（可能上千个），冷启动耗时不可接受。这里把 per-file 解析结果落盘，
 // 重启后载入作为 build_history_index 的 previous，按 fingerprint 仅重解析变更文件。
-const HISTORY_INDEX_CACHE_VERSION: u32 = 3;
+const HISTORY_INDEX_CACHE_VERSION: u32 = 5;
 const HISTORY_INDEX_CACHE_FILE: &str = "history-index-cache.json";
 
 static HISTORY_INDEX_CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -5782,7 +5782,10 @@ fn title_candidate_from_lines(text: &str) -> Option<String> {
 
     while index < lines.len() {
         let trimmed = lines[index].trim();
-        if trimmed.is_empty() || is_title_noise_line(trimmed) {
+        if trimmed.is_empty()
+            || trimmed.eq_ignore_ascii_case("</image>")
+            || is_title_noise_line(trimmed)
+        {
             index += 1;
             continue;
         }
@@ -5817,10 +5820,127 @@ fn title_candidate_from_lines(text: &str) -> Option<String> {
             }
         }
 
+        if let Some(candidate) = image_title_candidate_from_lines(&lines, index) {
+            return Some(candidate);
+        }
+
         return Some(trimmed.to_string());
     }
 
     None
+}
+
+fn image_title_candidate_from_lines(lines: &[&str], start_index: usize) -> Option<String> {
+    let mut image_tokens: Vec<String> = Vec::new();
+    let mut text_suffix: Option<String> = None;
+    let mut index = start_index;
+
+    while index < lines.len() {
+        let trimmed = lines[index].trim();
+        if trimmed.is_empty()
+            || trimmed.eq_ignore_ascii_case("</image>")
+            || is_title_noise_line(trimmed)
+        {
+            index += 1;
+            continue;
+        }
+
+        let (line_images, remaining_text) = extract_image_title_parts(trimmed);
+        if line_images.is_empty() {
+            if image_tokens.is_empty() {
+                return None;
+            }
+            text_suffix = Some(trimmed.to_string());
+            break;
+        }
+
+        for image in line_images {
+            if !image_tokens
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&image))
+            {
+                image_tokens.push(image);
+            }
+        }
+        if !remaining_text.is_empty() {
+            text_suffix = Some(remaining_text);
+            break;
+        }
+        index += 1;
+    }
+
+    if image_tokens.is_empty() {
+        return None;
+    }
+
+    let mut title = image_tokens.join("");
+    if let Some(text) = text_suffix {
+        if !text.is_empty() {
+            title.push(' ');
+            title.push_str(&text);
+        }
+    }
+    Some(title)
+}
+
+fn extract_image_title_parts(line: &str) -> (Vec<String>, String) {
+    let mut rest = line;
+    let mut image_tokens = Vec::new();
+    let mut remaining_text = String::new();
+
+    while !rest.is_empty() {
+        let tag_pos = find_ascii_ci(rest, "<image");
+        let label_pos = find_ascii_ci(rest, "[image #");
+        let close_pos = find_ascii_ci(rest, "</image>");
+        let next_pos = [tag_pos, label_pos, close_pos].into_iter().flatten().min();
+
+        let Some(pos) = next_pos else {
+            remaining_text.push_str(rest);
+            break;
+        };
+
+        remaining_text.push_str(&rest[..pos]);
+        rest = &rest[pos..];
+
+        if starts_with_ascii_ci(rest, "</image>") {
+            rest = &rest["</image>".len()..];
+            continue;
+        }
+
+        if starts_with_ascii_ci(rest, "<image") {
+            let end = rest.find('>').map(|idx| idx + 1).unwrap_or(rest.len());
+            let token = &rest[..end];
+            image_tokens.push(extract_image_label(token).unwrap_or_else(|| "[Image]".to_string()));
+            rest = &rest[end..];
+            continue;
+        }
+
+        if starts_with_ascii_ci(rest, "[image #") {
+            let end = rest.find(']').map(|idx| idx + 1).unwrap_or(rest.len());
+            image_tokens.push(rest[..end].to_string());
+            rest = &rest[end..];
+            continue;
+        }
+    }
+
+    (image_tokens, remaining_text.trim().to_string())
+}
+
+fn extract_image_label(token: &str) -> Option<String> {
+    let start = find_ascii_ci(token, "[image #")?;
+    let end = token[start..].find(']')? + start + 1;
+    Some(token[start..end].to_string())
+}
+
+fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    haystack.to_ascii_lowercase().find(needle)
+}
+
+fn starts_with_ascii_ci(value: &str, prefix: &str) -> bool {
+    value
+        .get(..prefix.len())
+        .map(|start| start.eq_ignore_ascii_case(prefix))
+        .unwrap_or(false)
 }
 
 fn title_xml_tag_name(line: &str) -> Option<String> {
@@ -6665,6 +6785,93 @@ mod tests {
         let computed = scan_session_computation(&file, 1, 2);
 
         assert_eq!(computed.title, "历史会话还是加载太慢了，重新优化");
+    }
+
+    #[test]
+    fn build_session_computation_title_uses_image_placeholders_with_remaining_text() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("image-session.jsonl");
+        let content = concat!(
+            "<image name=[Image #1] path=\"C:\\\\Users\\\\Administrator\\\\image-a.png\">\n",
+            "<image name=[Image #2] path=\"C:\\\\Users\\\\Administrator\\\\image-b.png\">\n",
+            "请分析这两张截图的问题"
+        );
+        let line = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": content }
+        })
+        .to_string();
+        write_text(&file, &line);
+
+        let computed = scan_session_computation(&file, 1, 2);
+
+        assert_eq!(
+            computed.title,
+            "[Image #1][Image #2] 请分析这两张截图的问题"
+        );
+    }
+
+    #[test]
+    fn build_session_computation_title_skips_image_close_and_repeated_placeholder() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("image-with-text-session.jsonl");
+        let content = concat!(
+            "<image name=[Image #1] path=\"C:\\\\Users\\\\Administrator\\\\image.png\">\n",
+            "</image>\n",
+            "[Image #1] 重新设计历史会话中会话列表的这三个图标，关闭展开和 subagent 。需要实现简约干净的风格"
+        );
+        let line = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": content }
+        })
+        .to_string();
+        write_text(&file, &line);
+
+        let computed = scan_session_computation(&file, 1, 2);
+
+        assert_eq!(
+            computed.title,
+            "[Image #1] 重新设计历史会话中会话列表的这三个图标，关闭展开和 subagent 。需要实现简约干净的风格"
+        );
+    }
+
+    #[test]
+    fn build_session_computation_title_skips_inline_image_close_before_text() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("image-inline-close-session.jsonl");
+        let content = concat!(
+            "<image name=[Image #1] path=\"C:\\\\Users\\\\Administrator\\\\image.png\">\n",
+            "</image>[Image #1]还是没有实现"
+        );
+        let line = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": content }
+        })
+        .to_string();
+        write_text(&file, &line);
+
+        let computed = scan_session_computation(&file, 1, 2);
+
+        assert_eq!(computed.title, "[Image #1] 还是没有实现");
+    }
+
+    #[test]
+    fn build_session_computation_title_uses_single_image_placeholder() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("image-only-session.jsonl");
+        let line = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": "<image name=[Image #1] path=\"C:\\\\Users\\\\Administrator\\\\image.png\">"
+            }
+        })
+        .to_string();
+        write_text(&file, &line);
+
+        let computed = scan_session_computation(&file, 1, 2);
+
+        assert_eq!(computed.title, "[Image #1]");
     }
 
     #[test]

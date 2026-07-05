@@ -109,7 +109,7 @@ interface HistoryStore {
   triggerSessionSearchFocus: () => void;
 }
 
-const SESSION_PAGE_SIZE = 100;
+const SESSION_PAGE_SIZE = 20;
 const SESSION_PAGE_FETCH_LIMIT = SESSION_PAGE_SIZE + 1;
 const DEFAULT_SEARCH_LIMIT = 120;
 const STATS_CACHE_TTL_MS = 5 * 60 * 1000;

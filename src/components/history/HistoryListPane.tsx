@@ -3,7 +3,6 @@ import { Bot, Check, ChevronDown, ChevronRight, Clock3, Folder, MessageSquare, R
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react";
 import type { Group, HistorySearchHit, HistorySessionView, HistorySourceFilter, Project } from "../../lib/types";
 import { useI18n, type TranslationKey } from "../../lib/i18n";
-import { useSettingsStore } from "../../stores/settingsStore";
 import { VendorIcon, inferVendor, type VendorKey } from "../VendorIcon";
 import { Portal } from "../ui/Portal";
 import { buildHistorySessionChildMap, formatTime } from "./historyViewUtils";
@@ -49,6 +48,7 @@ interface HistoryListPaneProps {
   projects: Project[];
   groups: Group[];
   globalQuery: string;
+  favoriteOnly: boolean;
   activeSessionKey: string | null;
   loadingSessions: boolean;
   loadingMoreSessions: boolean;
@@ -70,6 +70,7 @@ interface HistoryListPaneProps {
   onSourceFilterChange: (value: HistorySourceFilter) => void;
   onProjectPathFilterChange: (value: string | null) => void;
   onGlobalQueryChange: (value: string) => void;
+  onFavoriteOnlyChange: (value: boolean) => void;
   onEnterSelectionMode: () => void;
   onCancelSelectionMode: () => void;
   onToggleSelectAllVisible: () => void;
@@ -236,6 +237,27 @@ function normalizeProjectSearch(value: string): string {
   return value.trim().toLowerCase();
 }
 
+const IMAGE_TITLE_TOKEN_PATTERN = /<image\b[^>\r\n]*(?:>|$)|\[Image #\d+\]/gi;
+const IMAGE_CLOSE_TOKEN_PATTERN = /<\/image>/gi;
+
+function formatSessionListTitle(title: string, imageLabel: string): string {
+  const normalizedTitle = title.replace(IMAGE_CLOSE_TOKEN_PATTERN, " ");
+  const imageTokens = normalizedTitle.match(IMAGE_TITLE_TOKEN_PATTERN);
+  if (!imageTokens || imageTokens.length === 0) return title;
+
+  const onlyImages = normalizedTitle.replace(IMAGE_TITLE_TOKEN_PATTERN, "").trim().length === 0;
+  let index = 0;
+  const replacement = () => {
+    index += 1;
+    return `[${imageTokens.length === 1 ? imageLabel : `${imageLabel}${index}`}]`;
+  };
+
+  if (onlyImages) {
+    return imageTokens.map(replacement).join("");
+  }
+  return normalizedTitle.replace(IMAGE_TITLE_TOKEN_PATTERN, replacement).replace(/\s+/g, " ").trim();
+}
+
 function projectMatchesSearch(project: Project, query: string): boolean {
   if (!query) return true;
   return (
@@ -275,6 +297,7 @@ export function HistoryListPane({
   projects,
   groups,
   globalQuery,
+  favoriteOnly,
   activeSessionKey,
   loadingSessions,
   loadingMoreSessions,
@@ -296,6 +319,7 @@ export function HistoryListPane({
   onSourceFilterChange,
   onProjectPathFilterChange,
   onGlobalQueryChange,
+  onFavoriteOnlyChange,
   onEnterSelectionMode,
   onCancelSelectionMode,
   onToggleSelectAllVisible,
@@ -310,8 +334,6 @@ export function HistoryListPane({
   onStartResize,
 }: HistoryListPaneProps) {
   const { t, language } = useI18n();
-  const sessionHistoryShortcut = useSettingsStore((s) => s.keyboardShortcuts.sessionHistory);
-  const sessionHistoryShortcutHint = sessionHistoryShortcut.trim() || t("history.shortcut.notSet");
   const [contextMenu, setContextMenu] = useState<SessionContextMenu | null>(null);
   const [collapsedFilterGroups, setCollapsedFilterGroups] = useState<Set<string>>(new Set());
   const [collapsedSessionParents, setCollapsedSessionParents] = useState<Set<string>>(new Set());
@@ -350,6 +372,12 @@ export function HistoryListPane({
         description: t("history.empty.noMatchesDescription"),
       };
     }
+    if (favoriteOnly) {
+      return {
+        title: t("history.empty.noFavoritesTitle"),
+        description: t("history.empty.noFavoritesDescription"),
+      };
+    }
     if (projectPathFilter) {
       return {
         title: t("history.empty.noHistoryTitle"),
@@ -360,7 +388,7 @@ export function HistoryListPane({
       title: t("history.empty.noHistoryTitle"),
       description: t("history.empty.sourceNoSessions", { source: sourceLabel }),
     };
-  }, [normalizedGlobal, projectPathFilter, selectedProjectLabel, sourceFilter, t]);
+  }, [favoriteOnly, normalizedGlobal, projectPathFilter, selectedProjectLabel, sourceFilter, t]);
 
   const toggleFilterGroup = useCallback((groupId: string) => {
     setCollapsedFilterGroups((prev) => {
@@ -574,6 +602,20 @@ export function HistoryListPane({
           </div>
 
           <button
+            type="button"
+            onClick={() => onFavoriteOnlyChange(!favoriteOnly)}
+            aria-label={favoriteOnly ? t("history.favoriteFilter.showAll") : t("history.favoriteFilter.showOnly")}
+            aria-pressed={favoriteOnly}
+            className="ui-flat-action ui-toolbar-button-compact ui-history-list-action h-8 w-8 shrink-0 px-0"
+            title={favoriteOnly ? t("history.favoriteFilter.showAll") : t("history.favoriteFilter.showOnly")}
+            style={{
+              color: favoriteOnly ? "var(--warning)" : undefined,
+              backgroundColor: favoriteOnly ? "color-mix(in srgb, var(--warning) 12%, transparent)" : undefined,
+            }}
+          >
+            <Star size={12} fill={favoriteOnly ? "currentColor" : "none"} />
+          </button>
+          <button
             onClick={onRefresh}
             aria-label={t("history.refreshList")}
             className="ui-flat-action ui-toolbar-button-compact ui-history-list-action h-8 w-8 shrink-0 px-0"
@@ -680,7 +722,6 @@ export function HistoryListPane({
           )}
         </div>
 
-        <div className="mt-1 text-[12px] text-text-muted">{t("history.search.openGlobal", { shortcut: sessionHistoryShortcutHint })}</div>
         {selectionMode ? (
           <div className="mt-2 rounded-xl border border-border/60 bg-surface-container-lowest p-2">
             <div className="flex items-center justify-between gap-2">
@@ -729,6 +770,10 @@ export function HistoryListPane({
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
             const row = rows[virtualRow.index];
             if (!row) return null;
+            const sessionDisplayTitle =
+              row.type === "session"
+                ? formatSessionListTitle(row.item.displayTitle, t("history.imagePlaceholder"))
+                : "";
             return (
               <div
                 key={virtualRow.key}
@@ -797,7 +842,7 @@ export function HistoryListPane({
                             e.stopPropagation();
                             toggleSessionParent(row.item.sessionKey);
                           }}
-                          className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-transparent px-0 text-text-muted opacity-75 transition-colors hover:text-text-primary hover:opacity-100 focus-visible:outline-none focus-visible:text-text-primary focus-visible:opacity-100"
+                          className="ui-history-tree-toggle mt-0.5"
                           aria-expanded={!collapsedSessionParents.has(row.item.sessionKey)}
                           aria-label={t(
                             collapsedSessionParents.has(row.item.sessionKey)
@@ -822,8 +867,8 @@ export function HistoryListPane({
                       {selectionMode && (
                         <SelectionCheckbox
                           checked={selectedSessionKeys.has(row.item.sessionKey)}
-                          title={t("history.bulk.selectSessionNamed", { title: row.item.displayTitle })}
-                          ariaLabel={t("history.bulk.selectSessionNamed", { title: row.item.displayTitle })}
+                          title={t("history.bulk.selectSessionNamed", { title: sessionDisplayTitle })}
+                          ariaLabel={t("history.bulk.selectSessionNamed", { title: sessionDisplayTitle })}
                           onToggle={() => onToggleSessionSelection(row.item.sessionKey)}
                         />
                       )}
@@ -836,15 +881,15 @@ export function HistoryListPane({
                             {row.item.starred && <Star size={12} className="shrink-0" style={{ color: "var(--warning)" }} fill="currentColor" />}
                             {row.depth > 0 && (
                               <span
-                                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-border/55 bg-surface-container-high text-text-muted"
+                                className="ui-history-subagent-badge"
                                 role="img"
                                 aria-label={t("history.tree.subagent")}
                                 title={t("history.tree.subagent")}
                               >
-                                <Bot size={12} strokeWidth={1.9} />
+                                <Bot size={12} strokeWidth={1.8} />
                               </span>
                             )}
-                            <span className="truncate text-[13px] font-semibold text-text-primary">{row.item.displayTitle}</span>
+                            <span className="truncate text-[13px] font-semibold text-text-primary">{sessionDisplayTitle}</span>
                             {row.childCount > 0 && (
                               <span className="shrink-0 rounded-full border border-border/70 px-1.5 py-px text-[10px] font-medium text-text-muted">
                                 {t("history.tree.childCount", { count: row.childCount })}
@@ -875,15 +920,15 @@ export function HistoryListPane({
                             {row.item.starred && <Star size={12} className="shrink-0" style={{ color: "var(--warning)" }} fill="currentColor" />}
                             {row.depth > 0 && (
                               <span
-                                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-border/55 bg-surface-container-high text-text-muted"
+                                className="ui-history-subagent-badge"
                                 role="img"
                                 aria-label={t("history.tree.subagent")}
                                 title={t("history.tree.subagent")}
                               >
-                                <Bot size={12} strokeWidth={1.9} />
+                                <Bot size={12} strokeWidth={1.8} />
                               </span>
                             )}
-                            <span className="truncate text-[13px] font-semibold text-text-primary">{row.item.displayTitle}</span>
+                            <span className="truncate text-[13px] font-semibold text-text-primary">{sessionDisplayTitle}</span>
                             {row.childCount > 0 && (
                               <span className="shrink-0 rounded-full border border-border/70 px-1.5 py-px text-[10px] font-medium text-text-muted">
                                 {t("history.tree.childCount", { count: row.childCount })}
@@ -906,11 +951,11 @@ export function HistoryListPane({
                         <button
                           type="button"
                           onClick={() => onDeleteSession(row.item)}
-                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-transparent px-0 text-text-muted opacity-45 transition-colors hover:text-danger hover:opacity-100 focus-visible:outline-none focus-visible:text-danger focus-visible:opacity-100 group-hover/session-row:opacity-90"
-                          aria-label={t("history.deleteSessionNamed", { title: row.item.displayTitle })}
+                          className="ui-history-row-delete"
+                          aria-label={t("history.deleteSessionNamed", { title: sessionDisplayTitle })}
                           title={t("history.deleteSession")}
                         >
-                          <X size={13} strokeWidth={2} />
+                          <X size={13} strokeWidth={1.9} />
                         </button>
                       )}
                     </div>
