@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 26
+- **Total Sessions**: 27
 - **Last Active**: 2026-07-05
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~882 | Active |
+| `journal-1.md` | ~915 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 27 | 2026-07-05 | 性能优化：终端渲染与退出提速 | `8994fa5` | `feat/performance-optimization-split-lag-exit-memory` |
 | 26 | 2026-07-05 | Git 多子仓库监控与嵌套仓库兼容 | `0d7ed9c` | `master` |
 | 25 | 2026-07-03 | Fix subagent split theme adaptation | `b942c35`, `ebedb2c`, `a5c9357` | `master` |
 | 24 | 2026-06-30 | 优化 Replay 侧栏 UI 与快照查看 | `81c3258` | `master` |

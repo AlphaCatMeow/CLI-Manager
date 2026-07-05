@@ -57,6 +57,22 @@ props 全为原始值/字符串，`React.memo` 安全，所有调用点受益。
   3. 最后统一 join 所有 reader handle。
 - 单会话 `close()`（手动关 Tab 路径）保持不变；`pty_close_all` 命令签名不变；非 Windows 平台维持逐个 close。
 
+## 内存专项追加设计
+
+### WebGL 延迟释放
+
+- `XTermTerminal` 只释放 WebGL addon，不销毁 `Terminal` 实例、fit addon、PTY listener 或前端写入队列。
+- 当 `isVisible=false` 时启动 10 秒计时器；计时期间如果重新可见则取消释放。
+- 计时到期后 dispose `webglAddonRef.current` 并置空；这只释放 GPU renderer 资源。
+- 当再次 `isVisible=true` 且主题/透明度允许 WebGL 时，重新加载 WebGL addon，并触发 viewport refresh/fit，确保画面从现有 xterm buffer 重绘。
+- 清理 effect 必须在组件卸载时 clear timer，避免隐藏终端关闭后 timer 回调访问已销毁 terminal。
+
+### 低内存模式
+
+- `settingsStore` 新增持久化布尔字段 `lowMemoryMode`，默认 `false`。
+- 通用设置页新增 Switch：「低内存模式」。说明文案：降低后台终端/GPU 资源占用，切回终端时可能轻微重绘。
+- `XTermTerminal` 读取该设置：低内存模式开启时启用 F9 延迟释放策略；为避免过度惊扰，F9 也可作为默认策略开启，低内存模式用于后续更激进策略扩展。实现时优先 KISS：行为清晰、不要引入复杂策略矩阵。
+
 ## 兼容性 / 风险
 
 - 转录契约（`cli-hook-contracts.md` 的 subscribe/upgrade/finish 路由）不受影响——只改消费端解析与渲染策略。

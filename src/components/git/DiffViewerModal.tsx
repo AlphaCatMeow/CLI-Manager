@@ -425,7 +425,6 @@ export function DiffViewerModal({ open, onClose, projectPath, filePath, fileName
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [open, onClose]);
-
   if (!open) return null;
 
   return (

@@ -114,6 +114,8 @@ export interface SubagentTranscriptContent {
   ended: boolean;
   source: SubagentTranscriptSource;
   truncatedBytes?: number;
+  /** 重置序号：reset 或前部裁剪时自增；序号不变 ⇒ content 相对上次为纯尾部追加，消费方可增量解析。 */
+  resetSeq: number;
 }
 
 interface SubagentTranscriptSubscribeResult {
@@ -446,7 +448,7 @@ function startSubagentDiscovery(
                   subagentTranscripts: {
                     ...state.subagentTranscripts,
                     [existingSession.id]: {
-                      ...(state.subagentTranscripts[existingSession.id] ?? { content: "", ended: false }),
+                      ...(state.subagentTranscripts[existingSession.id] ?? { content: "", ended: false, resetSeq: 0 }),
                       source: childSource,
                     },
                   },
@@ -1811,7 +1813,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
           subagentTranscripts: {
             ...state.subagentTranscripts,
             [pseudoId]: {
-              ...(state.subagentTranscripts[pseudoId] ?? { content: "", ended: false }),
+              ...(state.subagentTranscripts[pseudoId] ?? { content: "", ended: false, resetSeq: 0 }),
               source: childSource,
             },
           },
@@ -1899,7 +1901,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
           subagentTranscripts: {
             ...state.subagentTranscripts,
             [pseudoId]: {
-              ...(state.subagentTranscripts[pseudoId] ?? { content: "", ended: false }),
+              ...(state.subagentTranscripts[pseudoId] ?? { content: "", ended: false, resetSeq: 0 }),
               source: childSource,
             },
           },
@@ -1958,7 +1960,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         ),
         subagentTranscripts: {
           ...state.subagentTranscripts,
-          [pseudoId]: { ...(state.subagentTranscripts[pseudoId] ?? { content: "", ended: false }), ended: false, source },
+          [pseudoId]: { ...(state.subagentTranscripts[pseudoId] ?? { content: "", ended: false, resetSeq: 0 }), ended: false, source },
         },
       }));
       if (shouldSubscribe) await subscribeChild();
@@ -2032,7 +2034,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     set((state) => ({
       sessions: newSessions,
       paneTree: nextTree,
-      subagentTranscripts: { ...state.subagentTranscripts, [pseudoId]: { content: "", ended: false, source } },
+      subagentTranscripts: { ...state.subagentTranscripts, [pseudoId]: { content: "", ended: false, resetSeq: 0, source } },
     }));
 
     // 持久化（sessionStore 会过滤掉转录伪会话）。
@@ -2147,6 +2149,8 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
             ...prev,
             content: nextContent,
             truncatedBytes: (reset ? 0 : prev.truncatedBytes ?? 0) + droppedChars,
+            // reset 或前部裁剪都破坏"纯尾部追加"前提，自增序号通知消费方全量重解析。
+            resetSeq: reset || droppedChars > 0 ? (prev.resetSeq ?? 0) + 1 : prev.resetSeq ?? 0,
           },
         },
       };

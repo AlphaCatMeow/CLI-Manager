@@ -880,3 +880,36 @@ Add project-level Codex provider switching with generated profiles, cleanup, sid
 ### Next Steps
 
 - None - task complete
+
+
+## Session 27: 性能优化：终端渲染与退出提速
+
+**Date**: 2026-07-05
+**Task**: 性能优化：终端渲染与退出提速
+**Branch**: `feat/performance-optimization-split-lag-exit-memory`
+
+### Summary
+
+优化子 Agent 转录渲染、退出清理和低内存模式：转录增量解析/隐藏门控、退出进度遮罩与 PTY 批量关闭、低内存模式下后台终端延迟释放 WebGL；更新相关规范、CHANGELOG 与功能清单。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8994fa5` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
