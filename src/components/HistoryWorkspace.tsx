@@ -204,6 +204,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
     if (!active) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.isComposing) return;
+      if (document.querySelector(".ui-history-transcript-image-preview")) return;
       event.preventDefault();
       event.stopPropagation();
       if (diffOpen) {

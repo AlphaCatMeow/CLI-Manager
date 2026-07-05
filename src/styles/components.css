@@ -4104,18 +4104,33 @@
 }
 
 .ui-history-transcript-image {
-  max-width: min(100%, 560px);
+  max-width: min(100%, 220px);
   margin: 0;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--border) 32%, transparent);
-  border-radius: 10px;
+  border-radius: 8px;
   background-color: color-mix(in srgb, var(--surface-container-low) 58%, transparent);
 }
 
-.ui-history-transcript-image img {
+.ui-history-transcript-image-trigger {
   display: block;
   width: 100%;
-  max-height: 420px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.ui-history-transcript-image-trigger:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 62%, transparent);
+  outline-offset: 2px;
+}
+
+.ui-history-transcript-image-trigger img {
+  display: block;
+  width: 100%;
+  max-width: 220px;
+  max-height: 150px;
   object-fit: contain;
   background-color: color-mix(in srgb, var(--surface-container-lowest) 88%, transparent);
 }
@@ -4131,6 +4146,61 @@
 
 .ui-history-transcript-image-fallback {
   color: var(--text-muted);
+}
+
+.ui-history-transcript-image-preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background-color: rgb(0 0 0 / 0.72);
+}
+
+.ui-history-transcript-image-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 81;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  outline: none;
+}
+
+.ui-history-transcript-image-preview img {
+  display: block;
+  max-width: min(92vw, 1280px);
+  max-height: 84vh;
+  border-radius: 8px;
+  object-fit: contain;
+  background-color: var(--surface-container-lowest);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 0.36);
+}
+
+.ui-history-transcript-image-preview-close {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 999px;
+  background-color: rgb(0 0 0 / 0.48);
+  color: white;
+  cursor: pointer;
+  line-height: 0;
+}
+
+.ui-history-transcript-image-preview-close svg {
+  flex: none;
+}
+
+.ui-history-transcript-image-preview-close:hover,
+.ui-history-transcript-image-preview-close:focus-visible {
+  background-color: rgb(0 0 0 / 0.68);
+  outline: none;
 }
 
 .ui-history-transcript-token {
