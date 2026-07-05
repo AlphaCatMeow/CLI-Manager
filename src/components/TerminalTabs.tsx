@@ -1197,7 +1197,11 @@ function PaneLeafView({
                 onClose={() => onCloseSessions([session.id])}
               />
             ) : session.kind === "subagent-transcript" ? (
-              <SubagentTranscriptView sessionId={session.id} title={session.title} />
+              <SubagentTranscriptView
+                sessionId={session.id}
+                title={session.title}
+                isVisible={!historyActive && isLayoutVisible && session.id === pane.activeSessionId}
+              />
             ) : (
               <XTermTerminal
                 sessionId={session.id}

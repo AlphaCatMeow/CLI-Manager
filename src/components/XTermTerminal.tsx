@@ -56,6 +56,7 @@ const INACTIVE_BUFFER_CHARS_PER_SCROLLBACK_ROW = 256;
 const IMAGE_ADDON_PIXEL_LIMIT = 4 * 1024 * 1024;
 const IMAGE_ADDON_SEQUENCE_LIMIT = 8 * 1024 * 1024;
 const IMAGE_ADDON_STORAGE_LIMIT_MB = 32;
+const HIDDEN_WEBGL_DISPOSE_DELAY_MS = 10_000;
 // Box-drawing glyphs used by TUI input boxes (Claude Code / Codex draw "│ > … │").
 const TUI_BORDER_CHAR_PATTERN = /^[│┃║▏▎▍▌▋▊▉█┆┊╎╏]$/u;
 const TUI_BORDER_PREFIX_PATTERN = /^[\s│┃║▏▎▍▌▋▊▉█┆┊╎╏]+/u;
@@ -320,6 +321,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const fitAddonRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const webglAddonRef = useRef<WebglAddon | null>(null);
+  const webglDisposeTimerRef = useRef<number | null>(null);
   const inputBuffer = useRef("");
   const fitRafRef = useRef<number | null>(null);
   const isComposingRef = useRef(false);
@@ -345,6 +347,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     background: formatSpecialColorReply(11, "#0c0e10"),
   });
   const terminalScrollbackRows = useSettingsStore((s) => s.terminalScrollbackRows);
+  const lowMemoryMode = useSettingsStore((s) => s.lowMemoryMode);
   const inactiveBufferLimitRef = useRef(getInactiveBufferLimit(terminalScrollbackRows));
   inactiveBufferLimitRef.current = getInactiveBufferLimit(terminalScrollbackRows);
 
@@ -427,23 +430,42 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   isLightTerminalRef.current = isLightTerminalTheme(terminalTheme);
   const effectiveFontFamily = normalizeTerminalFontFamily(fontFamily);
 
+  const clearHiddenWebglDisposeTimer = () => {
+    if (webglDisposeTimerRef.current === null) return;
+    window.clearTimeout(webglDisposeTimerRef.current);
+    webglDisposeTimerRef.current = null;
+  };
+
+  const disposeWebglRenderer = () => {
+    if (!webglAddonRef.current) return false;
+    webglAddonRef.current.dispose();
+    webglAddonRef.current = null;
+    return true;
+  };
+
+  const canUseWebglRenderer = (theme: ReturnType<typeof getTerminalTheme>) => (
+    !isTransparentRef.current && !isLightTerminalTheme(theme)
+  );
+
+  const createWebglAddon = () => {
+    const addon = new WebglAddon();
+    addon.onContextLoss(() => {
+      addon.dispose();
+      if (webglAddonRef.current === addon) {
+        webglAddonRef.current = null;
+      }
+    });
+    return addon;
+  };
+
   const syncWebglRenderer = (terminal: Terminal, theme: ReturnType<typeof getTerminalTheme>) => {
-    const shouldUseWebgl = !isTransparentRef.current && !isLightTerminalTheme(theme);
-    if (!shouldUseWebgl) {
-      if (!webglAddonRef.current) return false;
-      webglAddonRef.current?.dispose();
-      webglAddonRef.current = null;
-      return true;
+    if (!canUseWebglRenderer(theme)) {
+      return disposeWebglRenderer();
     }
+    if (lowMemoryMode && !isVisibleRef.current) return false;
     if (webglAddonRef.current) return false;
     try {
-      const addon = new WebglAddon();
-      addon.onContextLoss(() => {
-        addon.dispose();
-        if (webglAddonRef.current === addon) {
-          webglAddonRef.current = null;
-        }
-      });
+      const addon = createWebglAddon();
       terminal.loadAddon(addon);
       webglAddonRef.current = addon;
       return true;
@@ -1098,7 +1120,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     }
     normalizeTuiComposerBackground(terminal);
     scheduleTuiComposerBackgroundNormalization(terminal);
-  }, [fontSize, effectiveFontFamily, terminalScrollbackRows, resolvedTheme, terminalThemeName, lightThemePalette, darkThemePalette, isTransparent, background.overlayDarken]);
+  }, [fontSize, effectiveFontFamily, terminalScrollbackRows, resolvedTheme, terminalThemeName, lightThemePalette, darkThemePalette, isTransparent, background.overlayDarken, lowMemoryMode]);
 
   // Visibility drives live rendering. A pane tab is "visible" when it is the
   // shown tab in its own pane — which, in a split, includes panes that are not
@@ -1108,7 +1130,29 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   useEffect(() => {
     const wasVisible = isVisibleRef.current;
     isVisibleRef.current = isVisible;
-    if (!isVisible || !fitAddonRef.current || !containerRef.current) return;
+
+    if (!isVisible) {
+      clearHiddenWebglDisposeTimer();
+      if (lowMemoryMode && webglAddonRef.current) {
+        webglDisposeTimerRef.current = window.setTimeout(() => {
+          webglDisposeTimerRef.current = null;
+          if (isVisibleRef.current) return;
+          if (disposeWebglRenderer()) {
+            needsViewportRefreshRef.current = true;
+          }
+        }, HIDDEN_WEBGL_DISPOSE_DELAY_MS);
+      }
+      return;
+    }
+
+    clearHiddenWebglDisposeTimer();
+    const terminal = terminalRef.current;
+    const baseTheme = getTerminalTheme(terminalThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
+    if (terminal && syncWebglRenderer(terminal, baseTheme)) {
+      needsViewportRefreshRef.current = true;
+    }
+
+    if (!fitAddonRef.current || !containerRef.current) return;
     const restorePlan = planTerminalVisibilityRestore({
       wasVisible,
       isVisible,
@@ -1146,7 +1190,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       normalizeTuiComposerBackground(terminalRef.current);
       scheduleTuiComposerBackgroundNormalization(terminalRef.current);
     }
-  }, [isVisible]);
+  }, [isVisible, lowMemoryMode, resolvedTheme, terminalThemeName, lightThemePalette, darkThemePalette]);
 
   // Focus follows the single globally active tab. Keyboard, cursor and IME stay
   // bound to this; a visible-but-unfocused split pane renders but never steals
@@ -1220,15 +1264,9 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     });
 
     let webglAddon: WebglAddon | null = null;
-    if (!isTransparentRef.current && !isLightTerminalTheme(baseTheme)) {
+    if (!(lowMemoryMode && !isVisibleRef.current) && canUseWebglRenderer(baseTheme)) {
       try {
-        webglAddon = new WebglAddon();
-      // GPU 上下文丢失（驱动崩溃 / GPU 进程重启 / 长会话）后 WebGL 渲染会僵死。
-      // 注册 contextLoss 回调，丢失时 dispose 让 xterm 自动回落到 Canvas 渲染器。
-        webglAddon.onContextLoss(() => {
-          webglAddon?.dispose();
-          webglAddon = null;
-        });
+        webglAddon = createWebglAddon();
         terminal.loadAddon(webglAddon);
         webglAddonRef.current = webglAddon;
       } catch {
@@ -2075,6 +2113,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
         tuiComposerNormalizeRafRef.current = null;
       }
       pendingChunks = [];
+      clearHiddenWebglDisposeTimer();
       activeWriteQueueRef.current = [];
       activeWriteQueueSizeRef.current = 0;
       inactiveReplayStickToBottomRef.current = false;

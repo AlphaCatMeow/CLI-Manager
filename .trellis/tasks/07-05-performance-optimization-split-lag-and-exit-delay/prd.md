@@ -71,9 +71,15 @@ V1.2.5（用户指定，写入 CHANGELOG.md 既有 `[V1.2.5]` 分节）
 
 - F8 收窄常驻组件订阅：`CommandTemplatePanel`（terminalStore → 仅 sessions/activeSessionId，useShallow）、`SyncStatusIndicator`、`CommandHistoryPanel` 改窄 selector；弹窗/设置页类整店订阅不动（按需挂载，无收益）。
 
+### 内存专项补充（用户已确认纳入）
+
+截图显示 WebView2 进程组约 811MB，其中 WebView2 GPU 进程约 286MB、CLI-Manager WebView 进程约 300MB/174MB。新增目标：降低后台终端长期占用的 GPU/内存资源。
+
+- F9 隐藏终端延迟释放 WebGL：终端从可见变为隐藏后，不立即 dispose WebGL；隐藏持续超过 10 秒后释放 WebGL addon。切回可见时重建 WebGL 并刷新当前 viewport。不得重启 PTY、不得 dispose xterm Terminal 本体、不得丢 scrollback/输入状态。
+- F10 通用设置增加「低内存模式」：默认关闭。开启后使用更激进的内存策略（至少：后台终端按 F9 释放 WebGL；后续可承载更低 transcript/scrollback 保留策略）。设置需持久化、支持中英文文案。
+
 ## 范围外
 
-- WebGL >16 上下文的主动管理（现有优雅降级够用，无痛点证据）。
 - JSONL 解析挪 Web Worker（增量化后预计不再需要）。
 - 浅色主题禁用 WebGL 的策略重评估（刻意设计，非缺陷）。
 

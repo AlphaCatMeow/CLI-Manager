@@ -22,6 +22,7 @@ const CcusageStatsPanel = lazy(() =>
 );
 import { WindowTitleBar } from "./components/WindowTitleBar";
 import { CloseConfirmDialog } from "./components/CloseConfirmDialog";
+import { ExitProgressOverlay, type ExitPhase } from "./components/ExitProgressOverlay";
 import { CircleAlert, CircleCheck, Info, ShieldAlert, X } from "./components/icons";
 import { useSettingsStore, type HookEventType } from "./stores/settingsStore";
 import { useProjectStore } from "./stores/projectStore";
@@ -53,6 +54,10 @@ let deferredStartupTasksStarted = false;
 let startupUpdateChecked = false;
 const COMPACT_WINDOW_WIDTH = 350;
 const WINDOW_MIN_HEIGHT = 600;
+// 关闭期自动同步上限：封顶最坏退出时间（WebDAV 客户端本身有 30s HTTP 超时）。
+const CLOSE_SYNC_TIMEOUT_MS = 8000;
+// 退出遮罩上 conflict/error 提示的停留时长，之后继续退出流程。
+const EXIT_NOTICE_DISPLAY_MS = 1200;
 const IN_TAURI = isTauri();
 const CLAUDE_HOOK_TOAST_PREFIX = "claude-hook-notification";
 const SYSTEM_NOTIFICATION_ACTION_EVENT = "system-notification-action";
@@ -375,6 +380,8 @@ function App() {
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("general");
   const [statsOpen, setStatsOpen] = useState(false);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
+  const [exitPhase, setExitPhase] = useState<ExitPhase | null>(null);
+  const [exitNotice, setExitNotice] = useState<string | null>(null);
   const [terminalFullscreen, setTerminalFullscreen] = useState(false);
   const [terminalScopeProjectId, setTerminalScopeProjectId] = useState<string | null>(null);
   const [isMacOs, setIsMacOs] = useState(isLikelyMacOs);
@@ -429,16 +436,34 @@ function App() {
     return () => window.removeEventListener("keydown", handleF12, true);
   }, [debugMode]);
 
+  // 关闭期自动同步：8s 封顶避免网络慢时退出无限等待；conflict/error 不再 toast
+  // （窗口即将销毁看不到），改为退出遮罩上短暂提示后继续退出，并记录日志。
   const runCloseAutoSync = useCallback(async () => {
-    const result = await useSyncStore.getState().runAutoSync("close");
-    if (result === "conflict") {
-      toast.warning(t("notifications.autoSync.exitConflict"), {
-        description: t("notifications.autoSync.conflictDescription"),
-      });
-    } else if (result === "error") {
-      toast.error(t("notifications.autoSync.exitFailed"), {
-        description: t("notifications.autoSync.failedDescription"),
-      });
+    const showExitNotice = async (message: string) => {
+      setExitNotice(message);
+      await new Promise((resolve) => setTimeout(resolve, EXIT_NOTICE_DISPLAY_MS));
+    };
+
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<"timeout">((resolve) => {
+      timeoutId = setTimeout(() => resolve("timeout"), CLOSE_SYNC_TIMEOUT_MS);
+    });
+    try {
+      const result = await Promise.race([useSyncStore.getState().runAutoSync("close"), timeoutPromise]);
+      if (result === "timeout") {
+        logWarn("Close auto sync timed out, continuing exit", { timeoutMs: CLOSE_SYNC_TIMEOUT_MS });
+        await showExitNotice(t("app.exitProgress.syncTimeout"));
+        return;
+      }
+      if (result === "conflict" || result === "error") {
+        logWarn(`Close auto sync ended with ${result}, continuing exit`);
+        await showExitNotice(result === "conflict" ? t("app.exitProgress.syncConflict") : t("app.exitProgress.syncFailed"));
+      }
+    } catch (err) {
+      logWarn("Close auto sync threw, continuing exit", err);
+      await showExitNotice(t("app.exitProgress.syncFailed"));
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
   }, [t]);
 
@@ -816,7 +841,13 @@ function App() {
 
   const runExitCleanup = useCallback(async (source: string) => {
     try {
+      // 全程保持窗口可见并显示进度遮罩；destroy 前不复位 exitPhase。
+      flushSync(() => {
+        setExitNotice(null);
+        setExitPhase("syncing");
+      });
       await runCloseAutoSync();
+      setExitPhase("closing");
       try {
         await invoke("pty_close_all");
       } catch (err) {
@@ -1042,6 +1073,7 @@ function App() {
         onExit={handleCloseDialogExit}
         onClose={() => setCloseDialogOpen(false)}
       />
+      {exitPhase && <ExitProgressOverlay phase={exitPhase} notice={exitNotice} />}
       <Toaster
         theme={resolvedTheme}
         position="bottom-right"

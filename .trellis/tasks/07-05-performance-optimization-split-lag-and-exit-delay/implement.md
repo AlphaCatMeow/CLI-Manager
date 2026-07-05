@@ -22,7 +22,13 @@
    - `src/components/CommandTemplatePanel.tsx`：`useTerminalStore()` 改窄 selector（sessions/activeSessionId，useShallow）。
    - `src/components/sidebar/SyncStatusIndicator.tsx`、`src/components/CommandHistoryPanel.tsx`：同样改窄 selector。
    - 仅改订阅方式，不改任何行为逻辑。
-8. **文档**
+8. **WebGL/低内存模式追加**
+   - `src/stores/settingsStore.ts`：新增持久化 `lowMemoryMode: boolean`（默认 false）及更新方法（复用现有 setting update 模式）。
+   - 通用设置页：新增「低内存模式」开关和中英文文案。
+   - `src/components/XTermTerminal.tsx`：隐藏超过 10 秒后释放 WebGL addon；切回可见时重建 WebGL 并刷新视口；不得销毁 Terminal 本体/PTY/scrollback。
+   - `src/lib/i18n.ts`：增加低内存模式相关文案。
+   - `CHANGELOG.md`/`docs/功能清单.md`：补充低内存模式与后台 WebGL 释放说明。
+9. **文档**
    - `CHANGELOG.md`：写入 `[V1.2.5]` 分节（用户指定）。
    - `docs/功能清单.md`：退出进度反馈属用户可见行为，补一行。
 
