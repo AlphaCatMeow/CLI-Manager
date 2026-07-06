@@ -4,6 +4,7 @@ import { getDb } from "../lib/db";
 import { logWarn } from "../lib/logger";
 import type { Project, TerminalSession, WorktreeIsolationStrategy, WorktreeRecord } from "../lib/types";
 import { useProjectStore } from "./projectStore";
+import { useTerminalStore } from "./terminalStore";
 
 export interface GitWorktreeCreateResult {
   name: string;
@@ -31,6 +32,12 @@ const RESERVED_WINDOWS_WORKTREE_NAMES = new Set([
   "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ]);
 const UNCONFIGURED_CLI_TOOL_VALUES = new Set(["none", "未选择"]);
+
+const WORKTREE_SESSION_RELEASE_DELAY_MS = 350;
+
+function waitForSessionRelease(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, WORKTREE_SESSION_RELEASE_DELAY_MS));
+}
 
 interface ProjectGitValidationCacheEntry {
   key: string;
@@ -271,6 +278,16 @@ export const useWorktreeStore = create<WorktreeStore>((set, get) => ({
   removeWorktree: async (worktree, deleteBranch) => {
     const project = useProjectStore.getState().projects.find((item) => item.id === worktree.project_id);
     if (!project) throw new Error("project_not_found");
+    const terminalStore = useTerminalStore.getState();
+    const linkedSessionIds = terminalStore.sessions
+      .filter((session) => session.worktreeId === worktree.id)
+      .map((session) => session.id);
+    for (const sessionId of linkedSessionIds) {
+      await terminalStore.closeSession(sessionId);
+    }
+    if (linkedSessionIds.length > 0) {
+      await waitForSessionRelease();
+    }
     await invoke<string>("git_worktree_remove", {
       projectPath: project.path,
       worktreePath: worktree.path,

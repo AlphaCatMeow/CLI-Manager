@@ -66,6 +66,7 @@ const EXIT_NOTICE_DISPLAY_MS = 1200;
 const IN_TAURI = isTauri();
 const CLAUDE_HOOK_TOAST_PREFIX = "claude-hook-notification";
 const SYSTEM_NOTIFICATION_ACTION_EVENT = "system-notification-action";
+const MAX_SYSTEM_NOTIFICATION_DETAIL_LENGTH = 72;
 let claudeHookToastSequence = 0;
 type HookInstallStatus = "directoryMissing" | "notInstalled" | "partialInstalled" | "installed";
 
@@ -193,10 +194,15 @@ function isSystemNotificationEvent(eventType: CliHookPayload["event"]): eventTyp
   );
 }
 
+function truncateSystemNotificationDetail(detail: string): string {
+  if (detail.length <= MAX_SYSTEM_NOTIFICATION_DETAIL_LENGTH) return detail;
+  return `${detail.slice(0, MAX_SYSTEM_NOTIFICATION_DETAIL_LENGTH - 3).trimEnd()}...`;
+}
+
 function getSystemNotificationBody(payload: CliHookPayload, projectName: string): string {
   const sourceName = getCliHookSourceName(payload);
   const detail = payload.message?.trim();
-  const suffix = detail ? `: ${detail}` : "";
+  const suffix = detail ? `: ${truncateSystemNotificationDetail(detail)}` : "";
 
   switch (payload.event) {
     case "Stop":

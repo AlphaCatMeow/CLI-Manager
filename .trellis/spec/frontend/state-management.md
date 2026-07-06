@@ -263,6 +263,7 @@ interface TerminalSession {
 - `worktreeStore.loadWorktrees()` runs during startup before the project tree needs worktree child nodes.
 - `projectStore.buildTree()` may include worktree child nodes, but it must not own Git lifecycle actions.
 - `TerminalSession.worktreeId` is metadata for badges, menus, stats, and install tabs; it is not the source of truth for whether a worktree exists.
+- Sidebar/tree selection uses `TerminalSession.worktreeId` as the tab-to-worktree bridge: activating a worktree tab should select and reveal that worktree node; selecting a worktree node should activate an already-open PTY session for that worktree when one exists.
 - Missing worktree directories remain visible as `status="missing"` until the user cleans the stale record; do not silently hide them from the project tree.
 - Dependency prompt dismissal belongs to the worktree record, not the terminal tab, because multiple tabs may point at the same worktree.
 - `disabled` isolation strategy preserves pre-worktree behavior: always open a normal project terminal, without Git validation, prompt, or automatic worktree creation.
@@ -272,8 +273,10 @@ interface TerminalSession {
 **Good/Base/Bad Cases**:
 
 - Good: after app restart, no terminal sessions are restored, but the project tree still shows active/missing worktree records loaded from SQLite.
+- Good: switching from worktree tab A to worktree tab B updates the selected project-tree child from A to B without opening new terminals.
 - Base: an install-dependencies tab and the task tab share the same `worktreeId`, so both display the same worktree badge.
 - Bad: closing the last tab for a worktree deletes the database record. Closing a tab is not equivalent to discarding a checkout.
+- Bad: selecting a worktree row always opens another terminal even when a matching worktree tab is already open.
 
 **Tests Required**:
 

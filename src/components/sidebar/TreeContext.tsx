@@ -35,6 +35,10 @@ export interface TreeActions {
 
 export const TreeContext = createContext<TreeActions | null>(null);
 
+export function worktreeListCollapseId(projectId: string): string {
+  return `project-worktrees:${projectId}`;
+}
+
 export function useTreeActions(): TreeActions {
   const ctx = useContext(TreeContext);
   if (!ctx) throw new Error("useTreeActions must be used within TreeContext.Provider");

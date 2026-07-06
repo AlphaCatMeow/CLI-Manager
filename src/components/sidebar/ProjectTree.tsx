@@ -6,10 +6,11 @@ import type { SessionStatus } from "../../stores/terminalStore";
 import { SidebarSkeleton } from "../ui/Skeleton";
 import { EmptyState } from "../ui/EmptyState";
 import { Popover, PopoverAnchor, PopoverContent } from "../ui/popover";
-import { Folder, GitBranch, Plus, Terminal } from "../icons";
+import { Folder, Plus, Terminal } from "../icons";
 import { VendorIcon, inferVendor } from "../VendorIcon";
+import { WorktreeIcon } from "../WorktreeIcon";
 import { TreeNodeItem } from "./TreeNodeItem";
-import { useTreeActions, type TreeActions } from "./TreeContext";
+import { useTreeActions, worktreeListCollapseId, type TreeActions } from "./TreeContext";
 import { useI18n } from "../../lib/i18n";
 
 interface ProjectTreeProps {
@@ -211,17 +212,24 @@ function flattenVisibleTree(
       continue;
     }
 
+    const projectWorktrees = node.worktrees ?? [];
+    const isOpen = !collapsedIds.has(worktreeListCollapseId(node.project.id));
+    const firstChildKey = projectWorktrees.length > 0 ? `wt:${projectWorktrees[0].id}` : null;
     out.push({
       key: `p:${node.project.id}`,
       kind: "project",
       parentGroupKey,
       projectId: node.project.id,
+      isOpen,
+      hasChildren: projectWorktrees.length > 0,
+      firstChildKey,
     });
-    for (const worktree of node.worktrees ?? []) {
+    if (!isOpen) continue;
+    for (const worktree of projectWorktrees) {
       out.push({
         key: `wt:${worktree.id}`,
         kind: "worktree",
-        parentGroupKey,
+        parentGroupKey: `p:${node.project.id}`,
         projectId: node.project.id,
         worktreeId: worktree.id,
       });
@@ -276,6 +284,16 @@ export function ProjectTree({
     visibleNodes.forEach((node, idx) => map.set(node.key, idx));
     return map;
   }, [visibleNodes]);
+  const selectedTreeKey = useMemo(() => {
+    if (!actions.selectedId) return null;
+    const worktreeKey = `wt:${actions.selectedId}`;
+    if (visibleNodeIndex.has(worktreeKey)) return worktreeKey;
+    const projectKey = `p:${actions.selectedId}`;
+    if (visibleNodeIndex.has(projectKey)) return projectKey;
+    return null;
+  }, [actions.selectedId, visibleNodeIndex]);
+  const allTerminalsSelected =
+    projectScopedTerminalViewEnabled && terminalScopeProjectId === null && actions.selectedId === null;
   const projectById = useMemo(() => {
     const map = new Map<string, Extract<TNode, { type: "project" }>>();
     const walk = (nodes: TNode[]) => {
@@ -352,13 +370,26 @@ export function ProjectTree({
       }
       return;
     }
-    if (focusedNodeKey && visibleNodeIndex.has(focusedNodeKey)) return;
-    const selectedProjectKey =
-      actions.selectedId && visibleNodeIndex.has(`p:${actions.selectedId}`)
-        ? `p:${actions.selectedId}`
-        : visibleNodes[0].key;
-    setFocusedNodeKey(selectedProjectKey);
-  }, [actions.selectedId, focusedNodeKey, visibleNodeIndex, visibleNodes]);
+    const nextFocusedKey =
+      selectedTreeKey ??
+      (focusedNodeKey && visibleNodeIndex.has(focusedNodeKey)
+        ? focusedNodeKey
+        : visibleNodes[0].key);
+    if (focusedNodeKey !== nextFocusedKey) {
+      setFocusedNodeKey(nextFocusedKey);
+    }
+  }, [focusedNodeKey, selectedTreeKey, visibleNodeIndex, visibleNodes]);
+
+  useEffect(() => {
+    if (!selectedTreeKey) return;
+    const frame = window.requestAnimationFrame(() => {
+      const selectedElement = Array.from(
+        treeContainerRef.current?.querySelectorAll<HTMLElement>("[data-tree-key]") ?? []
+      ).find((node) => node.dataset.treeKey === selectedTreeKey);
+      selectedElement?.scrollIntoView({ block: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selectedTreeKey]);
 
   const handleTreeKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null;
@@ -411,6 +442,18 @@ export function ProjectTree({
       return;
     }
 
+    if (event.key === "ArrowRight" && current.kind === "project" && current.projectId) {
+      event.preventDefault();
+      if (current.hasChildren && !current.isOpen && !forceExpanded) {
+        actions.toggleCollapsed(worktreeListCollapseId(current.projectId));
+        return;
+      }
+      if (current.hasChildren && current.firstChildKey) {
+        focusTreeItem(current.firstChildKey);
+      }
+      return;
+    }
+
     if (event.key === "ArrowRight" && current.kind === "group" && current.groupId) {
       event.preventDefault();
       if (current.hasChildren && !current.isOpen && !forceExpanded) {
@@ -424,6 +467,11 @@ export function ProjectTree({
     }
 
     if (event.key === "ArrowLeft") {
+      if (current.kind === "project" && current.projectId && current.hasChildren && current.isOpen && !forceExpanded) {
+        event.preventDefault();
+        actions.toggleCollapsed(worktreeListCollapseId(current.projectId));
+        return;
+      }
       if (current.kind === "group" && current.groupId && current.hasChildren && current.isOpen && !forceExpanded) {
         event.preventDefault();
         actions.toggleCollapsed(current.groupId);
@@ -669,7 +717,7 @@ export function ProjectTree({
                 role="treeitem"
                 data-tree-key="scope:all"
                 aria-level={1}
-                aria-selected={terminalScopeProjectId === null}
+                aria-selected={allTerminalsSelected}
                 tabIndex={focusedNodeKey === "scope:all" ? 0 : -1}
                 onFocus={() => setFocusedNodeKey("scope:all")}
               >
@@ -678,7 +726,7 @@ export function ProjectTree({
                   className={`ui-tree-node ui-tree-project ui-focus-ring flex w-full items-center rounded-xl ${
                     density === "compact" ? "gap-1.5 py-1 text-[12px]" : "gap-2 py-1.5 text-[13px]"
                   }`}
-                  data-selected={terminalScopeProjectId === null ? "true" : "false"}
+                  data-selected={allTerminalsSelected ? "true" : "false"}
                   style={{ paddingLeft: density === "compact" ? 6 : 8, paddingRight: density === "compact" ? 8 : 10 }}
                   onClick={onSelectAllTerminalScope}
                 >
@@ -891,7 +939,9 @@ function renderFlyoutNodes(nodes: TNode[], depth: number, actions: TreeActions, 
           }}
           onContextMenu={(e) => actions.onContextMenuWorktree(e, child.project, child.worktree)}
         >
-          <span className="ui-tree-leading-icon flex shrink-0 items-center"><GitBranch size={13} strokeWidth={1.5} /></span>
+          <span className="ui-tree-leading-icon ui-worktree-tree-icon flex shrink-0 items-center">
+            <WorktreeIcon className="h-3.5 w-3.5" />
+          </span>
           <span className="flex-1 truncate">{child.worktree.name}</span>
         </button>
       );
@@ -953,7 +1003,7 @@ function DragGhost({ activeId, tree }: { activeId: string; tree: TNode[] }) {
   const node = findNodeById(tree, activeId);
   if (!node) return null;
   const label = node.type === "group" ? node.group.name : node.type === "worktree" ? node.worktree.name : node.project.name;
-  const icon = node.type === "group" ? <Folder size={14} strokeWidth={1.5} /> : node.type === "worktree" ? <GitBranch size={14} strokeWidth={1.5} /> : <Terminal size={14} strokeWidth={1.5} />;
+  const icon = node.type === "group" ? <Folder size={14} strokeWidth={1.5} /> : node.type === "worktree" ? <WorktreeIcon className="h-3.5 w-3.5" /> : <Terminal size={14} strokeWidth={1.5} />;
   return (
     <div className="ui-tree-drag-ghost flex items-center gap-2 rounded-xl border border-border bg-surface-container-high px-3 py-1.5 text-[12px] font-medium shadow-lg">
       <span className="text-on-surface-variant">{icon}</span>

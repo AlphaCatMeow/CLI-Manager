@@ -3,7 +3,7 @@ import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { TreeNode as TNode } from "../../lib/types";
-import { useTreeActions } from "./TreeContext";
+import { useTreeActions, worktreeListCollapseId } from "./TreeContext";
 import { Folder, Terminal, Play, ChevronRight, AlertTriangle } from "../icons";
 import { VendorIcon, inferVendor } from "../VendorIcon";
 import { WorktreeIcon } from "../WorktreeIcon";
@@ -146,6 +146,9 @@ function TreeNodeItemImpl({
       : null;
     const cliVendor = p.cli_tool ? inferVendor(p.cli_tool) : null;
     const projectWorktrees = node.worktrees ?? [];
+    const hasWorktrees = projectWorktrees.length > 0;
+    const worktreeCollapseKey = worktreeListCollapseId(p.id);
+    const worktreesOpen = forceExpanded || !actions.collapsedIds.has(worktreeCollapseKey);
 
     return (
       <div
@@ -155,6 +158,7 @@ function TreeNodeItemImpl({
         role="treeitem"
         data-tree-key={treeKey}
         aria-level={depth + 1}
+        aria-expanded={hasWorktrees ? worktreesOpen : undefined}
         aria-selected={isSelected || isMultiSelected}
         tabIndex={focusedNodeKey === treeKey ? 0 : -1}
         onPointerDownCapture={preventSecondaryPointerFocus}
@@ -176,6 +180,25 @@ function TreeNodeItemImpl({
           onContextMenu={(e) => actions.onContextMenuProject(e, p)}
           {...listeners}
         >
+          {hasWorktrees && (
+            <button
+              type="button"
+              className="ui-tree-chevron inline-flex items-center justify-center"
+              aria-label={worktreesOpen ? t("sidebar.tree.collapseWorktrees") : t("sidebar.tree.expandWorktrees")}
+              title={worktreesOpen ? t("sidebar.tree.collapseWorktrees") : t("sidebar.tree.expandWorktrees")}
+              onPointerDownCapture={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (!forceExpanded) actions.toggleCollapsed(worktreeCollapseKey);
+              }}
+            >
+              <ChevronRight
+                size={12}
+                strokeWidth={2}
+                style={{ transition: "transform 150ms", transform: worktreesOpen ? "rotate(90deg)" : "rotate(0)" }}
+              />
+            </button>
+          )}
           <span className="ui-tree-leading-icon">
             {cliVendor ? (
               <VendorIcon vendor={cliVendor} size={14} />
@@ -223,7 +246,7 @@ function TreeNodeItemImpl({
             </button>
           </span>
         </div>
-        {projectWorktrees.length > 0 && (
+        {hasWorktrees && worktreesOpen && (
           <div className={`ui-worktree-children ${compact ? "space-y-0.5" : "space-y-0.5"}`} role="group">
             {projectWorktrees.map((worktree) => (
               <TreeNodeItem

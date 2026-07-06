@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import type { GitFileChange, Project, WorktreeRecord } from "../../lib/types";
-import { useI18n } from "../../lib/i18n";
+import { useI18n, type TranslationKey } from "../../lib/i18n";
 import { useWorktreeStore } from "../../stores/worktreeStore";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "../ui/dialog";
 import { Button } from "../ui/button";
@@ -16,6 +16,14 @@ interface WorktreeFinishDialogProps {
 }
 
 type Step = "review" | "merge" | "cleanup" | "done";
+type Translate = (key: TranslationKey, params?: Record<string, string | number>) => string;
+
+interface FinishErrorInfo {
+  title: string;
+  description: string;
+  details?: string[];
+  raw?: string;
+}
 
 function formatChangeSummary(changes: GitFileChange[]): string {
   if (changes.length === 0) return "";
@@ -24,6 +32,51 @@ function formatChangeSummary(changes: GitFileChange[]): string {
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function createMergeConflictError(conflictFiles: string[], t: Translate): FinishErrorInfo {
+  return {
+    title: t("worktree.finish.error.conflictTitle"),
+    description: t("worktree.finish.error.conflictDescription"),
+    details: conflictFiles.length > 0 ? conflictFiles : [t("worktree.finish.error.noConflictFiles")],
+  };
+}
+
+function formatFinishError(err: unknown, t: Translate, projectPath?: string): FinishErrorInfo {
+  const raw = errorText(err).trim();
+  if (raw.includes("dirty_main_worktree")) {
+    return {
+      title: t("worktree.finish.error.dirtyMainTitle"),
+      description: t("worktree.finish.error.dirtyMainDescription"),
+      details: [
+        ...(projectPath ? [t("worktree.finish.error.mainPath", { path: projectPath })] : []),
+        t("worktree.finish.error.dirtyMainAction"),
+        t("worktree.finish.error.dirtyMainSafe"),
+      ],
+    };
+  }
+
+  if (raw.includes("worktree_branch_not_found") || raw.includes("branch_not_found")) {
+    return {
+      title: t("worktree.finish.error.branchMissingTitle"),
+      description: t("worktree.finish.error.branchMissingDescription"),
+      raw,
+    };
+  }
+
+  if (raw.includes("merge_failed")) {
+    return {
+      title: t("worktree.finish.error.mergeFailedTitle"),
+      description: t("worktree.finish.error.mergeFailedDescription"),
+      raw,
+    };
+  }
+
+  return {
+    title: t("worktree.finish.error.genericTitle"),
+    description: t("worktree.finish.error.genericDescription"),
+    raw,
+  };
 }
 
 export function WorktreeFinishDialog({ project, worktree, open, onClose }: WorktreeFinishDialogProps) {
@@ -36,8 +89,7 @@ export function WorktreeFinishDialog({ project, worktree, open, onClose }: Workt
   const [commitMessage, setCommitMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [output, setOutput] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [conflicts, setConflicts] = useState<string[]>([]);
+  const [error, setError] = useState<FinishErrorInfo | null>(null);
 
   useEffect(() => {
     if (!open || !worktree) return;
@@ -45,13 +97,12 @@ export function WorktreeFinishDialog({ project, worktree, open, onClose }: Workt
     setCommitMessage(worktree.name);
     setOutput("");
     setError(null);
-    setConflicts([]);
     setLoadingChanges(true);
     invoke<GitFileChange[]>("git_get_changes", { projectPath: worktree.path })
       .then(setChanges)
-      .catch((err) => setError(errorText(err)))
+      .catch((err) => setError(formatFinishError(err, t, worktree.path)))
       .finally(() => setLoadingChanges(false));
-  }, [open, worktree]);
+  }, [open, t, worktree]);
 
   const changeSummary = useMemo(() => formatChangeSummary(changes), [changes]);
   const canCommit = commitMessage.trim().length > 0 && !busy;
@@ -74,7 +125,7 @@ export function WorktreeFinishDialog({ project, worktree, open, onClose }: Workt
         setOutput((current) => `${current}\n${t("worktree.finish.nothingToCommit")}`);
         setStep("merge");
       } else {
-        setError(text);
+        setError(formatFinishError(err, t, worktree.path));
       }
     } finally {
       setBusy(false);
@@ -84,7 +135,6 @@ export function WorktreeFinishDialog({ project, worktree, open, onClose }: Workt
   const handleMerge = async () => {
     setBusy(true);
     setError(null);
-    setConflicts([]);
     setOutput((current) => `${current}\n\ngit -C "${project.path}" merge --no-ff --no-edit ${worktree.branch}`);
     try {
       const result = await mergeWorktree(worktree);
@@ -92,11 +142,10 @@ export function WorktreeFinishDialog({ project, worktree, open, onClose }: Workt
       if (result.merged) {
         setStep("cleanup");
       } else {
-        setConflicts(result.conflictFiles);
-        setError(t("worktree.finish.mergeConflict"));
+        setError(createMergeConflictError(result.conflictFiles, t));
       }
     } catch (err) {
-      setError(errorText(err));
+      setError(formatFinishError(err, t, project.path));
     } finally {
       setBusy(false);
     }
@@ -112,7 +161,7 @@ export function WorktreeFinishDialog({ project, worktree, open, onClose }: Workt
       toast.success(t("worktree.finish.cleanupDone"));
       onClose();
     } catch (err) {
-      setError(errorText(err));
+      setError(formatFinishError(err, t, project.path));
     } finally {
       setBusy(false);
     }
@@ -154,10 +203,24 @@ export function WorktreeFinishDialog({ project, worktree, open, onClose }: Workt
           )}
 
           {error && (
-            <div className="rounded-lg bg-danger/15 px-3 py-2 text-xs text-danger">
-              {error}
-              {conflicts.length > 0 && (
-                <pre className="mt-2 whitespace-pre-wrap">{conflicts.join("\n")}</pre>
+            <div className="rounded-lg border border-danger/25 bg-danger/15 px-3 py-2 text-xs text-danger">
+              <div className="font-semibold">{error.title}</div>
+              <div className="mt-1 leading-relaxed">{error.description}</div>
+              {error.details && error.details.length > 0 && (
+                <div className="mt-2 rounded-md bg-bg-primary/60 p-2 text-text-secondary">
+                  <div className="mb-1 font-semibold text-text-primary">{t("worktree.finish.error.details")}</div>
+                  <ul className="list-disc space-y-1 pl-4">
+                    {error.details.map((detail) => (
+                      <li key={detail}>{detail}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {error.raw && (
+                <div className="mt-2 rounded-md bg-bg-primary/60 p-2 text-text-secondary">
+                  <div className="mb-1 font-semibold text-text-primary">{t("worktree.finish.error.raw")}</div>
+                  <pre className="whitespace-pre-wrap break-words">{error.raw}</pre>
+                </div>
               )}
             </div>
           )}

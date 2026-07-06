@@ -1,6 +1,7 @@
 pub mod background;
 pub mod ccswitch;
 pub mod ccusage;
+pub mod db_repair;
 pub mod fonts;
 pub mod fs;
 pub mod git;

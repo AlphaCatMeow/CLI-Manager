@@ -4,13 +4,16 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 
 const WORKTREE_BRANCH_PREFIX: &str = "wt/";
 const MAX_TASK_NAME_LEN: usize = 64;
+const WORKTREE_REMOVE_RETRY_ATTEMPTS: usize = 5;
+const WORKTREE_REMOVE_RETRY_DELAY_MS: u64 = 250;
 const RESERVED_WINDOWS_NAMES: &[&str] = &[
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
-    "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8",
-    "LPT9",
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,9 +95,7 @@ fn is_wsl_path(path: &str) -> bool {
 fn is_unc_or_remote_path(path: &str) -> bool {
     let plain = strip_windows_extended_path_prefix(path.trim());
     let normalized = plain.replace('/', "\\").to_lowercase();
-    normalized.starts_with("\\\\")
-        || normalized.contains("://")
-        || normalized.starts_with("git@")
+    normalized.starts_with("\\\\") || normalized.contains("://") || normalized.starts_with("git@")
 }
 
 fn ensure_supported_local_path(path: &str) -> Result<(), String> {
@@ -289,6 +290,79 @@ where
     }
 }
 
+fn is_retryable_worktree_remove_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("permission denied")
+        || normalized.contains("failed to delete")
+        || normalized.contains("unable to unlink")
+        || normalized.contains("being used by another process")
+        || normalized.contains("device or resource busy")
+}
+
+fn is_stale_worktree_remove_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("is not a working tree")
+        || normalized.contains("validation failed, cannot remove working tree")
+        || (normalized.contains(".git") && normalized.contains("does not exist"))
+        || normalized.contains("gitdir file points to non-existent location")
+}
+
+fn run_git_worktree_remove_with_retry(
+    project_path: &Path,
+    target_arg: &str,
+) -> Result<String, String> {
+    let mut last_error = String::new();
+    for attempt in 0..=WORKTREE_REMOVE_RETRY_ATTEMPTS {
+        match run_git_checked(project_path, ["worktree", "remove", "--force", target_arg]) {
+            Ok(output) => return Ok(output),
+            Err(err)
+                if attempt < WORKTREE_REMOVE_RETRY_ATTEMPTS
+                    && is_retryable_worktree_remove_error(&err) =>
+            {
+                last_error = err;
+                thread::sleep(Duration::from_millis(WORKTREE_REMOVE_RETRY_DELAY_MS));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last_error)
+}
+
+fn append_output_line(output: &mut String, line: &str) {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output.push_str(trimmed);
+}
+
+fn remove_registered_stale_worktree_dir(target_path: &Path) -> Result<String, String> {
+    if !target_path.exists() {
+        return Ok("stale_registered_worktree_path_missing".to_string());
+    }
+    if !target_path.is_dir() {
+        return Err("worktree_path_not_directory".to_string());
+    }
+    fs::remove_dir_all(target_path)
+        .map_err(|e| format!("remove_stale_worktree_dir_failed: {e}"))?;
+    Ok("removed_stale_registered_worktree_dir".to_string())
+}
+
+fn cleanup_registered_stale_worktree_path(
+    project_path: &Path,
+    target_path: &Path,
+) -> Result<String, String> {
+    let mut output = remove_registered_stale_worktree_dir(target_path)?;
+    append_output_line(
+        &mut output,
+        &run_git_checked(project_path, ["worktree", "prune"])?,
+    );
+    Ok(output)
+}
+
 fn branch_exists(project_path: &Path, branch: &str) -> Result<bool, String> {
     let branch_ref = format!("refs/heads/{branch}");
     let output = run_git_raw(project_path, ["rev-parse", "--verify", branch_ref.as_str()])?;
@@ -317,6 +391,13 @@ fn cleanup_worktree_branch_after_failed_add(
 struct WorktreeListEntry {
     path: PathBuf,
     branch: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorktreeRegistration {
+    Matched,
+    Mismatched,
+    Missing,
 }
 
 fn parse_worktree_list_entries(output: &str) -> Vec<WorktreeListEntry> {
@@ -368,19 +449,77 @@ fn normalize_path_for_compare(path: &Path) -> String {
     }
 }
 
-fn is_registered_worktree_branch(
+fn classify_worktree_registration(
+    entries: &[WorktreeListEntry],
+    worktree_path: &Path,
+    branch: &str,
+) -> WorktreeRegistration {
+    let target = normalize_path_for_compare(worktree_path);
+    let mut path_found = false;
+    let mut branch_found = false;
+
+    for registered in entries {
+        let same_path = normalize_path_for_compare(&registered.path) == target;
+        let same_branch = registered.branch.as_deref() == Some(branch);
+        if same_path && same_branch {
+            return WorktreeRegistration::Matched;
+        }
+        path_found |= same_path;
+        branch_found |= same_branch;
+    }
+
+    if path_found || branch_found {
+        WorktreeRegistration::Mismatched
+    } else {
+        WorktreeRegistration::Missing
+    }
+}
+
+fn worktree_registration(
     project_path: &Path,
     worktree_path: &Path,
     branch: &str,
-) -> Result<bool, String> {
+) -> Result<WorktreeRegistration, String> {
     let output = run_git_checked(project_path, ["worktree", "list", "--porcelain"])?;
-    let target = normalize_path_for_compare(worktree_path);
-    Ok(parse_worktree_list_entries(&output)
-        .iter()
-        .any(|registered| {
-            normalize_path_for_compare(&registered.path) == target
-                && registered.branch.as_deref() == Some(branch)
-        }))
+    Ok(classify_worktree_registration(
+        &parse_worktree_list_entries(&output),
+        worktree_path,
+        branch,
+    ))
+}
+
+fn is_empty_dir(path: &Path) -> Result<bool, String> {
+    let mut entries =
+        fs::read_dir(path).map_err(|e| format!("read_stale_worktree_dir_failed: {e}"))?;
+    Ok(entries.next().is_none())
+}
+
+fn cleanup_stale_unregistered_worktree(
+    project_path: &Path,
+    target_path: &Path,
+    branch: &str,
+    delete_branch: bool,
+) -> Result<String, String> {
+    let mut output = String::new();
+    if target_path.exists() {
+        if !target_path.is_dir() || !is_empty_dir(target_path)? {
+            return Err("worktree_not_registered".to_string());
+        }
+        fs::remove_dir(target_path)
+            .map_err(|e| format!("remove_stale_worktree_dir_failed: {e}"))?;
+        output.push_str("removed_stale_empty_worktree_dir");
+    } else {
+        output.push_str(&run_git_checked(project_path, ["worktree", "prune"])?);
+    }
+
+    if delete_branch && branch_exists(project_path, branch)? {
+        append_output_line(
+            &mut output,
+            &run_git_checked(project_path, ["branch", "-D", branch])?,
+        );
+    }
+
+    Ok(output.trim().to_string())
 }
 
 fn check_dependency_need(path: &Path) -> GitWorktreeDepsCheckResult {
@@ -544,7 +683,10 @@ pub async fn git_worktree_merge(
             run_git_checked(&project_path, ["checkout", base_branch.as_str()])?;
         }
         let branch_ref = format!("refs/heads/{worktree_branch}");
-        let branch_exists = run_git_raw(&project_path, ["rev-parse", "--verify", branch_ref.as_str()])?;
+        let branch_exists = run_git_raw(
+            &project_path,
+            ["rev-parse", "--verify", branch_ref.as_str()],
+        )?;
         if !branch_exists.success {
             return Err("worktree_branch_not_found".to_string());
         }
@@ -597,29 +739,43 @@ pub async fn git_worktree_remove(
         if !target_path.is_absolute() {
             return Err("worktree_path_not_absolute".to_string());
         }
-        if !is_registered_worktree_branch(&project_path, &target_path, &branch)? {
-            return Err("worktree_not_registered".to_string());
+        match worktree_registration(&project_path, &target_path, &branch)? {
+            WorktreeRegistration::Matched => {}
+            WorktreeRegistration::Mismatched => {
+                return Err("worktree_branch_mismatch".to_string());
+            }
+            WorktreeRegistration::Missing => {
+                return cleanup_stale_unregistered_worktree(
+                    &project_path,
+                    &target_path,
+                    &branch,
+                    delete_branch,
+                );
+            }
         }
 
         let target_arg = path_to_git_arg(&target_path);
         let mut output = String::new();
         if target_path.exists() {
-            output.push_str(&run_git_checked(
-                &project_path,
-                ["worktree", "remove", "--force", target_arg.as_str()],
-            )?);
+            match run_git_worktree_remove_with_retry(&project_path, target_arg.as_str()) {
+                Ok(remove_output) => output.push_str(&remove_output),
+                Err(err) if is_stale_worktree_remove_error(&err) => {
+                    output.push_str(&cleanup_registered_stale_worktree_path(
+                        &project_path,
+                        &target_path,
+                    )?);
+                }
+                Err(err) => return Err(err),
+            }
         } else {
             output.push_str(&run_git_checked(&project_path, ["worktree", "prune"])?);
         }
 
         if delete_branch {
-            if !output.is_empty() {
-                output.push('\n');
-            }
-            output.push_str(&run_git_checked(
-                &project_path,
-                ["branch", "-D", branch.as_str()],
-            )?);
+            append_output_line(
+                &mut output,
+                &run_git_checked(&project_path, ["branch", "-D", branch.as_str()])?,
+            );
         }
 
         Ok(output.trim().to_string())
@@ -631,9 +787,12 @@ pub async fn git_worktree_remove(
 #[cfg(test)]
 mod tests {
     use super::{
-        check_dependency_need, default_worktree_root, parse_worktree_list_entries, path_to_git_arg,
+        check_dependency_need, classify_worktree_registration, cleanup_stale_unregistered_worktree,
+        default_worktree_root, is_retryable_worktree_remove_error, is_stale_worktree_remove_error,
+        parse_worktree_list_entries, path_to_git_arg, remove_registered_stale_worktree_dir,
         resolve_worktree_target_path, should_cleanup_worktree_branch_after_failed_add,
         validate_plain_branch_name, validate_task_name, validate_worktree_branch,
+        WorktreeRegistration,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -672,6 +831,38 @@ mod tests {
             validate_worktree_branch("wt/bad/name").unwrap_err(),
             "task_name_invalid"
         );
+    }
+
+    #[test]
+    fn detects_retryable_worktree_remove_errors() {
+        assert!(is_retryable_worktree_remove_error(
+            "git_failed: error: failed to delete 'task-1': Permission denied"
+        ));
+        assert!(is_retryable_worktree_remove_error(
+            "fatal: unable to unlink old-file: Device or resource busy"
+        ));
+        assert!(is_retryable_worktree_remove_error(
+            "The process cannot access the file because it is being used by another process"
+        ));
+        assert!(!is_retryable_worktree_remove_error(
+            "git_failed: branch not found"
+        ));
+    }
+
+    #[test]
+    fn detects_stale_worktree_remove_errors() {
+        assert!(is_stale_worktree_remove_error(
+            "git_failed: fatal: 'F:\\repo\\worktrees\\task-1' is not a working tree"
+        ));
+        assert!(is_stale_worktree_remove_error(
+            "git_failed: fatal: validation failed, cannot remove working tree: 'C:/repo/wt/.git' does not exist"
+        ));
+        assert!(is_stale_worktree_remove_error(
+            "prunable gitdir file points to non-existent location"
+        ));
+        assert!(!is_stale_worktree_remove_error(
+            "git_failed: error: failed to delete 'task-1': Permission denied"
+        ));
     }
 
     #[test]
@@ -715,8 +906,7 @@ mod tests {
             true
         ));
         assert!(!should_cleanup_worktree_branch_after_failed_add(
-            "main",
-            false
+            "main", false
         ));
         assert!(!should_cleanup_worktree_branch_after_failed_add(
             "feature/task-1",
@@ -749,6 +939,62 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[1].path, PathBuf::from("C:/repo/wt/task"));
         assert_eq!(entries[1].branch.as_deref(), Some("wt/task"));
+    }
+
+    #[test]
+    fn classifies_worktree_registration() {
+        let entries = parse_worktree_list_entries(
+            "worktree C:/repo/main\nHEAD abc\nbranch refs/heads/main\n\nworktree C:/repo/wt/task\nHEAD def\nbranch refs/heads/wt/task\n",
+        );
+        assert_eq!(
+            classify_worktree_registration(&entries, Path::new("C:/repo/wt/task"), "wt/task"),
+            WorktreeRegistration::Matched
+        );
+        assert_eq!(
+            classify_worktree_registration(&entries, Path::new("C:/repo/wt/task"), "wt/other"),
+            WorktreeRegistration::Mismatched
+        );
+        assert_eq!(
+            classify_worktree_registration(&entries, Path::new("C:/repo/wt/other"), "wt/task"),
+            WorktreeRegistration::Mismatched
+        );
+        assert_eq!(
+            classify_worktree_registration(&entries, Path::new("C:/repo/wt/missing"), "wt/missing"),
+            WorktreeRegistration::Missing
+        );
+    }
+
+    #[test]
+    fn cleanup_stale_unregistered_worktree_removes_empty_dir_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let empty = temp.path().join("empty");
+        fs::create_dir(&empty).unwrap();
+        let output =
+            cleanup_stale_unregistered_worktree(temp.path(), &empty, "wt/task", false).unwrap();
+        assert_eq!(output, "removed_stale_empty_worktree_dir");
+        assert!(!empty.exists());
+
+        let non_empty = temp.path().join("non-empty");
+        fs::create_dir(&non_empty).unwrap();
+        fs::write(non_empty.join("keep.txt"), "data").unwrap();
+        assert_eq!(
+            cleanup_stale_unregistered_worktree(temp.path(), &non_empty, "wt/task", false)
+                .unwrap_err(),
+            "worktree_not_registered"
+        );
+        assert!(non_empty.exists());
+    }
+
+    #[test]
+    fn registered_stale_worktree_cleanup_can_remove_non_empty_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let stale = temp.path().join("stale");
+        fs::create_dir(&stale).unwrap();
+        fs::write(stale.join("leftover.txt"), "data").unwrap();
+
+        let output = remove_registered_stale_worktree_dir(&stale).unwrap();
+        assert_eq!(output, "removed_stale_registered_worktree_dir");
+        assert!(!stale.exists());
     }
 
     #[test]

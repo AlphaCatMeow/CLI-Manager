@@ -1,6 +1,27 @@
 # Changelog
 
 
+## [V1.2.6] - 2026-07-06
+
+### Git Worktree
+
+- **并行任务隔离**：项目支持 Git Worktree 隔离策略；默认仍为“提醒”，也可选择“不处理”以完全保持普通打开行为；项目已配置 CLI 工具且已有同项目终端时可提示或自动创建独立 worktree，`always` 策略则对本地 Git 项目每次打开都创建，并在新终端中使用隔离目录和 `wt/<任务名>` 分支。
+- **Worktree 可见与管理**：项目树显示 worktree 子项，终端 Tab 显示 worktree 徽标；右键菜单支持打开目录、安装依赖、完成任务和丢弃 worktree。
+- **完成任务向导**：Worktree 支持提交全部改动、合并回主工作区和清理目录/分支；主工作区脏时拒绝合并，冲突时自动中止合并并列出冲突文件。
+- **Worktree 安装依赖入口修复**：项目树中对 worktree 执行“安装依赖”时，会直接打开对应 worktree 的终端页签执行安装命令；若无需安装则给出提示，不再只停留在依赖检测流程。
+- **项目树 Worktree 列表折叠**：包含 worktree 的项目行支持展开/收起子列表，键盘左右方向键也会按树控件习惯展开、收起或进入子项。
+- **Worktree 图标优化**：将原本复杂的文件夹式 SVG 替换为更适合 16px 显示的线性 worktree 分支图标，并同步项目树浮层、拖拽预览和终端 Tab 徽标。
+- **浅色主题 Worktree 导线修复**：浅色主题下 Worktree 子列表缩进导线改为低对比边界色，和深色主题保持一致，避免出现过亮的绿色竖线。
+- **Worktree Tab 徽章菜单主题适配**：点击终端 Tab 中的 Worktree 徽章时，弹出的操作菜单会复用终端 Tab 右键菜单的终端主题色，避免浅色应用主题下覆盖深色终端区域。
+- **Worktree Tab 与项目树联动**：切换到 Worktree 终端 Tab 时，左侧项目树会自动展开并选中对应 Worktree；点击已打开的 Worktree 子项会切回对应终端 Tab。
+- **Worktree 完成任务提示优化**：主工作区脏时不再显示 `dirty_main_worktree` 裸错误码，合并冲突时明确提示已自动 `merge --abort`，并展示冲突文件和下一步处理建议。
+- **Worktree 丢弃权限失败修复**：丢弃 worktree 前会先关闭关联终端页签，后端对 Windows 文件锁导致的 `Permission denied` / `failed to delete` 做有限重试；若 Git 登记已被上次删除清掉但只残留空目录，也会按 stale 记录清理并删除 `wt/` 分支。
+- **Worktree 损坏目录丢弃修复**：当 Git 仍登记了 worktree 的 path/branch，但目录内 `.git` 已缺失或 Git 返回 `is not a working tree` 时，丢弃流程会按已登记 stale worktree 清理目录、执行 `worktree prune` 并删除对应 `wt/` 分支。
+
+### 修复
+
+- **项目加载失败迁移修复**：启动加载项目列表前会预检并修复已知 SQLite migration 13-15 分支编号漂移，将 `cli_args`、Worktree 隔离表和历史收藏快照的迁移记录对齐到当前版本，避免出现 `migration 13 was previously applied but has been modified` 后项目树加载失败。
+
 ## [V1.2.5] - 2026-07-04
 
 ### 终端稳定性
@@ -9,6 +30,7 @@
 
 ### 修复
 
+- **系统通知滚动条修复**：Hook 系统通知正文改为短格式并截断过长详情，应用内 Hook toast 取消外层滚动裁剪，避免内容不需要滚动时仍显示滚动条。
 - **WSL 文件浏览修复**：文件浏览器打开 `\\wsl.localhost\...` 或 `\\wsl$\...` 项目时，目录列表改由 WSL 内部枚举，避免 Windows 原生 `canonicalize` 导致 `path_canonicalize_failed`。
 - **历史会话元数据编辑优化**：会话别名、标签与保存操作调整到同一行，保存按钮文案简化为“保存”，标签输入支持从已有标签中选择或继续手动输入。
 - **cc-switch WSL 数据库读取修复**：供应商设置读取 `\\wsl.localhost\...` 下的 `cc-switch.db` 时改用只读免锁连接，避免 WSL SQLite 文件锁导致“database is locked”。
@@ -75,12 +97,6 @@
 - **Git 面板多子仓库监控**：项目根目录下存在多个 git 仓库（主仓库 + 嵌套子仓库，或纯文件夹 + 多个仓库）时，Git 面板顶部新增仓库切换下拉，可切换到任意子仓库查看变更、暂存、提交、推拉；扫描限深并排除 `node_modules` 等大目录，单仓库项目 UI 保持不变；子仓库内文件改动同样触发面板自动刷新。[#85](https://github.com/dark-hxx/CLI-Manager/issues/85)
 - **嵌套 git 子仓库扫描兼容**：主仓库下存在嵌套 git 子仓库时，变更列表不再把子仓库目录当作未跟踪文件展示，点击未跟踪条目也不会再出现"读取文件失败：文件名、目录名或卷标语法不正确 (os error 123)"等原始系统错误；目录条目改为返回友好提示。[#85](https://github.com/dark-hxx/CLI-Manager/issues/85)
 - **Git Diff 弹窗 Esc 关闭**：文件 Diff 弹窗支持按 Esc 键关闭，与其它弹窗交互习惯一致。
-
-### Git Worktree
-
-- **并行任务隔离**：项目支持 Git Worktree 隔离策略；默认仍为“提醒”，也可选择“不处理”以完全保持普通打开行为；项目已配置 CLI 工具且已有同项目终端时可提示或自动创建独立 worktree，`always` 策略则对本地 Git 项目每次打开都创建，并在新终端中使用隔离目录和 `wt/<任务名>` 分支。
-- **Worktree 可见与管理**：项目树显示 worktree 子项，终端 Tab 显示 worktree 徽标；右键菜单支持打开目录、安装依赖、完成任务和丢弃 worktree。
-- **完成任务向导**：Worktree 支持提交全部改动、合并回主工作区和清理目录/分支；主工作区脏时拒绝合并，冲突时自动中止合并并列出冲突文件。
 
 ### 项目维护
 

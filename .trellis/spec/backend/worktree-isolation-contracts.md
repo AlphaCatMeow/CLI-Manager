@@ -165,7 +165,8 @@ type TreeNode =
 - Before merge, the main project checkout must be clean. Dirty main checkout returns a stable error and performs no Git mutation.
 - The merge command receives both `branch` and `baseBranch`; if the checkout is clean but not on the base branch, it may checkout the base branch before merging.
 - Merge conflicts must be detected, conflict files returned, and `merge --abort` executed immediately. Do not leave the main checkout in a half-merged state.
-- Cleanup may delete only a Git worktree recorded by `git worktree list --porcelain`, and the recorded path must match the recorded branch.
+- Stable backend error codes such as `dirty_main_worktree` are for the frontend contract, not end-user copy. The finish-task dialog must map dirty-main and merge-conflict states to readable guidance that says what happened, whether Git mutated the main checkout, and what the user should do next.
+- Cleanup may delete a non-empty directory only when `git worktree list --porcelain` still records the same path and branch. If Git records the path/branch but `git worktree remove --force` reports a stale checkout such as `is not a working tree` or missing `.git`, the backend may remove that registered path, run `git worktree prune`, and then delete the `wt/` branch.
 - Branch deletion is allowed only for `wt/` branches and only after explicit UI confirmation or successful finish flow.
 
 ### 4. Validation & Error Matrix
@@ -180,7 +181,11 @@ type TreeNode =
 | Main checkout dirty before merge | Return `dirty_main_worktree`; no checkout/merge happens. |
 | Merge branch missing | Return `branch_not_found`; no cleanup happens automatically. |
 | Merge conflict | Return conflict error with `conflictFiles`, run `merge --abort`, keep worktree record. |
-| Remove path not listed in `git worktree list --porcelain` | Return `worktree_not_registered`; do not delete filesystem path. |
+| Frontend receives `dirty_main_worktree` | Show human-readable text: main worktree has uncommitted changes, no merge ran, the Worktree commit is still safe, and the user should clean/commit/stash the main checkout before retrying. |
+| Frontend receives merge conflict result | Show human-readable text: merge was aborted automatically, main checkout returned to pre-merge state, and list `conflictFiles` when present. |
+| Remove path not listed in `git worktree list --porcelain` and path is non-empty | Return `worktree_not_registered`; do not delete filesystem path. |
+| Remove path not listed in `git worktree list --porcelain` and path is empty | Remove the empty stale directory and delete the requested `wt/` branch only when requested. |
+| Remove path listed with matching branch but Git reports missing `.git` / `is not a working tree` | Treat as registered stale worktree: remove the registered directory, run `worktree prune`, and delete the requested `wt/` branch only when requested. |
 | Remove path branch mismatch | Return `worktree_branch_mismatch`; do not delete worktree or branch. |
 | Delete branch requested for non-`wt/` branch | Return `invalid_branch`; do not delete branch. |
 
@@ -193,6 +198,7 @@ type TreeNode =
 - Base: Dependency prompt is skipped. The worktree opens normally and the same worktree does not prompt again.
 - Bad: Writing `npm install` into the original task terminal. This can corrupt the user’s CLI session and is forbidden.
 - Bad: Calling `git merge` while the main checkout has uncommitted changes. This mixes unrelated work and must be blocked.
+- Bad: Rendering `dirty_main_worktree` or `merge_conflict` raw in the dialog. The codes are correct transport values but not actionable user guidance.
 - Bad: Deleting a path passed from the frontend without confirming it is a registered Git worktree. This is a high-risk filesystem deletion and is forbidden.
 
 ### 6. Tests Required

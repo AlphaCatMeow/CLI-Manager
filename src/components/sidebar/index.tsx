@@ -24,7 +24,7 @@ import { resolveProjectStartupCommand } from "../../lib/projectStartupCommand";
 import { shouldSidebarBootstrapProjects } from "../../lib/projectLoadPolicy";
 import { getProviderSwitchAppType, parseProjectEnvVars } from "../../lib/providerSwitching";
 import { appendSyncedHistoryContextArg } from "../../lib/syncedHistoryContext";
-import { TreeContext, type TreeActions } from "./TreeContext";
+import { TreeContext, worktreeListCollapseId, type TreeActions } from "./TreeContext";
 import { Portal } from "../ui/Portal";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "../ui/dialog";
 import { Button } from "../ui/button";
@@ -297,31 +297,54 @@ export function Sidebar({
   const [finishTarget, setFinishTarget] = useState<{ project: Project; worktree: WorktreeRecord } | null>(null);
   const [discardTarget, setDiscardTarget] = useState<{ project: Project; worktree: WorktreeRecord } | null>(null);
 
-  const activeSessionProjectId = useMemo(
-    () => sessions.find((session) => session.id === activeSessionId)?.projectId ?? null,
+  const activeSession = useMemo(
+    () => sessions.find((session) => session.id === activeSessionId) ?? null,
     [activeSessionId, sessions]
   );
+  const activeSessionProjectId = activeSession?.projectId ?? null;
+  const activeSessionWorktreeId = activeSession?.worktreeId ?? null;
 
   useEffect(() => {
     if (projectScopedTerminalViewEnabled) return;
     if (!activeSessionProjectId) return;
-    setSelectedId(activeSessionProjectId);
+    setSelectedId(activeSessionWorktreeId ?? activeSessionProjectId);
     setSelectedProjectIds((prev) => {
+      if (activeSessionWorktreeId) return prev.size === 0 ? prev : new Set();
       if (prev.size === 1 && prev.has(activeSessionProjectId)) return prev;
       return new Set([activeSessionProjectId]);
     });
-  }, [activeSessionProjectId, projectScopedTerminalViewEnabled]);
+  }, [activeSessionProjectId, activeSessionWorktreeId, projectScopedTerminalViewEnabled]);
 
   useEffect(() => {
     if (!projectScopedTerminalViewEnabled) return;
-    setSelectedId(terminalScopeProjectId);
-    selectionAnchorRef.current = terminalScopeProjectId;
+    const activeSessionInScope =
+      activeSessionProjectId !== null &&
+      (terminalScopeProjectId === null || activeSessionProjectId === terminalScopeProjectId);
+    const scopedWorktreeId = activeSessionInScope ? activeSessionWorktreeId : null;
+    const scopedProjectId = activeSessionInScope ? activeSessionProjectId : terminalScopeProjectId;
+    const nextSelectedId = activeSessionInScope
+      ? scopedWorktreeId ?? scopedProjectId
+      : terminalScopeProjectId;
+    setSelectedId(nextSelectedId);
+    selectionAnchorRef.current = scopedWorktreeId ? scopedProjectId : terminalScopeProjectId;
     setSelectedProjectIds((prev) => {
-      if (!terminalScopeProjectId) return prev.size === 0 ? prev : new Set();
-      if (prev.size === 1 && prev.has(terminalScopeProjectId)) return prev;
-      return new Set([terminalScopeProjectId]);
+      if (scopedWorktreeId) return prev.size === 0 ? prev : new Set();
+      if (!scopedProjectId) return prev.size === 0 ? prev : new Set();
+      if (prev.size === 1 && prev.has(scopedProjectId)) return prev;
+      return new Set([scopedProjectId]);
     });
-  }, [projectScopedTerminalViewEnabled, terminalScopeProjectId]);
+  }, [activeSessionProjectId, activeSessionWorktreeId, projectScopedTerminalViewEnabled, terminalScopeProjectId]);
+
+  useEffect(() => {
+    if (!activeSessionProjectId || !activeSessionWorktreeId) return;
+    const collapseKey = worktreeListCollapseId(activeSessionProjectId);
+    setCollapsedIds((prev) => {
+      if (!prev.has(collapseKey)) return prev;
+      const next = new Set(prev);
+      next.delete(collapseKey);
+      return next;
+    });
+  }, [activeSessionProjectId, activeSessionWorktreeId]);
 
   useEffect(() => {
     if (!projectScopedTerminalViewEnabled) return;
@@ -353,6 +376,18 @@ export function Sidebar({
   const activateFirstProjectSession = useCallback(
     (projectId: string): boolean => {
       const session = sessions.find((item) => item.projectId === projectId);
+      if (!session) return false;
+      if (session.id !== activeSessionId) {
+        setActiveSession(session.id);
+      }
+      return true;
+    },
+    [activeSessionId, sessions, setActiveSession]
+  );
+
+  const activateFirstWorktreeSession = useCallback(
+    (worktreeId: string): boolean => {
+      const session = sessions.find((item) => item.worktreeId === worktreeId && (item.kind ?? "pty") === "pty");
       if (!session) return false;
       if (session.id !== activeSessionId) {
         setActiveSession(session.id);
@@ -738,16 +773,19 @@ export function Sidebar({
     void updateSetting("collapsedGroupIds", Array.from(collapsedIds));
   }, [collapsedIds, updateSetting]);
 
-  // 自愈清理：分组被删除（含级联）或同步覆盖后，移除已不存在分组的折叠记录。
-  // groups 为空可能是尚未加载完成，此时不清理，避免误清全部记录。
+  // 自愈清理：分组/项目被删除或同步覆盖后，移除已不存在节点的折叠记录。
+  // groups/projects 都为空可能是尚未加载完成，此时不清理，避免误清全部记录。
   useEffect(() => {
-    if (groups.length === 0) return;
-    const valid = new Set(groups.map((g) => g.id));
+    if (groups.length === 0 && projects.length === 0) return;
+    const valid = new Set([
+      ...groups.map((g) => g.id),
+      ...projects.map((project) => worktreeListCollapseId(project.id)),
+    ]);
     setCollapsedIds((prev) => {
       const next = new Set([...prev].filter((id) => valid.has(id)));
       return next.size === prev.size ? prev : next;
     });
-  }, [groups]);
+  }, [groups, projects]);
 
   const openProjectExternally = useCallback(async (items: Project[]) => {
     if (items.length === 0) return;
@@ -815,6 +853,29 @@ export function Sidebar({
       depsPromptingWorktreeIdsRef.current.delete(worktree.id);
       logError("Failed to check worktree dependencies", err);
     }
+  };
+
+  const handleInstallWorktreeDeps = (project: Project, worktree: WorktreeRecord) => {
+    void checkWorktreeDeps(worktree)
+      .then((deps) => {
+        if (!deps.needsInstall || !deps.command) {
+          toast.info(t("worktree.deps.notNeeded"));
+          return;
+        }
+        const options = buildProjectSplitOptions(project);
+        void dismissWorktreeDepsPrompt(worktree.id);
+        return createSession(
+          options.projectId,
+          worktree.path,
+          t("worktree.deps.installTitle", { name: worktree.name }),
+          deps.command,
+          options.envVars,
+          options.shell,
+          undefined,
+          worktree.id,
+        ).then(() => closeHistory());
+      })
+      .catch((err) => toast.error(t("worktree.deps.checkFailed"), { description: String(err) }));
   };
 
   const createAndOpenWorktree = async (project: Project, targetPaneId?: string, taskName?: string) => {
@@ -947,7 +1008,15 @@ export function Sidebar({
 
   const handleSelectWorktree = useCallback((worktree: WorktreeRecord) => {
     setSelectedId(worktree.id);
-  }, []);
+    setSelectedProjectIds(new Set());
+    selectionAnchorRef.current = worktree.project_id;
+    if (projectScopedTerminalViewEnabled) {
+      onTerminalScopeChange?.(worktree.project_id);
+    }
+    if (activateFirstWorktreeSession(worktree.id)) {
+      closeHistory();
+    }
+  }, [activateFirstWorktreeSession, closeHistory, onTerminalScopeChange, projectScopedTerminalViewEnabled]);
 
   const handleOpenWorktree = useCallback((project: Project, worktree: WorktreeRecord) => {
     void openWorktreeSession(project, worktree);
@@ -1576,7 +1645,7 @@ export function Sidebar({
                   className="context-menu-item"
                   role="menuitem"
                   onClick={() => {
-                    void maybePromptWorktreeDeps(contextMenu.project, contextMenu.worktree);
+                    handleInstallWorktreeDeps(contextMenu.project, contextMenu.worktree);
                     setContextMenu(null);
                   }}
                 >

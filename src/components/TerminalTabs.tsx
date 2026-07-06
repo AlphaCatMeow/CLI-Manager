@@ -513,7 +513,7 @@ function SortableTab({
                 </button>
               </PopoverTrigger>
               {worktreeMenuContent && (
-                <PopoverContent className="terminal-skin context-menu min-w-[160px] p-1">
+                <PopoverContent className="terminal-skin context-menu min-w-[160px] p-1" style={menuStyle}>
                   {worktreeMenuContent(closeWorktreePopover)}
                 </PopoverContent>
               )}
