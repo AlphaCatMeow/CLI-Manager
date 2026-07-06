@@ -72,6 +72,10 @@
   -webkit-backdrop-filter: none;
 }
 
+#command-history-panel {
+  background-color: color-mix(in srgb, var(--term-panel-bg, #0a0a0a) 99%, transparent);
+}
+
 #command-template-panel .text-on-surface,
 #command-template-panel .text-text-primary,
 #command-history-panel .text-on-surface,
@@ -188,6 +192,27 @@
 
 .ui-terminal-well .ui-empty-state-description {
   color: color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 64%, var(--terminal-theme-muted, #64748b) 36%);
+}
+
+.ui-terminal-well[data-terminal-theme-tone="light"] .ui-empty-state {
+  color: #111827;
+}
+
+.ui-terminal-well[data-terminal-theme-tone="light"] .ui-empty-state-icon {
+  color: #f9fafb;
+  border-color: rgba(17, 24, 39, 0.28);
+  background: linear-gradient(180deg, #111827, #030712);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 14px 32px rgba(17, 24, 39, 0.18);
+}
+
+.ui-terminal-well[data-terminal-theme-tone="light"] .ui-empty-state-title {
+  color: #111827;
+}
+
+.ui-terminal-well[data-terminal-theme-tone="light"] .ui-empty-state-description {
+  color: #4b5563;
 }
 
 .ui-stats-panel {

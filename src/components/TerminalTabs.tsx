@@ -74,7 +74,7 @@ import {
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Button } from "./ui/button";
 import { Portal } from "./ui/Portal";
-import { getTerminalTheme } from "../lib/terminalThemes";
+import { getTerminalTheme, isLightTerminalTheme } from "../lib/terminalThemes";
 import { getTerminalSidePanelSkinStyle } from "./stats/termStatsUi";
 import { resolveProjectForSession } from "../lib/terminalProject";
 
@@ -1757,6 +1757,7 @@ export function TerminalTabs({
     () => getTerminalTheme(terminalThemeName, resolvedTheme, lightThemePalette, darkThemePalette),
     [darkThemePalette, lightThemePalette, resolvedTheme, terminalThemeName]
   );
+  const terminalThemeTone = isLightTerminalTheme(terminalTheme) ? "light" : "dark";
   const terminalThemeBackground = terminalTheme.background ?? (resolvedTheme === "dark" ? "#0c0e10" : "#ffffff");
   const terminalThemeForeground = terminalTheme.foreground ?? (resolvedTheme === "dark" ? "#f8fafc" : "#1e293b");
   const terminalThemeAccent = terminalTheme.blue ?? terminalTheme.cursor ?? terminalThemeForeground;
@@ -2660,6 +2661,7 @@ export function TerminalTabs({
         <div
           className="ui-terminal-well absolute inset-0 min-h-0 flex"
           data-terminal-mode="independent"
+          data-terminal-theme-tone={terminalThemeTone}
           style={{ display: historyActive ? "none" : "flex" }}
         >
           <div className="flex-1 min-h-0 min-w-0">
