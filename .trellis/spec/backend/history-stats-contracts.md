@@ -120,6 +120,7 @@ interface TerminalSession {
 - `HistorySessionUsage.token_trend[].model` should carry the model attributed to that usage delta when known. Realtime Token Trend can use it for per-segment coloring and tooltip model names. Missing model normalizes to `null` and must fall back to the default trend color.
 - Codex `input_tokens` **includes** `cached_input_tokens`. Extraction normalizes to non-cached input + `cache_read_tokens` (Claude semantics), so pricing applies uniformly with no source-specific input deduction.
 - Usage lines without a model (e.g. Codex `token_count` events) attribute to the most recent model seen in the session (e.g. from `turn_context.payload.model`).
+- Codex reasoning effort only becomes part of the model key for plain GPT version IDs such as `gpt-5.4` or `gpt-5.6`. Models with purpose suffixes such as `gpt-5.3-codex-spark` keep their base model key even if the log also exposes `effort: "high"`.
 - `HistorySessionUsage.dominant_model` is an aggregate model signal and must not be reused as the realtime "current model". `HistorySessionUsage.current_model` tracks the latest non-synthetic model seen in the session; realtime model/context display should prefer it so same-session model switches update context-limit fallback and remaining-space calculation without changing historical model distribution semantics.
 - The `<synthetic>` model (Claude error placeholder lines) must never enter model distribution or model attribution.
 - Stats aggregates must include input, output, cache read, cache creation, estimated cost, and unpriced token counts at every exposed usage level: total, project, model, source, daily series, and hourly activity.
@@ -147,6 +148,7 @@ interface TerminalSession {
 - Realtime model/context-limit display may use the loaded session's model or exact limit and then fall back through model metadata/local rules, but current context usage and token totals must stay gated by `tokensBound` so another terminal's token counts are never shown.
 - Stats date ranges may cover up to 366 days and must reject larger ranges with `date_range_too_large`.
 - History index builds scan cache-miss files in parallel (`std::thread::scope`, worker count = `available_parallelism`); fingerprint-hit entries must still be reused without rescanning.
+- Any change to history parsing semantics that affects persisted `HistoryIndexEntry.computed` output, including model attribution, token extraction, timestamp bucketing, or project identity, must bump `HISTORY_INDEX_CACHE_VERSION` so old on-disk scans cannot hide the new behavior.
 
 ### 4. Validation & Error Matrix
 
@@ -215,6 +217,7 @@ interface TerminalSession {
   - Codex detail messages inherit outer `response_item` timestamps and receive the matching `token_count` delta on the latest assistant message for transcript metadata display.
   - Token trend points preserve model attribution for same-session model switches and aggregate-subtask merged trends.
   - History stats bucket cross-day session usage by usage event timestamp while counting the session once for range totals.
+  - Parser semantic changes that affect persisted scan output bump `HISTORY_INDEX_CACHE_VERSION`.
   - History stats `project_path` filtering reuses `session_matches_project_path` behavior and keeps cache keys separate from raw `project_key` filtering.
   - Tool event extraction returns bounded diagnostic rows for Claude `tool_use`, Codex `function_call`, `function_call_output`, and MCP end/error events without changing aggregate tool counts.
   - Claude explicit context-window fields populate `SessionStatsScan.context_window`; Claude usage without those fields keeps it `None`.

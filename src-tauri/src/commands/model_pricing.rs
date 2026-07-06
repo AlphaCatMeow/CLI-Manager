@@ -144,7 +144,7 @@ pub async fn model_prices_sync(targets: Vec<String>) -> Result<ModelPriceSyncRes
         }
 
         let best = &ranked[0];
-        if matches!(best.kind, MatchKind::Exact | MatchKind::CaseInsensitive) {
+        if is_auto_match_kind(best.kind) {
             matched.push(ModelPriceSyncMatch {
                 target_model: target,
                 score: best.score,
@@ -191,16 +191,7 @@ pub fn find_cached_model_pricing(model: &str) -> CachedModelPricingLookup {
         return CachedModelPricingLookup::CacheUnavailable;
     };
 
-    let Some(exact) = guard.get(&normalized).or_else(|| {
-        guard
-            .iter()
-            .filter(|(key, _)| {
-                normalized.starts_with(key.as_str())
-                    && normalized.as_bytes().get(key.len()) == Some(&b'-')
-            })
-            .max_by_key(|(key, _)| key.len())
-            .map(|(_, value)| value)
-    }) else {
+    let Some(exact) = find_model_price_entry(&guard, &normalized) else {
         return CachedModelPricingLookup::Missing;
     };
 
@@ -212,12 +203,27 @@ pub fn find_cached_model_pricing(model: &str) -> CachedModelPricingLookup {
     })
 }
 
+fn find_model_price_entry<'a>(
+    prices: &'a HashMap<String, ModelPriceEntry>,
+    normalized: &str,
+) -> Option<&'a ModelPriceEntry> {
+    prices.get(normalized).or_else(|| {
+        prices
+            .iter()
+            .filter(|(key, _)| is_pricing_variant_of(normalized, key))
+            .max_by_key(|(key, _)| key.len())
+            .map(|(_, value)| value)
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MatchKind {
     Exact,
     CaseInsensitive,
     Tail,
     Normalized,
+    ReasoningVariant,
+    Alnum,
     Fuzzy,
 }
 
@@ -226,6 +232,13 @@ struct RankedRemotePrice {
     score: f64,
     kind: MatchKind,
     remote: RemoteModelPrice,
+}
+
+fn is_auto_match_kind(kind: MatchKind) -> bool {
+    matches!(
+        kind,
+        MatchKind::Exact | MatchKind::CaseInsensitive | MatchKind::Normalized
+    )
 }
 
 async fn fetch_remote_prices() -> Result<Vec<RemoteModelPrice>, String> {
@@ -383,6 +396,7 @@ fn openrouter_cache_creation_per_million(pricing: &Value) -> f64 {
 
 fn rank_candidates(target: &str, remotes: &[RemoteModelPrice]) -> Vec<RankedRemotePrice> {
     let target_norm = normalize_for_compare(target);
+    let target_base_norm = strip_reasoning_effort_suffix(&target_norm);
     let target_tail = canonical_tail(target);
     let target_alnum = normalized_alnum(&target_tail);
     let mut ranked = Vec::new();
@@ -398,10 +412,12 @@ fn rank_candidates(target: &str, remotes: &[RemoteModelPrice]) -> Vec<RankedRemo
             (0.995, MatchKind::CaseInsensitive)
         } else if target_norm == remote_norm {
             (0.99, MatchKind::Normalized)
+        } else if target_base_norm == Some(remote_norm.as_str()) {
+            (0.975, MatchKind::ReasoningVariant)
         } else if target_tail == remote_tail {
             (0.98, MatchKind::Tail)
         } else if !target_alnum.is_empty() && target_alnum == remote_alnum {
-            (0.96, MatchKind::Normalized)
+            (0.96, MatchKind::Alnum)
         } else {
             let jaccard_score = jaccard(&target_alnum, &remote_alnum);
             let levenshtein_score = levenshtein_similarity(&target_alnum, &remote_alnum);
@@ -435,9 +451,7 @@ pub fn normalize_model_id(model: &str) -> Option<String> {
     if let Some(idx) = value.find('[') {
         value.truncate(idx);
     }
-    if let Some(idx) = value.find('(') {
-        value.truncate(idx);
-    }
+    value = normalize_reasoning_effort_parenthetical_suffix(&value);
     value = value.trim().to_string();
     if value.is_empty() || value == "unknown" {
         return None;
@@ -469,6 +483,76 @@ pub fn normalize_model_id(model: &str) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+fn normalize_reasoning_effort_parenthetical_suffix(value: &str) -> String {
+    let trimmed = value.trim();
+    let Some(open) = trimmed.rfind('(') else {
+        return trimmed.to_string();
+    };
+
+    if trimmed.ends_with(')') {
+        let base = trimmed[..open].trim_end();
+        let inner = &trimmed[open + 1..trimmed.len() - 1];
+        if let Some(effort) = normalize_reasoning_effort_key(inner) {
+            return if base.is_empty() {
+                trimmed.to_string()
+            } else {
+                format!("{base}-{effort}")
+            };
+        }
+        return base.to_string();
+    }
+
+    trimmed[..open].trim_end().to_string()
+}
+
+fn normalize_reasoning_effort_key(value: &str) -> Option<&'static str> {
+    let key: String = value
+        .trim()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect();
+    match key.as_str() {
+        "minimal" => Some("minimal"),
+        "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        "xhigh" => Some("xhigh"),
+        _ => None,
+    }
+}
+
+fn is_pricing_variant_of(normalized_model: &str, normalized_pricing_key: &str) -> bool {
+    if !normalized_model.starts_with(normalized_pricing_key)
+        || normalized_model
+            .as_bytes()
+            .get(normalized_pricing_key.len())
+            != Some(&b'-')
+    {
+        return false;
+    }
+    is_version_like_suffix(&normalized_model[normalized_pricing_key.len() + 1..])
+}
+
+fn is_version_like_suffix(suffix: &str) -> bool {
+    suffix == "latest"
+        || suffix
+            .strip_prefix('v')
+            .is_some_and(|value| !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit()))
+        || (suffix.len() == 8 && suffix.chars().all(|ch| ch.is_ascii_digit()))
+        || is_dash_date_suffix(suffix)
+}
+
+fn is_dash_date_suffix(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 10
+        && bytes.get(4) == Some(&b'-')
+        && bytes.get(7) == Some(&b'-')
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(idx, byte)| matches!(idx, 4 | 7) || byte.is_ascii_digit())
+}
+
 fn normalize_for_compare(model: &str) -> String {
     normalize_model_id(model).unwrap_or_else(|| model.trim().to_lowercase())
 }
@@ -486,6 +570,17 @@ fn normalized_alnum(model: &str) -> String {
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric())
         .collect()
+}
+
+fn strip_reasoning_effort_suffix(model: &str) -> Option<&str> {
+    for suffix in ["-minimal", "-medium", "-xhigh", "-high", "-low"] {
+        if let Some(base) = model.strip_suffix(suffix) {
+            if !base.is_empty() {
+                return Some(base);
+            }
+        }
+    }
+    None
 }
 
 fn strip_model_date_suffix(model: &str) -> Option<String> {
@@ -596,6 +691,87 @@ fn levenshtein(a: &str, b: &str) -> usize {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn test_price(model: &str, input_per_1m: f64) -> ModelPriceEntry {
+        ModelPriceEntry {
+            model: model.to_string(),
+            input_per_1m,
+            output_per_1m: 0.0,
+            cache_read_per_1m: 0.0,
+            cache_creation_per_1m: 0.0,
+            source: "manual".to_string(),
+            source_model_id: None,
+            raw_json: None,
+            updated_at_ms: 0,
+            synced_at_ms: None,
+        }
+    }
+
+    fn remote_price(model: &str, source: &str) -> RemoteModelPrice {
+        RemoteModelPrice {
+            model: model.to_string(),
+            input_per_1m: 1.0,
+            output_per_1m: 2.0,
+            cache_read_per_1m: 0.5,
+            cache_creation_per_1m: 1.5,
+            source: source.to_string(),
+            source_model_id: model.to_string(),
+            raw_json: "{}".to_string(),
+        }
+    }
+
+    #[test]
+    fn reasoning_effort_suffix_keeps_model_price_distinct() {
+        assert_eq!(
+            normalize_model_id("gpt-5.4(xhigh)").as_deref(),
+            Some("gpt-5-4-xhigh")
+        );
+        assert_eq!(
+            normalize_model_id("gpt-5.6(high)").as_deref(),
+            Some("gpt-5-6-high")
+        );
+
+        let mut prices = HashMap::new();
+        prices.insert("gpt-5-4".to_string(), test_price("gpt-5.4", 5.0));
+        assert!(find_model_price_entry(&prices, "gpt-5-4-xhigh").is_none());
+
+        prices.insert(
+            "gpt-5-4-xhigh".to_string(),
+            test_price("gpt-5.4(xhigh)", 15.0),
+        );
+        let exact = find_model_price_entry(&prices, "gpt-5-4-xhigh").unwrap();
+        assert_eq!(exact.input_per_1m, 15.0);
+    }
+
+    #[test]
+    fn normalized_provider_prefix_match_can_auto_apply() {
+        let remotes = vec![remote_price("chatgpt/gpt-5.3-codex-spark", "litellm")];
+        let ranked = rank_candidates("gpt-5.3-codex-spark", &remotes);
+
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].kind, MatchKind::Normalized);
+        assert!(is_auto_match_kind(ranked[0].kind));
+    }
+
+    #[test]
+    fn reasoning_effort_variant_uses_base_model_as_candidate_only() {
+        let remotes = vec![remote_price("openai/gpt-5.6", "openrouter")];
+        let ranked = rank_candidates("gpt-5.6(xhigh)", &remotes);
+
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].kind, MatchKind::ReasoningVariant);
+        assert!(!is_auto_match_kind(ranked[0].kind));
+    }
+
+    #[test]
+    fn alnum_match_remains_candidate_only() {
+        let remotes = vec![remote_price("provider/model-a", "litellm")];
+        let ranked = rank_candidates("model_a", &remotes);
+
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].kind, MatchKind::Alnum);
+        assert!(!is_auto_match_kind(ranked[0].kind));
+    }
 
     #[test]
     fn openrouter_cache_prices_support_input_cache_fields() {

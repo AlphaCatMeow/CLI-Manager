@@ -2158,7 +2158,7 @@ pub(crate) fn invalidate_history_stats_caches() {
 // 内存索引（HISTORY_SESSION_INDEX）每次 App 启动后为空，首个 history_get_stats 必须
 // 全量解析所有 JSONL（可能上千个），冷启动耗时不可接受。这里把 per-file 解析结果落盘，
 // 重启后载入作为 build_history_index 的 previous，按 fingerprint 仅重解析变更文件。
-const HISTORY_INDEX_CACHE_VERSION: u32 = 5;
+const HISTORY_INDEX_CACHE_VERSION: u32 = 6;
 const HISTORY_INDEX_CACHE_FILE: &str = "history-index-cache.json";
 
 static HISTORY_INDEX_CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -3233,15 +3233,7 @@ fn wsl_session_fingerprint(linux_path: &str, distro: &str) -> SessionFileFingerp
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "wsl.exe".to_string());
 
-    let args = [
-        "-d",
-        distro,
-        "--exec",
-        "stat",
-        "-c",
-        "%s %Y %W",
-        linux_path,
-    ];
+    let args = ["-d", distro, "--exec", "stat", "-c", "%s %Y %W", linux_path];
     let result = wsl_command_text(&wsl_exe_str, &args);
 
     match result {
@@ -3840,13 +3832,18 @@ fn scan_session_inner(
             session_id = extract_session_meta_id(&value);
         }
 
+        let line_reasoning_effort = extract_reasoning_effort(&value);
         // model 先于消息解析更新：既供 stats 归因，也供消息 model 回填（assistant 行常不带 model）。
-        let line_model = extract_model(&value).filter(|model| !is_synthetic_model(model));
+        let line_model = extract_model(&value)
+            .filter(|model| !is_synthetic_model(model))
+            .map(|model| {
+                qualify_model_with_reasoning_effort(model, line_reasoning_effort.as_deref())
+            });
         if let Some(model) = &line_model {
             *model_hits.entry(model.clone()).or_insert(0) += 1;
             current_model = Some(model.clone());
         }
-        if let Some(effort) = extract_reasoning_effort(&value) {
+        if let Some(effort) = line_reasoning_effort {
             reasoning_effort = Some(effort);
         }
         if let Some(window) = extract_context_window(&value) {
@@ -5614,8 +5611,98 @@ fn extract_reasoning_effort(value: &Value) -> Option<String> {
     ];
     candidates.into_iter().flatten().find_map(|effort| {
         let normalized = effort.trim();
-        (!normalized.is_empty()).then(|| normalized.to_string())
+        if normalized.is_empty() {
+            return None;
+        }
+        normalize_reasoning_effort_label(normalized)
+            .map(str::to_string)
+            .or_else(|| Some(normalized.to_ascii_lowercase()))
     })
+}
+
+fn qualify_model_with_reasoning_effort(model: String, effort: Option<&str>) -> String {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return model;
+    }
+    let (base_model, embedded_effort) = split_model_reasoning_effort(trimmed);
+    if let Some(effort) = embedded_effort {
+        return if supports_reasoning_effort_model_variant(base_model) {
+            format!("{base_model}({effort})")
+        } else {
+            base_model.to_string()
+        };
+    }
+    if trimmed.contains('(') {
+        return trimmed.to_string();
+    }
+    let Some(effort) = effort.and_then(normalize_reasoning_effort_label) else {
+        return base_model.to_string();
+    };
+    if !supports_reasoning_effort_model_variant(base_model) {
+        return base_model.to_string();
+    }
+    format!("{base_model}({effort})")
+}
+
+fn split_model_reasoning_effort(model: &str) -> (&str, Option<&'static str>) {
+    let trimmed = model.trim();
+    if let Some(open) = trimmed.rfind('(') {
+        if trimmed.ends_with(')') {
+            let base = trimmed[..open].trim_end();
+            let inner = &trimmed[open + 1..trimmed.len() - 1];
+            if let Some(effort) = normalize_reasoning_effort_label(inner) {
+                if !base.is_empty() {
+                    return (base, Some(effort));
+                }
+            }
+        }
+        return (trimmed, None);
+    }
+    if let Some((base, suffix)) = trimmed.rsplit_once('-') {
+        if let Some(effort) = normalize_reasoning_effort_label(suffix) {
+            let base = base.trim_end();
+            if !base.is_empty() {
+                return (base, Some(effort));
+            }
+        }
+    }
+    (trimmed, None)
+}
+
+fn supports_reasoning_effort_model_variant(model: &str) -> bool {
+    let Some(version) = model.trim().strip_prefix("gpt-") else {
+        return false;
+    };
+    let mut parts = version.split('.');
+    let Some(major) = parts.next() else {
+        return false;
+    };
+    let Some(minor) = parts.next() else {
+        return false;
+    };
+    parts.next().is_none()
+        && !major.is_empty()
+        && major.chars().all(|ch| ch.is_ascii_digit())
+        && !minor.is_empty()
+        && minor.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn normalize_reasoning_effort_label(value: &str) -> Option<&'static str> {
+    let key: String = value
+        .trim()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect();
+    match key.as_str() {
+        "minimal" => Some("minimal"),
+        "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        "xhigh" => Some("xhigh"),
+        _ => None,
+    }
 }
 
 fn now_millis() -> i64 {
@@ -6539,6 +6626,48 @@ mod tests {
     }
 
     #[test]
+    fn history_stats_model_distribution_preserves_codex_reasoning_effort() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("rollout-session.jsonl");
+        write_text(
+            &file,
+            concat!(
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.4","effort":"high"}}"#,
+                "\n",
+                r#"{"type":"event_msg","timestamp":"1970-01-02T01:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100}}}}"#,
+                "\n",
+            ),
+        );
+        let computed = scan_session_computation(&file, DAY_MS, 2 * DAY_MS);
+        let entry = HistoryIndexEntry {
+            file_ref: SessionFileRef {
+                source: "codex".to_string(),
+                project_key: "project-a".to_string(),
+                path: file,
+            },
+            fingerprint: SessionFileFingerprint {
+                created_at: DAY_MS,
+                updated_at: 2 * DAY_MS,
+                size: 1,
+            },
+            computed,
+        };
+        let bounds = StatsTimeBounds {
+            start_at: DAY_MS,
+            end_at: 2 * DAY_MS - 1,
+            start_day: DAY_MS,
+            range_days: 1,
+            explicit: true,
+        };
+
+        let daily_index = build_history_stats_daily_index(vec![entry], None, None, None, bounds);
+        let response = build_history_stats_response(&daily_index.days, bounds);
+
+        assert_eq!(response.model_distribution.len(), 1);
+        assert_eq!(response.model_distribution[0].model, "gpt-5.4(high)");
+    }
+
+    #[test]
     fn history_stats_reprices_cached_usage_events_with_current_model_prices() {
         crate::commands::model_pricing::model_prices_set_cache(vec![
             crate::commands::model_pricing::ModelPriceEntry {
@@ -7008,7 +7137,7 @@ mod tests {
         write_text(
             &file,
             concat!(
-                r#"{"type":"turn_context","payload":{"model":"gpt-5.5"}}"#,
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.4"}}"#,
                 "\n",
                 r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100,"total_tokens":1100}}}}"#,
                 "\n",
@@ -7026,9 +7155,9 @@ mod tests {
         assert_eq!(stats.input_tokens, 1400);
         assert_eq!(stats.cache_read_tokens, 1600);
         assert_eq!(stats.output_tokens, 300);
-        // token_count 事件不带 model，应回退归因到 turn_context 的 gpt-5.5；未加载模型价格缓存时只记未定价。
+        // token_count 事件不带 model，应回退归因到 turn_context 的模型；未加载模型价格缓存时只记未定价。
         assert_eq!(stats.unpriced_tokens, 3300);
-        assert!(stats.model_usage.contains_key("gpt-5.5"));
+        assert!(stats.model_usage.contains_key("gpt-5.4"));
         assert_eq!(stats.total_cost_usd, 0.0);
         assert_eq!(stats.token_trend.len(), 2);
         assert_eq!(stats.token_trend[0].input_tokens, 600);
@@ -7127,6 +7256,75 @@ mod tests {
         let (_, stats) = scan_session_combined(&file);
 
         assert_eq!(stats.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn scan_session_combined_qualifies_codex_model_with_reasoning_effort() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("rollout-session.jsonl");
+        write_text(
+            &file,
+            concat!(
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.4","effort":"high"}}"#,
+                "\n",
+                r#"{"type":"event_msg","timestamp":"2026-07-06T01:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":100,"total_tokens":1100}}}}"#,
+                "\n",
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.6","effort":"xhigh"}}"#,
+                "\n",
+                r#"{"type":"event_msg","timestamp":"2026-07-06T01:01:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":3000,"cached_input_tokens":500,"output_tokens":400,"total_tokens":3400}}}}"#,
+                "\n",
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.3-codex-spark","effort":"high"}}"#,
+                "\n",
+                r#"{"type":"event_msg","timestamp":"2026-07-06T01:02:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":3600,"cached_input_tokens":600,"output_tokens":500,"total_tokens":4100}}}}"#,
+                "\n",
+            ),
+        );
+
+        let (_, stats) = scan_session_combined(&file);
+
+        assert_eq!(stats.current_model.as_deref(), Some("gpt-5.3-codex-spark"));
+        assert_eq!(stats.token_trend.len(), 3);
+        assert_eq!(stats.token_trend[0].model.as_deref(), Some("gpt-5.4(high)"));
+        assert_eq!(
+            stats.token_trend[1].model.as_deref(),
+            Some("gpt-5.6(xhigh)")
+        );
+        assert_eq!(
+            stats.token_trend[2].model.as_deref(),
+            Some("gpt-5.3-codex-spark")
+        );
+        assert!(stats.model_usage.contains_key("gpt-5.4(high)"));
+        assert!(stats.model_usage.contains_key("gpt-5.6(xhigh)"));
+        assert!(stats.model_usage.contains_key("gpt-5.3-codex-spark"));
+        assert!(!stats.model_usage.contains_key("gpt-5.3-codex-spark(high)"));
+    }
+
+    #[test]
+    fn qualify_model_normalizes_embedded_reasoning_effort_suffix() {
+        assert_eq!(
+            qualify_model_with_reasoning_effort("gpt-5.6-xhigh".to_string(), None),
+            "gpt-5.6(xhigh)"
+        );
+        assert_eq!(
+            qualify_model_with_reasoning_effort("gpt-5.4(high)".to_string(), Some("medium")),
+            "gpt-5.4(high)"
+        );
+        assert_eq!(
+            qualify_model_with_reasoning_effort("gpt-5.6".to_string(), Some("High")),
+            "gpt-5.6(high)"
+        );
+        assert_eq!(
+            qualify_model_with_reasoning_effort("gpt-5.3-codex-spark".to_string(), Some("high")),
+            "gpt-5.3-codex-spark"
+        );
+        assert_eq!(
+            qualify_model_with_reasoning_effort("gpt-5.3-codex-spark(high)".to_string(), None),
+            "gpt-5.3-codex-spark"
+        );
+        assert_eq!(
+            qualify_model_with_reasoning_effort("gpt-5.3-codex-spark-high".to_string(), None),
+            "gpt-5.3-codex-spark"
+        );
     }
 
     #[test]

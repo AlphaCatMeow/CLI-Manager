@@ -133,10 +133,27 @@ const GENERIC_CONTEXT_KEYS = [
   "maxTokens",
 ] as const;
 
+const REASONING_EFFORT_SUFFIXES = new Set(["minimal", "low", "medium", "high", "xhigh"]);
+
+function normalizeReasoningEffortKey(value: string): string | null {
+  const key = value.trim().toLowerCase().replace(/[\s_-]+/g, "");
+  return REASONING_EFFORT_SUFFIXES.has(key) ? key : null;
+}
+
+function normalizeReasoningEffortSuffix(value: string): string {
+  const match = value.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
+  if (!match) return value;
+
+  const base = match[1].trim();
+  const effort = normalizeReasoningEffortKey(match[2]);
+  if (!effort) return base;
+  return base ? `${base}-${effort}` : value;
+}
+
 export function normalizeModelId(model: string): string | null {
   let value = model.toLowerCase().trim();
-  value = value.replace(/\s*\([^)]*\)$/, "");
   value = value.replace(/\[1m\]$/, "");
+  value = normalizeReasoningEffortSuffix(value);
   value = value.replace(/^us\.anthropic\.com\//, "").replace(/^us\.anthropic\./, "");
   if (value.includes("/")) value = value.split("/").pop() ?? value;
   if (value.includes(":")) value = value.split(":")[0] ?? value;

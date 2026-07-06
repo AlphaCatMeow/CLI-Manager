@@ -377,16 +377,25 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
     () => unmatchedModels.filter((model) => !hasPrice(modelPrices, model)),
     [unmatchedModels, modelPrices]
   );
-  const savedSyncTargets = useMemo(() => uniqueModelIds(prices.map((price) => price.model)), [prices]);
-  const allSyncTargets = useMemo(() => uniqueModelIds([...savedSyncTargets, ...discoveredModels]), [savedSyncTargets, discoveredModels]);
+  const visibleSavedSyncTargets = useMemo(() => uniqueModelIds(filteredPrices.map((price) => price.model)), [filteredPrices]);
+  const visibleMissingSyncTargets = useMemo(() => uniqueModelIds(visibleMissing), [visibleMissing]);
+  const visibleCandidateSyncTargets = useMemo(() => uniqueModelIds(groupedCandidates.map((group) => group.targetModel)), [groupedCandidates]);
   const missingSyncTargets = useMemo(() => uniqueModelIds(missingModels), [missingModels]);
-  const candidateSyncTargets = useMemo(() => uniqueModelIds(candidates.map((candidate) => candidate.targetModel)), [candidates]);
   const currentSyncTargets = useMemo(() => {
-    if (filter === "missing") return missingSyncTargets;
-    if (filter === "saved") return savedSyncTargets;
-    if (filter === "candidates") return candidateSyncTargets;
-    return allSyncTargets;
-  }, [allSyncTargets, candidateSyncTargets, filter, missingSyncTargets, savedSyncTargets]);
+    if (filter === "missing") return visibleMissingSyncTargets;
+    if (filter === "saved") return visibleSavedSyncTargets;
+    if (filter === "candidates") return visibleCandidateSyncTargets;
+    return uniqueModelIds([
+      ...visibleSavedSyncTargets,
+      ...visibleMissingSyncTargets,
+      ...visibleCandidateSyncTargets,
+    ]);
+  }, [
+    filter,
+    visibleCandidateSyncTargets,
+    visibleMissingSyncTargets,
+    visibleSavedSyncTargets,
+  ]);
 
   const openAddEditor = (model = "") => {
     setEditingModel(null);
@@ -554,8 +563,11 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
             <Button className="mp-soft-button" size="compact-sm" variant="light" color="cliPrimary" leftSection={<ScanLine size={15} />} loading={discovering} onClick={() => void handleDiscover()}>
               {text("识别本地模型", "Discover Local Models")}
             </Button>
+            <Button className="mp-soft-button" size="compact-sm" variant="light" color="cliPrimary" leftSection={<CircleAlert size={15} />} loading={syncingButton === "missing"} disabled={syncing && syncingButton !== "missing"} onClick={() => void handleSync(missingSyncTargets, "missing")}>
+              {text("同步缺失价格", "Sync Missing Prices")}
+            </Button>
             <Button className="mp-soft-button" size="compact-sm" variant="light" color="cliPrimary" leftSection={<RefreshCw size={15} />} loading={syncingButton === "toolbar"} disabled={syncing && syncingButton !== "toolbar"} onClick={() => void handleSync()}>
-              {text("同步远程价格", "Sync Remote Prices")}
+              {text("同步当前范围", "Sync Current Scope")}
             </Button>
             <Button className="mp-soft-button" size="compact-sm" color="cliPrimary" leftSection={<Plus size={15} />} onClick={() => openAddEditor()}>
               {text("手动添加", "Add Manually")}
