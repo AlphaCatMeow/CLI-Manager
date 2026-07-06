@@ -28,6 +28,11 @@ import { debugConsoleWarn } from "../lib/debugConsole";
 import { useI18n } from "../lib/i18n";
 import { normalizeTerminalFontFamily } from "../lib/terminalFontFamily";
 import {
+  TERMINAL_INPUT_SUGGESTION_AI_MODEL,
+  getTerminalInputSuggestions,
+  type TerminalInputSuggestion,
+} from "../lib/terminalInputSuggestions";
+import {
   endTerminalFileDrag,
   getTerminalFileDragText,
   registerTerminalDropZone,
@@ -45,6 +50,7 @@ import {
 import { Portal } from "./ui/Portal";
 import { useCommandHistoryStore } from "../stores/commandHistoryStore";
 import { useProjectStore } from "../stores/projectStore";
+import { useTemplateStore } from "../stores/templateStore";
 import { formatStartupInputForPty, useTerminalStore, type ShellRuntimeEventName } from "../stores/terminalStore";
 import { useSettingsStore, type LightThemePalette, type DarkThemePalette } from "../stores/settingsStore";
 
@@ -154,6 +160,14 @@ interface SearchResultState {
   resultCount: number;
 }
 
+interface TerminalSuggestionGhostState {
+  suffix: string;
+  left: number;
+  top: number;
+  height: number;
+  maxWidth: number;
+}
+
 interface TextDiagnosticSummary {
   length: number;
   hasNonAscii: boolean;
@@ -201,6 +215,42 @@ const hexToRgba = (value: string | undefined, alpha: number, fallback: string) =
   const g = Number.parseInt(hex.slice(2, 4), 16);
   const b = Number.parseInt(hex.slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+};
+
+const getTerminalRenderedCellSize = (terminal: Terminal, terminalContainer: HTMLElement, fallbackFontSize: number) => {
+  const renderedCell = (
+    terminal as typeof terminal & {
+      _core?: {
+        _renderService?: {
+          dimensions?: {
+            css?: {
+              cell?: {
+                width?: number;
+                height?: number;
+              };
+            };
+          };
+        };
+      };
+    }
+  )._core?._renderService?.dimensions?.css?.cell;
+  const renderedWidth = renderedCell?.width;
+  const renderedHeight = renderedCell?.height;
+  if (
+    typeof renderedWidth === "number" && Number.isFinite(renderedWidth) && renderedWidth > 0
+    && typeof renderedHeight === "number" && Number.isFinite(renderedHeight) && renderedHeight > 0
+  ) {
+    return {
+      width: renderedWidth,
+      height: renderedHeight,
+    };
+  }
+  const screen = terminalContainer.querySelector(".xterm-screen") as HTMLElement | null;
+  const rect = (screen ?? terminalContainer).getBoundingClientRect();
+  return {
+    width: rect.width > 0 ? rect.width / Math.max(1, terminal.cols) : Math.max(1, fallbackFontSize * 0.6),
+    height: rect.height > 0 ? rect.height / Math.max(1, terminal.rows) : Math.max(1, fallbackFontSize * 1.2),
+  };
 };
 
 const parseSpecialColorQuery = (body: string): SpecialColorQueryId | null => {
@@ -330,6 +380,7 @@ interface ActiveWriteQueueItem {
 
 export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fontSize = 14, fontFamily = "Cascadia Code, Consolas, monospace", resolvedTheme = "dark", terminalThemeName = "auto", lightThemePalette = "warm-paper", darkThemePalette = "night-indigo", onNewTab, onCloseSession, onCloseOthers, onCloseToLeft, onCloseToRight, onSplitRight, onSplitDown }: Props) {
   const { t } = useI18n();
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -357,12 +408,16 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const tuiComposerNormalizeRafRef = useRef<number | null>(null);
   const runtimeOscBufferRef = useRef("");
   const specialOscBufferRef = useRef("");
+  const suggestionRef = useRef<TerminalInputSuggestion | null>(null);
+  const acceptSuggestionRef = useRef<() => boolean>(() => false);
   const terminalColorRepliesRef = useRef<{ foreground: string; background: string }>({
     foreground: formatSpecialColorReply(10, "#d8dee9"),
     background: formatSpecialColorReply(11, "#0c0e10"),
   });
   const terminalScrollbackRows = useSettingsStore((s) => s.terminalScrollbackRows);
   const lowMemoryMode = useSettingsStore((s) => s.lowMemoryMode);
+  const terminalInputSuggestionsEnabled = useSettingsStore((s) => s.terminalInputSuggestionsEnabled);
+  const terminalInputSuggestionProvider = useSettingsStore((s) => s.terminalInputSuggestionProvider);
   const inactiveBufferLimitRef = useRef(getInactiveBufferLimit(terminalScrollbackRows));
   inactiveBufferLimitRef.current = getInactiveBufferLimit(terminalScrollbackRows);
 
@@ -386,6 +441,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const [searchResult, setSearchResult] = useState<SearchResultState>(EMPTY_SEARCH_RESULT);
   const [menuState, setMenuState] = useState<{ x: number; y: number; hasSelection: boolean } | null>(null);
   const [inactiveReplayPending, setInactiveReplayPending] = useState(false);
+  const [suggestionGhost, setSuggestionGhost] = useState<TerminalSuggestionGhostState | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const osPlatformRef = useRef<OsPlatform>("unknown");
   const codexImeDebugRef = useRef<CodexImeDebugState>({
@@ -436,6 +492,17 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     });
     return () => window.cancelAnimationFrame(rafId);
   }, [searchOpen]);
+
+  useEffect(() => {
+    if (terminalInputSuggestionsEnabled && !searchOpen) return;
+    suggestionRef.current = null;
+    setSuggestionGhost(null);
+  }, [searchOpen, terminalInputSuggestionsEnabled]);
+
+  useEffect(() => {
+    suggestionRef.current = null;
+    setSuggestionGhost(null);
+  }, [terminalInputSuggestionProvider]);
 
   const isTransparent = background.enabled && background.imagePath !== null && !hiddenForThisSession;
   const isTransparentRef = useRef(isTransparent);
@@ -1453,6 +1520,33 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
           return false;
         }
       }
+      if (
+        e.type === "keydown" &&
+        e.key === "Tab" &&
+        !e.ctrlKey &&
+        !e.shiftKey &&
+        !e.altKey &&
+        !e.metaKey
+      ) {
+        if (acceptSuggestionRef.current()) {
+          e.preventDefault();
+          return false;
+        }
+        return true;
+      }
+      if (
+        e.type === "keydown" &&
+        e.ctrlKey &&
+        !e.shiftKey &&
+        !e.altKey &&
+        !e.metaKey &&
+        (e.code === "Space" || e.key === " ")
+      ) {
+        if (acceptSuggestionRef.current()) {
+          e.preventDefault();
+          return false;
+        }
+      }
       if (e.type === "keydown" && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "v") {
         e.preventDefault();
         navigator.clipboard.readText().then((text) => {
@@ -1494,6 +1588,133 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     // Forward keyboard input to PTY and record command history
     const addCommand = useCommandHistoryStore.getState().addCommand;
     const getProjectId = () => useTerminalStore.getState().sessions.find((s) => s.id === sessionId)?.projectId ?? null;
+    let suggestionRequestId = 0;
+    let suggestionRefreshTimerId: number | null = null;
+    let suggestionDisposed = false;
+    let suggestionTemplatesLoaded = false;
+
+    const clearSuggestionGhost = () => {
+      suggestionRef.current = null;
+      setSuggestionGhost(null);
+    };
+
+    const updateSuggestionGhostPosition = (suggestion: TerminalInputSuggestion | null) => {
+      if (!suggestion || suggestionDisposed || !isActiveRef.current || !isVisibleRef.current || isComposingRef.current) {
+        clearSuggestionGhost();
+        return;
+      }
+      const wrapper = wrapperRef.current;
+      const terminalContainer = containerRef.current;
+      if (!wrapper || !terminalContainer) {
+        clearSuggestionGhost();
+        return;
+      }
+
+      const screen = terminalContainer.querySelector(".xterm-screen") as HTMLElement | null;
+      const wrapperRect = wrapper.getBoundingClientRect();
+      const screenRect = (screen ?? terminalContainer).getBoundingClientRect();
+      const fallbackFontSize = typeof terminal.options.fontSize === "number" ? terminal.options.fontSize : fontSize;
+      const cell = getTerminalRenderedCellSize(terminal, terminalContainer, fallbackFontSize);
+      const buffer = terminal.buffer.active;
+      const left = screenRect.left - wrapperRect.left + Math.max(0, buffer.cursorX) * cell.width;
+      const top = screenRect.top - wrapperRect.top + Math.max(0, buffer.cursorY) * cell.height;
+      const maxWidth = Math.max(0, wrapperRect.right - wrapperRect.left - left - 8);
+      if (maxWidth < cell.width || top < 0 || top > wrapperRect.height) {
+        clearSuggestionGhost();
+        return;
+      }
+
+      const nextGhost = {
+        suffix: suggestion.suffix,
+        left,
+        top,
+        height: Math.max(1, cell.height),
+        maxWidth,
+      };
+      setSuggestionGhost((current) => {
+        if (
+          current &&
+          current.suffix === nextGhost.suffix &&
+          current.left === nextGhost.left &&
+          current.top === nextGhost.top &&
+          current.height === nextGhost.height &&
+          current.maxWidth === nextGhost.maxWidth
+        ) {
+          return current;
+        }
+        return nextGhost;
+      });
+    };
+
+    const refreshSuggestionGhost = async () => {
+      const requestId = ++suggestionRequestId;
+      const settings = useSettingsStore.getState();
+      const input = inputBuffer.current;
+      if (
+        suggestionDisposed ||
+        !settings.terminalInputSuggestionsEnabled ||
+        !input ||
+        input.includes("\n") ||
+        input.includes("\r") ||
+        isComposingRef.current
+      ) {
+        clearSuggestionGhost();
+        return;
+      }
+
+      const session = useTerminalStore.getState().sessions.find((item) => item.id === sessionId);
+      const projectId = session?.projectId ?? null;
+      const templateStore = useTemplateStore.getState();
+      if (!suggestionTemplatesLoaded && templateStore.templates.length === 0) {
+        suggestionTemplatesLoaded = true;
+        await templateStore.fetchTemplates().catch(() => {});
+      }
+      const [history, templates] = await Promise.all([
+        useCommandHistoryStore.getState().getRecent(null, 120),
+        Promise.resolve(useTemplateStore.getState().getForContext(projectId, sessionId)),
+      ]);
+      if (suggestionDisposed || requestId !== suggestionRequestId || input !== inputBuffer.current) return;
+      const currentSettings = useSettingsStore.getState();
+      if (!currentSettings.terminalInputSuggestionsEnabled) {
+        clearSuggestionGhost();
+        return;
+      }
+
+      const suggestions = await getTerminalInputSuggestions({
+        input,
+        projectId,
+        cwd: session?.cwd ?? null,
+        sessionId,
+        previousCommand: null,
+        history,
+        templates,
+        provider: currentSettings.terminalInputSuggestionProvider,
+        model: TERMINAL_INPUT_SUGGESTION_AI_MODEL,
+      });
+      const suggestion = suggestions[0] ?? null;
+      suggestionRef.current = suggestion;
+      updateSuggestionGhostPosition(suggestion);
+    };
+
+    const scheduleSuggestionRefresh = () => {
+      if (suggestionRefreshTimerId !== null) {
+        window.clearTimeout(suggestionRefreshTimerId);
+      }
+      suggestionRefreshTimerId = window.setTimeout(() => {
+        suggestionRefreshTimerId = null;
+        void refreshSuggestionGhost();
+      }, 80);
+    };
+
+    acceptSuggestionRef.current = () => {
+      const suggestion = suggestionRef.current;
+      const settings = useSettingsStore.getState();
+      if (!settings.terminalInputSuggestionsEnabled || !suggestion?.suffix) return false;
+      clearSuggestionGhost();
+      forwardTerminalInput(suggestion.suffix, "onData");
+      return true;
+    };
+
     const maybeLogCodexImeDuplicate = (data: string) => {
       if (!isCodexSession()) return;
       const debugState = codexImeDebugRef.current;
@@ -1540,22 +1761,30 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
           useTerminalStore.getState().handleShellRuntimeEvent({ sessionId, event: "command_started", origin: "input" });
         }
         inputBuffer.current = "";
+        clearSuggestionGhost();
       } else if (data === "\x7f" || data === "\b") {
         inputBuffer.current = inputBuffer.current.slice(0, -1);
+        scheduleSuggestionRefresh();
       } else if (data.length === 1 && data.charCodeAt(0) >= 32) {
         inputBuffer.current += data;
+        scheduleSuggestionRefresh();
       } else if (data.length > 1) {
         const pastedText = data.replace(/^\x1b\[200~/, "").replace(/\x1b\[201~$/, "");
         if (!pastedText.startsWith("\x1b")) {
           inputBuffer.current += pastedText.replace(/\r\n?/g, "\n");
+          scheduleSuggestionRefresh();
+        } else {
+          clearSuggestionGhost();
         }
+      } else {
+        clearSuggestionGhost();
       }
     };
 
     // 前置：data 必须是 xterm 已解析出的用户输入，或浏览器 IME text input 兜底拿到的最终文本。
     // 后置：文本写入当前 PTY，并同步命令历史缓冲；副作用是触发 attention 标记、可能记录命令开始事件。
     // 这里统一入口是为了让 xterm onData 与 IME 兜底保持完全一致，避免中文标点只写 PTY 不进历史缓冲。
-    const forwardTerminalInput = (data: string, source: "onData" | "nativeTextInput") => {
+    function forwardTerminalInput(data: string, source: "onData" | "nativeTextInput") {
       markAttentionInputHandled();
       const inputBufferBefore = inputBuffer.current;
       const manualDirectCodexOverride = resolveManualDirectCodexEnterData({
@@ -1567,7 +1796,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       invoke("pty_write", { sessionId, data: ptyData }).catch((err) => reportPtyWriteError(source, err));
       maybeLogCodexImeDuplicate(data);
       updateInputBufferFromTerminalData(data);
-    };
+    }
 
     terminal.onData((data) => {
       forwardTerminalInput(data, "onData");
@@ -1722,40 +1951,8 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     };
 
     const estimateCellSize = () => {
-      const renderedCell = (
-        terminal as typeof terminal & {
-          _core?: {
-            _renderService?: {
-              dimensions?: {
-                css?: {
-                  cell?: {
-                    width?: number;
-                    height?: number;
-                  };
-                };
-              };
-            };
-          };
-        }
-      )._core?._renderService?.dimensions?.css?.cell;
-      const renderedWidth = renderedCell?.width;
-      const renderedHeight = renderedCell?.height;
-      if (
-        typeof renderedWidth === "number" && Number.isFinite(renderedWidth) && renderedWidth > 0
-        && typeof renderedHeight === "number" && Number.isFinite(renderedHeight) && renderedHeight > 0
-      ) {
-        return {
-          width: renderedWidth,
-          height: renderedHeight,
-        };
-      }
-      const screen = terminalContainer.querySelector(".xterm-screen") as HTMLElement | null;
-      const rect = (screen ?? terminalContainer).getBoundingClientRect();
       const fallbackFontSize = typeof terminal.options.fontSize === "number" ? terminal.options.fontSize : fontSize;
-      return {
-        width: rect.width > 0 ? rect.width / Math.max(1, terminal.cols) : Math.max(1, fallbackFontSize * 0.6),
-        height: rect.height > 0 ? rect.height / Math.max(1, terminal.rows) : Math.max(1, fallbackFontSize * 1.2),
-      };
+      return getTerminalRenderedCellSize(terminal, terminalContainer, fallbackFontSize);
     };
 
     const resolveCompositionAnchorCell = () => {
@@ -1979,17 +2176,23 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     const cursorMoveDisposable = terminal.onCursorMove(() => {
       if (!isActiveRef.current) return;
       if (isComposingRef.current) {
+        clearSuggestionGhost();
         scheduleCompositionScrollRestore();
         scheduleCompositionAnchorFix();
         return;
       }
+      updateSuggestionGhostPosition(suggestionRef.current);
       if (!textarea || document.activeElement !== textarea) return;
       scheduleTerminalContainerScrollReset();
       scheduleHelperTextareaAnchorPin();
     });
     const renderDisposable = terminal.onRender(() => {
       scheduleTuiComposerBackgroundNormalization(terminal);
-      if (!isComposingRef.current) return;
+      if (!isComposingRef.current) {
+        updateSuggestionGhostPosition(suggestionRef.current);
+        return;
+      }
+      clearSuggestionGhost();
       scheduleCompositionScrollRestore();
       scheduleCompositionAnchorFix();
     });
@@ -2038,6 +2241,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
 
     const onCompositionStart = () => {
       isComposingRef.current = true;
+      clearSuggestionGhost();
       lastImeProcessKeyAt = -1;
       // Freeze the anchor at the cell where typing began. The buffer cursor is
       // trustworthy at this instant (the user just placed the caret here), and
@@ -2105,6 +2309,13 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
 
     return () => {
       cancelled = true;
+      suggestionDisposed = true;
+      if (suggestionRefreshTimerId !== null) {
+        window.clearTimeout(suggestionRefreshTimerId);
+        suggestionRefreshTimerId = null;
+      }
+      acceptSuggestionRef.current = () => false;
+      clearSuggestionGhost();
       cancelPendingCursorShow();
       pasteTarget.removeEventListener("paste", onPaste, pasteListenerOptions);
       unregisterTerminalDropZone();
@@ -2373,6 +2584,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
 
   return (
     <div
+      ref={wrapperRef}
       className="ui-terminal-bg-layer relative h-full w-full overflow-hidden"
       style={wrapperStyle}
       data-bg-enabled={showBackgroundImage ? "true" : undefined}
@@ -2456,6 +2668,24 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
         </div>
       )}
       <div ref={containerRef} className="h-full w-full overflow-hidden pl-2" style={terminalContainerStyle} />
+      {terminalInputSuggestionsEnabled && isActive && isVisible && !searchOpen && suggestionGhost && (
+        <div
+          aria-hidden="true"
+          className="terminal-input-suggestion-ghost"
+          style={{
+            left: suggestionGhost.left,
+            top: suggestionGhost.top,
+            height: suggestionGhost.height,
+            maxWidth: suggestionGhost.maxWidth,
+            lineHeight: `${suggestionGhost.height}px`,
+            color: searchForeground,
+            fontFamily: effectiveFontFamily,
+            fontSize,
+          }}
+        >
+          {suggestionGhost.suffix}
+        </div>
+      )}
       {menuState && (
         <Portal>
           <div

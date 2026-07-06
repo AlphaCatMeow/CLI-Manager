@@ -27,6 +27,10 @@ import {
 } from "../../../lib/terminalThemes";
 import { debugConsoleWarn } from "../../../lib/debugConsole";
 import { normalizeTerminalFontFamily } from "../../../lib/terminalFontFamily";
+import {
+  TERMINAL_INPUT_SUGGESTION_AI_MODEL,
+  type TerminalInputSuggestionProvider,
+} from "../../../lib/terminalInputSuggestions";
 import { normalizeShellKey, getOsPlatform } from "../../../lib/shell";
 import type { OsPlatform } from "../../../lib/shell";
 import { getShellOptions } from "../../../lib/types";
@@ -124,6 +128,8 @@ export function ThemeSettingsPage() {
   const closeBehavior = useSettingsStore((s) => s.closeBehavior);
   const confirmBeforeClosingTerminalTab = useSettingsStore((s) => s.confirmBeforeClosingTerminalTab);
   const terminalTabHoverInfoEnabled = useSettingsStore((s) => s.terminalTabHoverInfoEnabled);
+  const terminalInputSuggestionsEnabled = useSettingsStore((s) => s.terminalInputSuggestionsEnabled);
+  const terminalInputSuggestionProvider = useSettingsStore((s) => s.terminalInputSuggestionProvider);
   const shellRuntimeMonitoringEnabled = useSettingsStore((s) => s.shellRuntimeMonitoringEnabled);
   const batchLaunchGroupInPane = useSettingsStore((s) => s.batchLaunchGroupInPane);
   const batchLaunchPaneDirection = useSettingsStore((s) => s.batchLaunchPaneDirection);
@@ -220,6 +226,13 @@ export function ThemeSettingsPage() {
       label: language === "zh-CN" ? option.label : option.labelEn,
     })),
     [language]
+  );
+  const terminalInputSuggestionProviderOptions = useMemo(
+    (): { value: TerminalInputSuggestionProvider; label: string }[] => [
+      { value: "local", label: t("settings.general.inputSuggestionProviderLocal") },
+      { value: "ai", label: t("settings.general.inputSuggestionProviderAi") },
+    ],
+    [t]
   );
   const closeBehaviorOptions: { value: CloseBehavior; label: string }[] = [
     { value: "ask", label: t("settings.options.close.ask") },
@@ -518,6 +531,46 @@ export function ThemeSettingsPage() {
                   }
                 />
               </Group>
+            </Card>
+
+            <Card className="border border-border bg-surface-container-lowest" p="sm" radius="lg">
+              <Stack gap="sm">
+                <Group justify="space-between" align="center" gap="md" wrap="nowrap">
+                  <Box>
+                    <Text size="xs" c="var(--on-surface-variant)">
+                      {t("settings.general.inputSuggestions")}
+                    </Text>
+                    <Text mt={4} size="xs" lh={1.55} c="var(--text-muted)">
+                      {t("settings.general.inputSuggestionsDescription")}
+                    </Text>
+                  </Box>
+                  <Switch
+                    color="cliPrimary"
+                    checked={terminalInputSuggestionsEnabled}
+                    onChange={(event) => void update("terminalInputSuggestionsEnabled", event.currentTarget.checked)}
+                    aria-label={
+                      terminalInputSuggestionsEnabled
+                        ? t("settings.general.disableInputSuggestions")
+                        : t("settings.general.enableInputSuggestions")
+                    }
+                  />
+                </Group>
+                <Select<TerminalInputSuggestionProvider>
+                  label={t("settings.general.inputSuggestionProvider")}
+                  value={terminalInputSuggestionProvider}
+                  onChange={(value) => {
+                    if (value) void update("terminalInputSuggestionProvider", value);
+                  }}
+                  data={terminalInputSuggestionProviderOptions}
+                  allowDeselect={false}
+                  disabled={!terminalInputSuggestionsEnabled}
+                  size="xs"
+                  aria-label={t("settings.general.inputSuggestionProvider")}
+                  description={t("settings.general.inputSuggestionProviderDescription", {
+                    model: TERMINAL_INPUT_SUGGESTION_AI_MODEL,
+                  })}
+                />
+              </Stack>
             </Card>
 
             <Card className="border border-border bg-surface-container-lowest" p="sm" radius="lg">

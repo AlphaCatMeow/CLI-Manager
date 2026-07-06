@@ -5,6 +5,7 @@ import { resolveAutoTerminalThemeId } from "../lib/terminalThemes";
 import { backgroundImageExists } from "../lib/assetUrl";
 import { defaultShellForOs, getOsPlatform, isWindowsOnlyShellKey } from "../lib/shell";
 import { getCliManagerDataPaths } from "../lib/appPaths";
+import type { TerminalInputSuggestionProvider } from "../lib/terminalInputSuggestions";
 
 export type ThemeMode = "dark" | "light" | "system";
 export type LightThemePalette =
@@ -217,6 +218,8 @@ interface Settings {
   ccusageUseWsl: boolean;
   lowMemoryMode: boolean;
   terminalBackground: TerminalBackgroundSettings;
+  terminalInputSuggestionsEnabled: boolean;
+  terminalInputSuggestionProvider: TerminalInputSuggestionProvider;
   hookPopupNotificationsEnabled: boolean;
   hookPopupAutoCloseEnabled: boolean;
   hookPopupAutoCloseSeconds: number;
@@ -324,6 +327,8 @@ const DEFAULTS: Settings = {
     blur: 0,
     overlayDarken: 30,
   },
+  terminalInputSuggestionsEnabled: true,
+  terminalInputSuggestionProvider: "local",
   hookPopupNotificationsEnabled: true,
   hookPopupAutoCloseEnabled: true,
   hookPopupAutoCloseSeconds: 60,
@@ -571,6 +576,10 @@ function migrateFileExplorerIgnoredPaths(value: unknown): FileExplorerIgnoredPat
   return result;
 }
 
+function migrateTerminalInputSuggestionProvider(value: unknown): TerminalInputSuggestionProvider {
+  return value === "local" || value === "ai" ? value : DEFAULTS.terminalInputSuggestionProvider;
+}
+
 export function migrateTerminalBackground(value: unknown): TerminalBackgroundSettings {
   const defaults = DEFAULTS.terminalBackground;
   if (typeof value !== "object" || value === null) {
@@ -746,6 +755,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       typeof entries.lowMemoryMode === "boolean"
         ? entries.lowMemoryMode
         : DEFAULTS.lowMemoryMode;
+    entries.terminalInputSuggestionsEnabled =
+      typeof entries.terminalInputSuggestionsEnabled === "boolean"
+        ? entries.terminalInputSuggestionsEnabled
+        : DEFAULTS.terminalInputSuggestionsEnabled;
+    entries.terminalInputSuggestionProvider = migrateTerminalInputSuggestionProvider(entries.terminalInputSuggestionProvider);
 
     entries.hookPopupNotificationsEnabled =
       typeof entries.hookPopupNotificationsEnabled === "boolean"

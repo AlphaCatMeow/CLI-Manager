@@ -9,6 +9,7 @@
 ### 终端
 
 - **供应商缺失提示优化**：项目绑定的 cc-switch 供应商被删除后，创建终端失败不再直接显示 `provider_not_found`，改为提示用户重新选择供应商或恢复跟随全局。
+- **终端输入提示内置 AI 命令库**：输入提示的本地 provider 新增只读内置 AI CLI 命令候选，覆盖 Claude Code、OpenAI Codex CLI、Gemini CLI、Aider、OpenCode、GitHub Copilot CLI 等常用 AI 开发命令；候选仍只做前缀安全补全，不写入用户模板、不自动执行，并保留 `gpt-5.3-codex-spark` AI provider 预留接口。
 
 ## [V1.2.6] - 2026-07-06
 
@@ -44,7 +45,7 @@
 
 ### 终端、分屏与主题
 
-- **终端输入提示**：内置终端新增类似 fish autosuggestions 的内联 ghost 提示，基于本地命令历史和命令模板推测当前输入后缀；`Ctrl+Space` 只补全后缀、不自动执行，并预留 `gpt-5.3-codex-spark` AI provider 接口但当前不发起模型请求。
+- **终端输入提示**：内置终端新增类似 fish autosuggestions 的内联 ghost 提示，基于本地命令历史和命令模板推测当前输入后缀；有候选时 `Tab` / `Ctrl+Space` 只补全后缀、不自动执行，无候选时 `Tab` 继续交给 shell/CLI，并预留 `gpt-5.3-codex-spark` AI provider 接口但当前不发起模型请求。
 - **孤儿 PTY 进程清理**：前端会低频上报当前仍存在的终端会话 ID，后端按 `PtyManager` 持有的 sessionId 对账；对缺失会话先标记并等待宽限期，只清理确认失联的 PTY 根进程树，避免按 `node.exe`、`bash.exe` 等进程名误杀外部任务。
 - **分屏终端底部空白修复**：终端分屏尺寸变化后会在 xterm fit 完成时刷新当前视口，避免下方区域残留空白且不继续输出内容。
 - **中文字符宽度修复**：内置终端接入 xterm Unicode 11 宽字符表，改善中文、Emoji 等宽字符在 Claude / Codex TUI 中的对齐和显示问题。

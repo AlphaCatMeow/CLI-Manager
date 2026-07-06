@@ -1791,6 +1791,18 @@
   background-color: color-mix(in srgb, var(--menu-fg) 18%, transparent);
 }
 
+.terminal-input-suggestion-ghost {
+  position: absolute;
+  z-index: 12;
+  pointer-events: none;
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: clip;
+  opacity: 0.38;
+  font-variant-ligatures: none;
+  user-select: none;
+}
+
 /* 终端风格皮肤：作用于 Tab 右键菜单（含子菜单），配色跟随当前终端主题色 */
 .context-menu.terminal-skin {
   background-color: color-mix(in srgb, var(--menu-bg) 92%, transparent);
