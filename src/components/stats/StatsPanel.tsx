@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, BarChart3, Coins, Database, Folder, Layers, LineChart, RefreshCw, X } from "lucide-react";
+import { Activity, BarChart3, ChevronDown, ChevronRight, Coins, Database, Folder, Layers, LineChart, RefreshCw, Search, Terminal, X } from "lucide-react";
 import {
   Bar,
   BarChart,
@@ -31,8 +31,11 @@ import type {
   HistoryStatsPayload,
   HistoryStatsProjectItem,
   HistoryStatsSourceItem,
+  Group,
+  Project,
 } from "../../lib/types";
-import { fetchHistoryStatsPayload, fetchHistoryStatsProjectOptions, useHistoryStore } from "../../stores/historyStore";
+import { fetchHistoryStatsPayload, useHistoryStore } from "../../stores/historyStore";
+import { useProjectStore } from "../../stores/projectStore";
 import { TimelineHeatmap } from "./TimelineHeatmap";
 import { StatsHourlyActivityChart } from "./StatsHourlyActivityChart";
 import { StatsDatePicker } from "./StatsDatePicker";
@@ -51,6 +54,7 @@ import {
   RECHARTS_TOOLTIP_WRAPPER_STYLE,
 } from "./statsPalette";
 import { useI18n, type AppLanguage, type TranslationKey } from "../../lib/i18n";
+import { VendorIcon, inferVendor } from "../VendorIcon";
 
 interface StatsPanelProps {
   open: boolean;
@@ -64,6 +68,10 @@ const DATE_INPUT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const MONTH_INPUT_PATTERN = /^(\d{4})-(\d{2})$/;
 const YEAR_INPUT_PATTERN = /^(\d{4})$/;
 const HOUR_MS = 60 * 60 * 1000;
+
+type StatsProjectTreeNode =
+  | { type: "group"; group: Group; children: StatsProjectTreeNode[] }
+  | { type: "project"; project: Project };
 
 interface DateRangeInput {
   startDate: string;
@@ -90,6 +98,94 @@ const STATS_TIME_WINDOW_OPTIONS: { value: StatsTimeWindowMode; labelKey: Transla
   { value: "year", labelKey: "stats.window.year" },
   { value: "custom", labelKey: "stats.window.custom" },
 ];
+
+function buildStatsProjectTree(groups: Group[], projects: Project[]): StatsProjectTreeNode[] {
+  const childGroups = new Map<string | null, Group[]>();
+  const groupProjects = new Map<string | null, Project[]>();
+
+  for (const group of groups) {
+    const list = childGroups.get(group.parent_id) ?? [];
+    list.push(group);
+    childGroups.set(group.parent_id, list);
+  }
+
+  for (const project of projects) {
+    const list = groupProjects.get(project.group_id) ?? [];
+    list.push(project);
+    groupProjects.set(project.group_id, list);
+  }
+
+  const buildLevel = (parentId: string | null): StatsProjectTreeNode[] => {
+    const nodes: StatsProjectTreeNode[] = [];
+    const sortedGroups = [...(childGroups.get(parentId) ?? [])].sort(
+      (a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)
+    );
+    const sortedProjects = [...(groupProjects.get(parentId) ?? [])].sort(
+      (a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)
+    );
+
+    for (const group of sortedGroups) {
+      nodes.push({ type: "group", group, children: buildLevel(group.id) });
+    }
+    for (const project of sortedProjects) {
+      nodes.push({ type: "project", project });
+    }
+    return nodes;
+  };
+
+  return buildLevel(null);
+}
+
+function countStatsProjects(node: StatsProjectTreeNode): number {
+  if (node.type === "project") return 1;
+  return node.children.reduce((sum, child) => sum + countStatsProjects(child), 0);
+}
+
+function collectStatsGroupIds(nodes: StatsProjectTreeNode[], out: string[] = []): string[] {
+  for (const node of nodes) {
+    if (node.type !== "group") continue;
+    out.push(node.group.id);
+    collectStatsGroupIds(node.children, out);
+  }
+  return out;
+}
+
+function normalizeProjectSearch(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function statsProjectMatchesSearch(project: Project, query: string): boolean {
+  if (!query) return true;
+  return (
+    project.name.toLowerCase().includes(query) ||
+    project.path.toLowerCase().includes(query) ||
+    project.cli_tool.toLowerCase().includes(query)
+  );
+}
+
+function filterStatsProjectTree(nodes: StatsProjectTreeNode[], query: string): StatsProjectTreeNode[] {
+  if (!query) return nodes;
+
+  const result: StatsProjectTreeNode[] = [];
+  for (const node of nodes) {
+    if (node.type === "project") {
+      if (statsProjectMatchesSearch(node.project, query)) result.push(node);
+      continue;
+    }
+
+    const groupMatches = node.group.name.toLowerCase().includes(query);
+    const children = groupMatches ? node.children : filterStatsProjectTree(node.children, query);
+    if (groupMatches || children.length > 0) {
+      result.push({ ...node, children });
+    }
+  }
+  return result;
+}
+
+function StatsProjectFilterIcon({ project, size = 13 }: { project: Project; size?: number }) {
+  const vendor = project.cli_tool ? inferVendor(project.cli_tool) : null;
+  return vendor ? <VendorIcon vendor={vendor} size={size} /> : <Terminal size={size} strokeWidth={1.5} />;
+}
 
 function formatCount(value: number, language: AppLanguage = "zh-CN"): string {
   if (!Number.isFinite(value)) return "0";
@@ -856,12 +952,227 @@ function SourceBreakdown({ items }: { items: HistoryStatsSourceItem[] }) {
   );
 }
 
+function StatsProjectFilterDropdown({
+  projects,
+  groups,
+  selectedProjectPath,
+  rawProjectKey,
+  onSelectProjectPath,
+  onClear,
+}: {
+  projects: Project[];
+  groups: Group[];
+  selectedProjectPath: string;
+  rawProjectKey: string;
+  onSelectProjectPath: (path: string) => void;
+  onClear: () => void;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
+  const wasOpenRef = useRef(false);
+
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.path === selectedProjectPath) ?? null,
+    [projects, selectedProjectPath]
+  );
+  const projectTree = useMemo(() => buildStatsProjectTree(groups, projects), [groups, projects]);
+  const groupIds = useMemo(() => collectStatsGroupIds(projectTree), [projectTree]);
+  const normalizedQuery = useMemo(() => normalizeProjectSearch(query), [query]);
+  const filteredTree = useMemo(
+    () => filterStatsProjectTree(projectTree, normalizedQuery),
+    [normalizedQuery, projectTree]
+  );
+  const filteredProjectCount = useMemo(
+    () => filteredTree.reduce((sum, node) => sum + countStatsProjects(node), 0),
+    [filteredTree]
+  );
+  const label = selectedProject?.name || rawProjectKey || t("common.allProjects");
+  const title = selectedProject?.path || rawProjectKey || t("common.allProjects");
+
+  useEffect(() => {
+    const wasOpen = wasOpenRef.current;
+    wasOpenRef.current = open;
+
+    if (!open) {
+      setQuery("");
+      return;
+    }
+    if (!wasOpen) {
+      setCollapsedGroups(new Set(groupIds));
+    }
+  }, [groupIds, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleMouseDown = (event: MouseEvent) => {
+      if (dropdownRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", handleMouseDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleMouseDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
+  const toggleGroup = useCallback((groupId: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  }, []);
+
+  const handleClear = useCallback(() => {
+    onClear();
+    setOpen(false);
+  }, [onClear]);
+
+  const handleSelectProject = useCallback(
+    (path: string) => {
+      onSelectProjectPath(path);
+      setOpen(false);
+    },
+    [onSelectProjectPath]
+  );
+
+  const renderNode = (node: StatsProjectTreeNode, depth = 0): ReactNode => {
+    const paddingLeft = 8 + depth * 14;
+    if (node.type === "group") {
+      const isOpen = Boolean(normalizedQuery) || !collapsedGroups.has(node.group.id);
+      return (
+        <div key={`group:${node.group.id}`}>
+          <button
+            type="button"
+            onClick={() => toggleGroup(node.group.id)}
+            className="ui-tree-node ui-tree-group ui-focus-ring flex h-7 w-full items-center gap-1.5 rounded-lg pr-2 text-left text-[11px] font-semibold"
+            style={{ paddingLeft }}
+            aria-expanded={isOpen}
+          >
+            <ChevronRight size={12} className="shrink-0 transition-transform" style={{ transform: isOpen ? "rotate(90deg)" : "rotate(0deg)" }} />
+            <Folder size={13} className="shrink-0" />
+            <span className="min-w-0 flex-1 truncate">{node.group.name}</span>
+            <span className="ui-tree-count-badge rounded-full px-1.5 text-[10px] font-medium">{countStatsProjects(node)}</span>
+          </button>
+          {isOpen && node.children.length > 0 && (
+            <div className="mt-0.5 space-y-0.5">
+              {node.children.map((child) => renderNode(child, depth + 1))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const selected = selectedProjectPath === node.project.path;
+    return (
+      <button
+        key={`project:${node.project.id}`}
+        type="button"
+        onClick={() => handleSelectProject(node.project.path)}
+        className="ui-tree-node ui-tree-project ui-focus-ring flex h-7 w-full items-center gap-1.5 rounded-lg pr-2 text-left text-[12px]"
+        data-selected={selected ? "true" : "false"}
+        style={{ paddingLeft }}
+        title={node.project.path}
+      >
+        <span className="ui-tree-leading-icon">
+          <StatsProjectFilterIcon project={node.project} size={13} />
+        </span>
+        <span className="min-w-0 flex-1 truncate font-medium">{node.project.name}</span>
+      </button>
+    );
+  };
+
+  return (
+    <div ref={dropdownRef} className="relative min-w-[124px] shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="ui-focus-ring flex h-8 w-full items-center gap-2 rounded-md border border-border bg-bg-secondary px-2 text-left text-xs text-text-primary"
+        aria-haspopup="tree"
+        aria-expanded={open}
+        aria-label={t("stats.projectFilter")}
+        title={title}
+      >
+        {selectedProject ? (
+          <span className="ui-tree-leading-icon">
+            <StatsProjectFilterIcon project={selectedProject} size={13} />
+          </span>
+        ) : (
+          <Folder size={13} className="shrink-0 text-text-muted" />
+        )}
+        <span className="min-w-0 flex-1 truncate font-semibold">{label}</span>
+        <ChevronDown size={13} className="shrink-0 text-text-muted transition-transform" style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }} />
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-full z-30 mt-1 w-[min(320px,calc(100vw-32px))] rounded-xl border border-border/70 bg-surface-container-lowest p-1 shadow-lg">
+          <div className="ui-history-search-shell mb-1 gap-2 px-2 py-1.5 text-text-secondary">
+            <Search size={13} />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              aria-label={t("history.projectFilter.searchAria")}
+              placeholder={t("history.projectFilter.searchPlaceholder")}
+              className="min-w-0 flex-1 bg-transparent text-[12px] outline-none"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                className="ui-flat-action inline-flex h-5 w-5 items-center justify-center rounded-md px-0 text-text-muted"
+                aria-label={t("history.projectFilter.clearSearch")}
+                title={t("history.projectFilter.clearSearch")}
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
+          <div className="ui-thin-scroll max-h-56 space-y-0.5 overflow-y-auto pr-1" role="tree" aria-label={t("history.projectFilter.treeAria")}>
+            <button
+              type="button"
+              onClick={handleClear}
+              className="ui-tree-node ui-tree-project ui-focus-ring flex h-7 w-full items-center gap-1.5 rounded-lg px-2 text-left text-[12px]"
+              data-selected={!selectedProjectPath && !rawProjectKey ? "true" : "false"}
+            >
+              <Folder size={13} className="shrink-0" />
+              <span className="min-w-0 flex-1 truncate font-medium">{t("common.allProjects")}</span>
+              <span className="ui-tree-count-badge rounded-full px-1.5 text-[10px] font-medium">{projects.length}</span>
+            </button>
+            {filteredTree.length > 0 ? (
+              filteredTree.map((node) => renderNode(node))
+            ) : (
+              <div className="px-2 py-1.5 text-[11px] text-text-muted">
+                {normalizedQuery ? t("history.projectFilter.noMatches") : t("history.projectFilter.empty")}
+              </div>
+            )}
+            {normalizedQuery && filteredTree.length > 0 && (
+              <div className="px-2 py-1 text-[10px] text-text-muted">{t("history.projectFilter.matchCount", { count: filteredProjectCount })}</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function StatsPanel({ open, onClose, onOpenSession }: StatsPanelProps) {
   const { language, t } = useI18n();
   const sourceFilter = useHistoryStore((s) => s.sourceFilter);
+  const projects = useProjectStore((s) => s.projects);
+  const groups = useProjectStore((s) => s.groups);
+  const projectsLoaded = useProjectStore((s) => s.loaded);
+  const fetchProjects = useProjectStore((s) => s.fetchAll);
 
   const [projectKey, setProjectKey] = useState("");
-  const [projectSelectionTouched, setProjectSelectionTouched] = useState(false);
+  const [projectPath, setProjectPath] = useState("");
   const [timeWindow, setTimeWindow] = useState<StatsTimeWindowState>(() => getDefaultStatsTimeWindow());
   const [manualRefresh, setManualRefresh] = useState<{ key: string; nonce: number } | null>(null);
   const [selectedDayStart, setSelectedDayStart] = useState<number | null>(null);
@@ -880,76 +1191,67 @@ export function StatsPanel({ open, onClose, onOpenSession }: StatsPanelProps) {
 
   const dateRangeLabel = dateBounds.error ? t("stats.rangeInactive") : statsTimeWindowLabel(resolvedTimeWindow, dateRange, t);
   const statsBaseQueryKey = useMemo(
-    () => `${sourceFilter}|${projectKey || ALL_PROJECTS_VALUE}|${dateBounds.startAt ?? "invalid"}|${dateBounds.endAt ?? "invalid"}`,
-    [dateBounds.endAt, dateBounds.startAt, projectKey, sourceFilter]
+    () => `${sourceFilter}|path=${projectPath || ALL_PROJECTS_VALUE}|key=${projectKey || ALL_PROJECTS_VALUE}|${dateBounds.startAt ?? "invalid"}|${dateBounds.endAt ?? "invalid"}`,
+    [dateBounds.endAt, dateBounds.startAt, projectKey, projectPath, sourceFilter]
   );
   const effectiveRefreshNonce = manualRefresh?.key === statsBaseQueryKey ? manualRefresh.nonce : 0;
-  const projectOptionsQuery = useQuery({
-    queryKey: ["historyStatsProjectOptions", sourceFilter],
-    queryFn: () => fetchHistoryStatsProjectOptions(sourceFilter),
-    enabled: open,
-  });
-  const projectOptions = projectOptionsQuery.data ?? [];
-  const projectOptionsReady = open && !projectOptionsQuery.isPending;
-  const projectSelectionReady = projectOptionsReady;
   const statsQuery = useQuery({
-    queryKey: ["historyStats", sourceFilter, projectKey || null, dateBounds.startAt, dateBounds.endAt, effectiveRefreshNonce],
+    queryKey: ["historyStats", sourceFilter, projectPath || null, projectKey || null, dateBounds.startAt, dateBounds.endAt, effectiveRefreshNonce],
     queryFn: () => {
       if (dateBounds.startAt === null || dateBounds.endAt === null) {
         throw new Error(dateBounds.error ?? "Invalid stats range");
       }
       return fetchHistoryStatsPayload({
         sourceFilter,
-        projectKey: projectKey || null,
+        projectKey: projectPath ? null : projectKey || null,
+        projectPath: projectPath || null,
         rangeDays: null,
         startAt: dateBounds.startAt,
         endAt: dateBounds.endAt,
         force: effectiveRefreshNonce > 0,
       });
     },
-    enabled: open && projectSelectionReady && dateBounds.error === null && dateBounds.startAt !== null && dateBounds.endAt !== null,
+    enabled: open && dateBounds.error === null && dateBounds.startAt !== null && dateBounds.endAt !== null,
   });
   const stats = statsQuery.data ?? null;
   const loadingStats = statsQuery.isFetching;
   const statsError = statsQuery.error ? String(statsQuery.error) : null;
-  const statsProjectOptionsError = projectOptionsQuery.error ? String(projectOptionsQuery.error) : null;
   const statsUpdatedAt = statsQuery.dataUpdatedAt || null;
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.path === projectPath) ?? null,
+    [projectPath, projects]
+  );
 
   useEffect(() => {
     if (!open) return;
     setProjectKey("");
-    setProjectSelectionTouched(false);
+    setProjectPath("");
     setTimeWindow(getDefaultStatsTimeWindow());
   }, [open]);
 
   useEffect(() => {
-    if (!open) return;
-    setProjectSelectionTouched(false);
-  }, [open, sourceFilter]);
+    if (!open || projectsLoaded) return;
+    void fetchProjects("interactive");
+  }, [fetchProjects, open, projectsLoaded]);
 
   useEffect(() => {
-    if (!open || !projectOptionsReady) return;
-    setProjectKey((prev) => {
-      if (!projectSelectionTouched) return "";
-      if (prev === "") return "";
-      if (projectOptions.includes(prev)) return prev;
-      return "";
-    });
-  }, [open, projectOptions, projectOptionsReady, projectSelectionTouched]);
+    if (!projectPath || projects.length === 0) return;
+    if (!projects.some((project) => project.path === projectPath)) setProjectPath("");
+  }, [projectPath, projects]);
 
   useEffect(() => {
     if (!open) return;
     setSelectedDayStart(null);
     setDayVisibleCount(DAY_SESSION_PAGE_SIZE);
-  }, [open, sourceFilter, projectKey, dateRange.startDate, dateRange.endDate]);
+  }, [open, sourceFilter, projectKey, projectPath, dateRange.startDate, dateRange.endDate]);
 
   useEffect(() => {
     setDayVisibleCount(DAY_SESSION_PAGE_SIZE);
   }, [selectedDayStart]);
 
   const sourceLabel = sourceFilter === "all" ? t("common.allSources") : sourceFilter;
-  const projectLabel = projectKey || t("common.allProjects");
-  const waitingForStatsQuery = dateBounds.error === null && (!projectSelectionReady || statsQuery.isPending);
+  const projectLabel = selectedProject?.name || projectKey || t("common.allProjects");
+  const waitingForStatsQuery = dateBounds.error === null && statsQuery.isPending;
   const statsGranularity: StatsBucketGranularity = resolvedTimeWindow.mode === "day" ? "hour" : "day";
   const trendItems = useMemo(() => {
     if (!stats) return [];
@@ -994,7 +1296,7 @@ export function StatsPanel({ open, onClose, onOpenSession }: StatsPanelProps) {
   }, [heatmapItems, selectedDayStart]);
 
   const refreshStats = () => {
-    if (!projectSelectionReady || dateBounds.error || dateBounds.startAt === null || dateBounds.endAt === null) return;
+    if (dateBounds.error || dateBounds.startAt === null || dateBounds.endAt === null) return;
     setManualRefresh({ key: statsBaseQueryKey, nonce: Date.now() });
   };
   const controlClass = "h-8 rounded-md border border-border bg-bg-secondary px-2 text-xs text-text-primary";
@@ -1028,22 +1330,20 @@ export function StatsPanel({ open, onClose, onOpenSession }: StatsPanelProps) {
           </div>
 
           <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2">
-            <Select
-              value={projectKey || ALL_PROJECTS_VALUE}
-              onChange={(e) => {
-                const next = e.target.value;
-                setProjectSelectionTouched(true);
-                setProjectKey(next === ALL_PROJECTS_VALUE ? "" : next);
+            <StatsProjectFilterDropdown
+              projects={projects}
+              groups={groups}
+              selectedProjectPath={projectPath}
+              rawProjectKey={projectKey}
+              onSelectProjectPath={(path) => {
+                setProjectPath(path);
+                setProjectKey("");
               }}
-              disabled={!projectOptionsReady && projectOptionsQuery.isFetching}
-              className="h-8 w-auto min-w-[124px] shrink-0 text-xs"
-              aria-label={t("stats.projectFilter")}
-            >
-              <option value={ALL_PROJECTS_VALUE}>{t("common.allProjects")}</option>
-              {projectOptions.map((project) => (
-                <option key={project} value={project}>{project}</option>
-              ))}
-            </Select>
+              onClear={() => {
+                setProjectPath("");
+                setProjectKey("");
+              }}
+            />
 
             <Select
               value={timeWindow.mode}
@@ -1114,7 +1414,7 @@ export function StatsPanel({ open, onClose, onOpenSession }: StatsPanelProps) {
               </>
             )}
 
-            <Button onClick={refreshStats} disabled={!projectSelectionReady || dateBounds.error !== null || waitingForStatsQuery} aria-label={t("common.refresh")} size="sm">
+            <Button onClick={refreshStats} disabled={dateBounds.error !== null || waitingForStatsQuery} aria-label={t("common.refresh")} size="sm">
               <RefreshCw size={12} className={loadingStats ? "animate-spin" : ""} />
               {t("common.refresh")}
             </Button>
@@ -1123,7 +1423,6 @@ export function StatsPanel({ open, onClose, onOpenSession }: StatsPanelProps) {
             </div>
             <div className="w-full text-[12px] font-medium text-text-secondary">{t("stats.currentRange", { value: dateRangeLabel })}</div>
             {dateBounds.error && <div className="w-full text-[12px] font-medium text-danger">{dateBounds.error}</div>}
-            {statsProjectOptionsError && <div className="w-full text-[12px] font-medium text-danger">{t("stats.projectOptionsFailed", { error: statsProjectOptionsError })}</div>}
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-3">
@@ -1152,11 +1451,11 @@ export function StatsPanel({ open, onClose, onOpenSession }: StatsPanelProps) {
                     items={stats.project_ranking}
                     selectedProjectKey={projectKey}
                     onSelectProject={(nextProjectKey) => {
-                      setProjectSelectionTouched(true);
+                      setProjectPath("");
                       setProjectKey((prev) => (prev === nextProjectKey ? "" : nextProjectKey));
                     }}
                     onClearProject={() => {
-                      setProjectSelectionTouched(true);
+                      setProjectPath("");
                       setProjectKey("");
                     }}
                   />

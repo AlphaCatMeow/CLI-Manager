@@ -97,6 +97,7 @@ interface HistoryStore {
   loadStatsProjectOptions: (options?: { force?: boolean }) => Promise<string[]>;
   loadStats: (options?: {
     projectKey?: string | null;
+    projectPath?: string | null;
     rangeDays?: number;
     startAt?: number | null;
     endAt?: number | null;
@@ -587,6 +588,7 @@ export interface TodayProjectStats {
 export interface FetchHistoryStatsOptions {
   sourceFilter: HistorySourceFilter;
   projectKey?: string | null;
+  projectPath?: string | null;
   rangeDays?: number | null;
   startAt?: number | null;
   endAt?: number | null;
@@ -603,6 +605,7 @@ export async function fetchHistoryStatsProjectOptions(sourceFilter: HistorySourc
 
 export async function fetchHistoryStatsPayload(options: FetchHistoryStatsOptions): Promise<HistoryStatsPayload> {
   const projectKey = options.projectKey?.trim() || null;
+  const projectPath = options.projectPath?.trim() || null;
   const startAt = typeof options.startAt === "number" && Number.isFinite(options.startAt) ? options.startAt : null;
   const endAt = typeof options.endAt === "number" && Number.isFinite(options.endAt) ? options.endAt : null;
   const rangeDays = options.rangeDays ?? 30;
@@ -611,6 +614,7 @@ export async function fetchHistoryStatsPayload(options: FetchHistoryStatsOptions
     source: normalizeSourceFilter(options.sourceFilter),
     ...getHistoryPathArgs(),
     projectKey,
+    projectPath,
     rangeDays,
     startAt,
     endAt,
@@ -805,10 +809,11 @@ function makeStatsProjectOptionsCacheKey(
 function makeStatsCacheKey(
   source: HistorySourceFilter,
   projectKey: string | null,
+  projectPath: string | null,
   timeKey: string,
   historyPathKey: string
 ): string {
-  return `${source}|${projectKey ?? "__all__"}|${timeKey}|${historyPathKey}`;
+  return `${source}|key=${projectKey ?? "__all__"}|path=${projectPath ?? "__all__"}|${timeKey}|${historyPathKey}`;
 }
 
 function makeStatsTimeKey(rangeDays: number, startAt: number | null, endAt: number | null): string {
@@ -1461,6 +1466,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
 
   loadStats: async (options) => {
     const projectKey = options?.projectKey?.trim() || null;
+    const projectPath = options?.projectPath?.trim() || null;
     const rangeDays = options?.rangeDays ?? 30;
     const startAt = typeof options?.startAt === "number" && Number.isFinite(options.startAt) ? options.startAt : null;
     const endAt = typeof options?.endAt === "number" && Number.isFinite(options.endAt) ? options.endAt : null;
@@ -1468,7 +1474,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     const sourceFilter = get().sourceFilter;
     const historyPathKey = getHistoryPathCacheKey();
     const timeKey = makeStatsTimeKey(rangeDays, startAt, endAt);
-    const cacheKey = makeStatsCacheKey(sourceFilter, projectKey, timeKey, historyPathKey);
+    const cacheKey = makeStatsCacheKey(sourceFilter, projectKey, projectPath, timeKey, historyPathKey);
     const now = Date.now();
     const cached = statsCacheGet(cacheKey);
     const activeStats = get().stats;
@@ -1479,6 +1485,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     const stopPerf = createPerfMarker("stats.load", {
       sourceFilter,
       projectKey: projectKey ?? "__all__",
+      projectPath: projectPath ?? "__all__",
       rangeDays,
       startAt: startAt ?? "__range__",
       endAt: endAt ?? "__range__",
@@ -1533,6 +1540,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       const payload = await fetchHistoryStatsPayload({
         sourceFilter,
         projectKey,
+        projectPath,
         rangeDays,
         startAt,
         endAt,

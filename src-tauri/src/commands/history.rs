@@ -1397,6 +1397,7 @@ pub async fn history_get_stats(
     claude_config_dir: Option<String>,
     codex_config_dir: Option<String>,
     project_key: Option<String>,
+    project_path: Option<String>,
     range_days: Option<usize>,
     start_at: Option<i64>,
     end_at: Option<i64>,
@@ -1408,6 +1409,9 @@ pub async fn history_get_stats(
     let target_project = project_key
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
+    let target_project_path = project_path
+        .map(|v| normalize_history_path(&v))
+        .filter(|v| !v.is_empty());
     let bounds = resolve_stats_time_bounds(range_days, start_at, end_at)?;
     let force = force.unwrap_or(false);
     let index = refresh_history_index_snapshot(&roots, force);
@@ -1415,6 +1419,7 @@ pub async fn history_get_stats(
         &roots,
         source_filter.as_deref(),
         target_project.as_deref(),
+        target_project_path.as_deref(),
         bounds,
         index.generation,
     );
@@ -1434,6 +1439,7 @@ pub async fn history_get_stats(
         &roots,
         source_filter.as_deref(),
         target_project.as_deref(),
+        target_project_path.as_deref(),
         bounds,
         index.generation,
     );
@@ -1443,6 +1449,7 @@ pub async fn history_get_stats(
                 index.entries,
                 source_filter.as_deref(),
                 target_project.as_deref(),
+                target_project_path.as_deref(),
                 bounds,
             );
             stats_daily_index_cache_set(daily_index_key, daily_index.clone());
@@ -1453,6 +1460,7 @@ pub async fn history_get_stats(
             index.entries,
             source_filter.as_deref(),
             target_project.as_deref(),
+            target_project_path.as_deref(),
             bounds,
         );
         stats_daily_index_cache_set(daily_index_key, daily_index.clone());
@@ -1473,6 +1481,7 @@ fn build_history_stats_daily_index(
     entries: Vec<HistoryIndexEntry>,
     source_filter: Option<&str>,
     target_project: Option<&str>,
+    target_project_path: Option<&str>,
     bounds: StatsTimeBounds,
 ) -> CachedHistoryStatsDailyIndex {
     let mut days: BTreeMap<i64, Vec<HistoryStatsSessionFact>> = BTreeMap::new();
@@ -1486,6 +1495,11 @@ fn build_history_stats_daily_index(
         }
         if let Some(project) = target_project {
             if entry.file_ref.project_key != project {
+                continue;
+            }
+        }
+        if let Some(project_path) = target_project_path {
+            if !session_matches_project_path(&entry.file_ref, project_path) {
                 continue;
             }
         }
@@ -2001,14 +2015,16 @@ fn make_history_stats_daily_index_cache_key(
     roots: &HistoryRoots,
     source_filter: Option<&str>,
     target_project: Option<&str>,
+    target_project_path: Option<&str>,
     bounds: StatsTimeBounds,
     index_generation: u64,
 ) -> String {
     format!(
-        "{}|source={}|project={}|day_offset={}|gen={}",
+        "{}|source={}|project={}|project_path={}|day_offset={}|gen={}",
         roots.cache_key(),
         source_filter.unwrap_or("__all__"),
         target_project.unwrap_or("__all__"),
+        target_project_path.unwrap_or("__all__"),
         stats_day_start_offset(bounds),
         index_generation
     )
@@ -2018,14 +2034,16 @@ fn make_history_stats_aggregation_cache_key(
     roots: &HistoryRoots,
     source_filter: Option<&str>,
     target_project: Option<&str>,
+    target_project_path: Option<&str>,
     bounds: StatsTimeBounds,
     index_generation: u64,
 ) -> String {
     format!(
-        "{}|source={}|project={}|start={}|end={}|gen={}",
+        "{}|source={}|project={}|project_path={}|start={}|end={}|gen={}",
         roots.cache_key(),
         source_filter.unwrap_or("__all__"),
         target_project.unwrap_or("__all__"),
+        target_project_path.unwrap_or("__all__"),
         bounds.start_at,
         bounds.end_at,
         index_generation
@@ -6505,7 +6523,7 @@ mod tests {
             explicit: true,
         };
 
-        let daily_index = build_history_stats_daily_index(vec![entry], None, None, bounds);
+        let daily_index = build_history_stats_daily_index(vec![entry], None, None, None, bounds);
         let response = build_history_stats_response(&daily_index.days, bounds);
 
         assert_eq!(response.total_sessions, 1);
@@ -6611,7 +6629,7 @@ mod tests {
             explicit: true,
         };
 
-        let daily_index = build_history_stats_daily_index(vec![entry], None, None, bounds);
+        let daily_index = build_history_stats_daily_index(vec![entry], None, None, None, bounds);
         let response = build_history_stats_response(&daily_index.days, bounds);
 
         assert_eq!(response.total_input_tokens, 1_000_000);
