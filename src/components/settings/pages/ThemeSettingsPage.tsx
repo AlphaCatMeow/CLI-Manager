@@ -177,10 +177,9 @@ export function ThemeSettingsPage() {
 
   const filtered = useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    const themedPresets = TERMINAL_THEME_PRESETS.filter((preset) => preset.tone === resolvedTheme);
-    if (!keyword) return themedPresets;
-    return themedPresets.filter((preset) => preset.name.toLowerCase().includes(keyword));
-  }, [query, resolvedTheme]);
+    if (!keyword) return TERMINAL_THEME_PRESETS;
+    return TERMINAL_THEME_PRESETS.filter((preset) => preset.name.toLowerCase().includes(keyword));
+  }, [query]);
 
   const groupedThemes = useMemo(
     () =>
