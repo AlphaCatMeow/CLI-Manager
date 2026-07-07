@@ -1542,6 +1542,20 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       }
       if (
         e.type === "keydown" &&
+        e.key === "ArrowRight" &&
+        !e.ctrlKey &&
+        !e.shiftKey &&
+        !e.altKey &&
+        !e.metaKey
+      ) {
+        if (acceptSuggestionRef.current()) {
+          e.preventDefault();
+          return false;
+        }
+        return true;
+      }
+      if (
+        e.type === "keydown" &&
         e.ctrlKey &&
         !e.shiftKey &&
         !e.altKey &&
