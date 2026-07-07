@@ -332,8 +332,9 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       env_vars: input.env_vars ?? "{}",
       shell,
       provider_overrides: input.provider_overrides ?? "{}",
-      worktree_strategy: input.worktree_strategy ?? "prompt",
+      worktree_strategy: input.worktree_strategy ?? "disabled",
       worktree_root: input.worktree_root ?? "",
+      worktree_deps_prompt_enabled: input.worktree_deps_prompt_enabled ?? 0,
       created_at: ts,
       updated_at: ts,
     };
@@ -341,9 +342,9 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       `INSERT INTO projects (
          id, name, path, group_name, group_id, sort_order,
          cli_tool, cli_args, startup_cmd, env_vars, shell, provider_overrides,
-         worktree_strategy, worktree_root, created_at, updated_at
+         worktree_strategy, worktree_root, worktree_deps_prompt_enabled, created_at, updated_at
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
       [
         project.id,
         project.name,
@@ -359,6 +360,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         project.provider_overrides,
         project.worktree_strategy,
         project.worktree_root,
+        project.worktree_deps_prompt_enabled,
         project.created_at,
         project.updated_at,
       ]

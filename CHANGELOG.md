@@ -40,7 +40,8 @@
 
 ### Git Worktree
 
-- **并行任务隔离**：项目支持 Git Worktree 隔离策略；默认仍为“提醒”，也可选择“不处理”以完全保持普通打开行为；项目已配置 CLI 工具且已有同项目终端时可提示或自动创建独立 worktree，`always` 策略则对本地 Git 项目每次打开都创建，并在新终端中使用隔离目录和 `wt/<任务名>` 分支。
+- **并行任务隔离**：项目支持 Git Worktree 隔离策略；默认改为“不提醒”，普通打开行为不再主动弹出 worktree 提示；也可选择“提醒”、并行时自动隔离或始终自动隔离，项目已配置 CLI 工具且已有同项目终端时可提示或自动创建独立 worktree，`always` 策略则对本地 Git 项目每次打开都创建，并在新终端中使用隔离目录和 `wt/<任务名>` 分支。
+- **Worktree 依赖检测提示开关**：项目 Worktree 设置新增“开启 Worktree 后检测依赖安装”勾选框，默认关闭；只有勾选后，新建或打开 worktree 时才会自动检测依赖并弹出安装提示，右键菜单中的“安装依赖”仍可手动检测和打开安装 Tab。
 - **Worktree 可见与管理**：项目树显示 worktree 子项，终端 Tab 显示 worktree 徽标；右键菜单支持打开目录、安装依赖、完成任务和丢弃 worktree。
 - **完成任务向导**：Worktree 支持提交全部改动、合并回主工作区和清理目录/分支；主工作区脏时拒绝合并，冲突时自动中止合并并列出冲突文件。
 - **Worktree 安装依赖入口修复**：项目树中对 worktree 执行“安装依赖”时，会直接打开对应 worktree 的终端页签执行安装命令；若无需安装则给出提示，不再只停留在依赖检测流程。
@@ -50,7 +51,7 @@
 - **Worktree Tab 徽章菜单主题适配**：点击终端 Tab 中的 Worktree 徽章时，弹出的操作菜单会复用终端 Tab 右键菜单的终端主题色，避免浅色应用主题下覆盖深色终端区域。
 - **Worktree Tab 与项目树联动**：切换到 Worktree 终端 Tab 时，左侧项目树会自动展开并选中对应 Worktree；点击已打开的 Worktree 子项会切回对应终端 Tab。
 - **Worktree 完成任务提示优化**：主工作区脏时不再显示 `dirty_main_worktree` 裸错误码，合并冲突时明确提示已自动 `merge --abort`，并展示冲突文件和下一步处理建议。
-- **Worktree 丢弃权限失败修复**：丢弃 worktree 前会先关闭关联终端页签，后端对 Windows 文件锁导致的 `Permission denied` / `failed to delete` 做有限重试；若 Git 登记已被上次删除清掉但只残留空目录，也会按 stale 记录清理并删除 `wt/` 分支。
+- **Worktree 丢弃权限失败修复**：丢弃 worktree 前会先关闭关联终端页签，后端对 Windows 文件锁导致的 `Permission denied` / `failed to delete` / `os error 32` 做有限重试；Git 已登记但需要按 stale 清理的目录也会重试删除，降低“另一个程序正在使用此文件”导致的丢弃失败概率。
 - **Worktree 损坏目录丢弃修复**：当 Git 仍登记了 worktree 的 path/branch，但目录内 `.git` 已缺失或 Git 返回 `is not a working tree` 时，丢弃流程会按已登记 stale worktree 清理目录、执行 `worktree prune` 并删除对应 `wt/` 分支。
 
 ### Git 变更

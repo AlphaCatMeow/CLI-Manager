@@ -33,7 +33,7 @@ interface Props {
 }
 
 const CLI_TOOL_OPTIONS = ["claude", "codex"] as const;
-const WORKTREE_STRATEGIES: WorktreeIsolationStrategy[] = ["prompt", "disabled", "autoParallel", "always"];
+const WORKTREE_STRATEGIES: WorktreeIsolationStrategy[] = ["disabled", "prompt", "autoParallel", "always"];
 const WORKTREE_STRATEGY_LABEL_KEYS: Record<WorktreeIsolationStrategy, TranslationKey> = {
   prompt: "worktree.strategy.prompt",
   disabled: "worktree.strategy.disabled",
@@ -57,6 +57,7 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
   const cliToolFieldId = useId();
   const cliToolLabelId = useId();
   const shellFieldId = useId();
+  const worktreeDepsPromptFieldId = useId();
 
   const [osPlatform, setOsPlatform] = useState<OsPlatform>("windows");
 
@@ -73,9 +74,12 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
   const [shell, setShell] = useState(cloneFrom?.shell ?? project?.shell ?? "");
   const [envVarsText, setEnvVarsText] = useState(cloneFrom?.env_vars ?? project?.env_vars ?? "{}");
   const [worktreeStrategy, setWorktreeStrategy] = useState<WorktreeIsolationStrategy>(
-    cloneFrom?.worktree_strategy ?? project?.worktree_strategy ?? "prompt"
+    cloneFrom?.worktree_strategy ?? project?.worktree_strategy ?? "disabled"
   );
   const [worktreeRoot, setWorktreeRoot] = useState(cloneFrom?.worktree_root ?? project?.worktree_root ?? "");
+  const [worktreeDepsPromptEnabled, setWorktreeDepsPromptEnabled] = useState(
+    Boolean(cloneFrom?.worktree_deps_prompt_enabled ?? project?.worktree_deps_prompt_enabled ?? 0)
+  );
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [showConfirmEdit, setShowConfirmEdit] = useState(false);
@@ -207,6 +211,7 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
           shell,
           worktree_strategy: worktreeStrategy,
           worktree_root: worktreeRoot.trim(),
+          worktree_deps_prompt_enabled: worktreeDepsPromptEnabled ? 1 : 0,
         });
         toast.success("终端修改成功");
       } else {
@@ -221,6 +226,7 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
           shell,
           worktree_strategy: worktreeStrategy,
           worktree_root: worktreeRoot.trim() || undefined,
+          worktree_deps_prompt_enabled: worktreeDepsPromptEnabled ? 1 : 0,
         });
         toast.success("终端创建成功");
       }
@@ -420,6 +426,24 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
                     </Select>
                     <p className="mt-1 text-[11px] leading-relaxed text-text-muted">{t("worktree.settings.strategyDescription")}</p>
                   </div>
+                  <label
+                    htmlFor={worktreeDepsPromptFieldId}
+                    className="flex cursor-pointer items-start gap-2"
+                  >
+                    <input
+                      id={worktreeDepsPromptFieldId}
+                      type="checkbox"
+                      checked={worktreeDepsPromptEnabled}
+                      onChange={(e) => setWorktreeDepsPromptEnabled(e.currentTarget.checked)}
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-xs font-medium text-text-secondary">{t("worktree.settings.depsPrompt")}</span>
+                      <span className="mt-0.5 block text-[11px] leading-relaxed text-text-muted">
+                        {t("worktree.settings.depsPromptDescription")}
+                      </span>
+                    </span>
+                  </label>
                   <div>
                     <label className="mb-1 block text-xs text-text-muted">{t("worktree.settings.root")}</label>
                     <div className="flex gap-1">

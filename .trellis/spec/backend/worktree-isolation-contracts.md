@@ -17,8 +17,9 @@
 #### Database schema
 
 ```sql
-ALTER TABLE projects ADD COLUMN worktree_strategy TEXT NOT NULL DEFAULT 'prompt';
+ALTER TABLE projects ADD COLUMN worktree_strategy TEXT NOT NULL DEFAULT 'disabled';
 ALTER TABLE projects ADD COLUMN worktree_root TEXT NOT NULL DEFAULT '';
+ALTER TABLE projects ADD COLUMN worktree_deps_prompt_enabled INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS worktrees (
   id                    TEXT PRIMARY KEY,
@@ -129,8 +130,8 @@ type TreeNode =
 
 | Strategy | Required behavior |
 |---|---|
-| `prompt` | Default. If the project has a configured CLI tool and at least one existing same-project terminal session, ask whether to open in an isolated worktree. Direct-open must preserve legacy behavior. |
-| `disabled` | Do nothing. Always open a normal project terminal; never prompt and never auto-create a worktree, regardless of CLI tool configuration or existing same-project sessions. |
+| `prompt` | If the project has a configured CLI tool and at least one existing same-project terminal session, ask whether to open in an isolated worktree. Direct-open must preserve legacy behavior. |
+| `disabled` | Default. Do nothing. Always open a normal project terminal; never prompt and never auto-create a worktree, regardless of CLI tool configuration or existing same-project sessions. |
 | `autoParallel` | If the project has a configured CLI tool and at least one existing same-project terminal session, create a worktree without prompting. The first session opens normally. |
 | `always` | Every project terminal launch creates a worktree. This strategy still only applies to local Git projects that support `git worktree`; non-Git/WSL projects open normally. |
 
@@ -155,6 +156,8 @@ type TreeNode =
 #### Dependency prompt
 
 - Dependency install detection is advisory only. It must not block opening the actual task terminal.
+- Automatic dependency install detection is gated by the project-level `worktree_deps_prompt_enabled` flag, which defaults to off for new and existing projects.
+- Manual "Install dependencies" actions may still run dependency detection regardless of the automatic prompt flag.
 - If dependency install is accepted, create a separate install tab in the worktree path. Do not write the install command into the original task tab.
 - Dismissing/skipping the dependency prompt sets `deps_prompt_dismissed` for that worktree, so the same worktree does not repeatedly prompt.
 - Once the expected dependency directory exists (`node_modules`, etc.), the detection condition self-heals and should not prompt.
@@ -195,7 +198,8 @@ type TreeNode =
 - Base: Project A has `worktree_strategy=disabled`. Opening a terminal uses the original project path and existing startup command behavior, even when a CLI tool and same-project terminal already exist.
 - Base: Project A has `cli_tool=codex` but no existing same-project terminals. Under `autoParallel`, opening a terminal uses the original project path and existing startup command behavior.
 - Base: Project A has no configured CLI tool. Ordinary shell/startup-command terminals never trigger `prompt` or `autoParallel` just because a prior tab exists or a command is running.
-- Base: Dependency prompt is skipped. The worktree opens normally and the same worktree does not prompt again.
+- Base: Project A has `worktree_deps_prompt_enabled=0`. Creating/opening a worktree skips automatic dependency detection and never shows the dependency prompt.
+- Base: Dependency prompt is dismissed. The worktree opens normally and the same worktree does not prompt again.
 - Bad: Writing `npm install` into the original task terminal. This can corrupt the user’s CLI session and is forbidden.
 - Bad: Calling `git merge` while the main checkout has uncommitted changes. This mixes unrelated work and must be blocked.
 - Bad: Rendering `dirty_main_worktree` or `merge_conflict` raw in the dialog. The codes are correct transport values but not actionable user guidance.
@@ -207,16 +211,19 @@ type TreeNode =
   - task-name validation accepts safe names and rejects empty, whitespace/control, path separators, leading `-`, and Windows reserved device names.
   - default worktree path calculation keeps the task name under the computed root.
   - dependency detection returns the expected command for npm/pnpm/yarn fixtures and no prompt when dependency directories exist.
+  - stale worktree directory cleanup retries transient Windows file-lock errors such as `os error 32`.
   - remove/merge helpers reject non-`wt/` branches and branch/path mismatches where feasible.
 - Frontend static checks:
   - `npx tsc --noEmit` must pass after adding `WorktreeRecord`, `TreeNode` union changes, and `TerminalSession.worktreeId`.
+  - new project defaults keep `worktree_strategy="disabled"` and `worktree_deps_prompt_enabled=0`.
 - Rust checks:
   - `cargo check --manifest-path src-tauri/Cargo.toml`.
   - `cargo test --manifest-path src-tauri/Cargo.toml`.
 - Manual desktop checks:
   - prompt / disabled / autoParallel / always strategy behavior.
   - split-project launch uses the same isolation decision.
-  - dependency install opens a new tab and original startup command still runs in the task tab.
+  - automatic dependency detection runs only when the project-level dependency prompt flag is enabled.
+  - manual dependency install opens a new tab and original startup command still runs in the task tab regardless of the automatic prompt flag.
   - finish flow succeeds for clean merge and removes worktree/branch.
   - dirty main checkout blocks merge.
   - conflict merge aborts and leaves main checkout clean.

@@ -76,7 +76,7 @@ pub(crate) const MIGRATION_ADD_WORKTREE_ISOLATION_VERSION: i64 = 15;
 pub(crate) const MIGRATION_ADD_WORKTREE_ISOLATION_DESCRIPTION: &str =
     "add_worktree_isolation_tables";
 pub(crate) const MIGRATION_ADD_WORKTREE_ISOLATION_SQL: &str = "
-                ALTER TABLE projects ADD COLUMN worktree_strategy TEXT NOT NULL DEFAULT 'prompt';
+                ALTER TABLE projects ADD COLUMN worktree_strategy TEXT NOT NULL DEFAULT 'disabled';
                 ALTER TABLE projects ADD COLUMN worktree_root TEXT NOT NULL DEFAULT '';
 
                 CREATE TABLE IF NOT EXISTS worktrees (
@@ -95,6 +95,12 @@ pub(crate) const MIGRATION_ADD_WORKTREE_ISOLATION_SQL: &str = "
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_worktrees_project_name ON worktrees(project_id, name);
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_worktrees_path ON worktrees(path);
             ";
+
+const MIGRATION_ADD_WORKTREE_DEPS_PROMPT_SETTING_VERSION: i64 = 16;
+const MIGRATION_ADD_WORKTREE_DEPS_PROMPT_SETTING_DESCRIPTION: &str =
+    "add_worktree_deps_prompt_setting";
+const MIGRATION_ADD_WORKTREE_DEPS_PROMPT_SETTING_SQL: &str =
+    "ALTER TABLE projects ADD COLUMN worktree_deps_prompt_enabled INTEGER NOT NULL DEFAULT 0;";
 
 fn migrations() -> Vec<Migration> {
     vec![
@@ -290,6 +296,12 @@ fn migrations() -> Vec<Migration> {
             version: MIGRATION_ADD_WORKTREE_ISOLATION_VERSION,
             description: MIGRATION_ADD_WORKTREE_ISOLATION_DESCRIPTION,
             sql: MIGRATION_ADD_WORKTREE_ISOLATION_SQL,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: MIGRATION_ADD_WORKTREE_DEPS_PROMPT_SETTING_VERSION,
+            description: MIGRATION_ADD_WORKTREE_DEPS_PROMPT_SETTING_DESCRIPTION,
+            sql: MIGRATION_ADD_WORKTREE_DEPS_PROMPT_SETTING_SQL,
             kind: MigrationKind::Up,
         },
     ]

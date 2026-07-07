@@ -494,7 +494,7 @@ mod tests {
             "CREATE TABLE projects (
                 id TEXT PRIMARY KEY,
                 cli_args TEXT NOT NULL DEFAULT '',
-                worktree_strategy TEXT NOT NULL DEFAULT 'prompt',
+                worktree_strategy TEXT NOT NULL DEFAULT 'disabled',
                 worktree_root TEXT NOT NULL DEFAULT ''
             )",
         )

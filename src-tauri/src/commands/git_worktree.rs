@@ -2,6 +2,7 @@ use git2::Repository;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
@@ -296,6 +297,7 @@ fn is_retryable_worktree_remove_error(error: &str) -> bool {
         || normalized.contains("failed to delete")
         || normalized.contains("unable to unlink")
         || normalized.contains("being used by another process")
+        || normalized.contains("os error 32")
         || normalized.contains("device or resource busy")
 }
 
@@ -339,6 +341,28 @@ fn append_output_line(output: &mut String, line: &str) {
     output.push_str(trimmed);
 }
 
+fn remove_worktree_path_with_retry<F>(target_path: &Path, mut remove: F) -> Result<(), String>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+{
+    let mut last_error = String::new();
+    for attempt in 0..=WORKTREE_REMOVE_RETRY_ATTEMPTS {
+        match remove(target_path) {
+            Ok(()) => return Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(err)
+                if attempt < WORKTREE_REMOVE_RETRY_ATTEMPTS
+                    && is_retryable_worktree_remove_error(&err.to_string()) =>
+            {
+                last_error = err.to_string();
+                thread::sleep(Duration::from_millis(WORKTREE_REMOVE_RETRY_DELAY_MS));
+            }
+            Err(err) => return Err(format!("remove_stale_worktree_dir_failed: {err}")),
+        }
+    }
+    Err(format!("remove_stale_worktree_dir_failed: {last_error}"))
+}
+
 fn remove_registered_stale_worktree_dir(target_path: &Path) -> Result<String, String> {
     if !target_path.exists() {
         return Ok("stale_registered_worktree_path_missing".to_string());
@@ -346,8 +370,7 @@ fn remove_registered_stale_worktree_dir(target_path: &Path) -> Result<String, St
     if !target_path.is_dir() {
         return Err("worktree_path_not_directory".to_string());
     }
-    fs::remove_dir_all(target_path)
-        .map_err(|e| format!("remove_stale_worktree_dir_failed: {e}"))?;
+    remove_worktree_path_with_retry(target_path, |path| fs::remove_dir_all(path))?;
     Ok("removed_stale_registered_worktree_dir".to_string())
 }
 
@@ -505,8 +528,7 @@ fn cleanup_stale_unregistered_worktree(
         if !target_path.is_dir() || !is_empty_dir(target_path)? {
             return Err("worktree_not_registered".to_string());
         }
-        fs::remove_dir(target_path)
-            .map_err(|e| format!("remove_stale_worktree_dir_failed: {e}"))?;
+        remove_worktree_path_with_retry(target_path, |path| fs::remove_dir(path))?;
         output.push_str("removed_stale_empty_worktree_dir");
     } else {
         output.push_str(&run_git_checked(project_path, ["worktree", "prune"])?);
@@ -790,11 +812,12 @@ mod tests {
         check_dependency_need, classify_worktree_registration, cleanup_stale_unregistered_worktree,
         default_worktree_root, is_retryable_worktree_remove_error, is_stale_worktree_remove_error,
         parse_worktree_list_entries, path_to_git_arg, remove_registered_stale_worktree_dir,
-        resolve_worktree_target_path, should_cleanup_worktree_branch_after_failed_add,
-        validate_plain_branch_name, validate_task_name, validate_worktree_branch,
-        WorktreeRegistration,
+        remove_worktree_path_with_retry, resolve_worktree_target_path,
+        should_cleanup_worktree_branch_after_failed_add, validate_plain_branch_name,
+        validate_task_name, validate_worktree_branch, WorktreeRegistration,
     };
     use std::fs;
+    use std::io;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -843,6 +866,9 @@ mod tests {
         ));
         assert!(is_retryable_worktree_remove_error(
             "The process cannot access the file because it is being used by another process"
+        ));
+        assert!(is_retryable_worktree_remove_error(
+            "remove_stale_worktree_dir_failed: 另一个程序正在使用此文件，进程无法访问。 (os error 32)"
         ));
         assert!(!is_retryable_worktree_remove_error(
             "git_failed: branch not found"
@@ -994,6 +1020,31 @@ mod tests {
 
         let output = remove_registered_stale_worktree_dir(&stale).unwrap();
         assert_eq!(output, "removed_stale_registered_worktree_dir");
+        assert!(!stale.exists());
+    }
+
+    #[test]
+    fn stale_worktree_path_remove_retries_windows_file_lock_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let stale = temp.path().join("stale");
+        fs::create_dir(&stale).unwrap();
+        fs::write(stale.join("leftover.txt"), "data").unwrap();
+
+        let mut attempts = 0;
+        remove_worktree_path_with_retry(&stale, |path| {
+            attempts += 1;
+            if attempts < 3 {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "os error 32",
+                ))
+            } else {
+                fs::remove_dir_all(path)
+            }
+        })
+        .unwrap();
+
+        assert_eq!(attempts, 3);
         assert!(!stale.exists());
     }
 

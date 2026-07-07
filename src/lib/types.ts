@@ -39,6 +39,7 @@ export interface Project {
   provider_overrides: string;
   worktree_strategy: WorktreeIsolationStrategy;
   worktree_root: string;
+  worktree_deps_prompt_enabled: number;
   created_at: string;
   updated_at: string;
 }
@@ -56,6 +57,7 @@ export interface CreateProjectInput {
   provider_overrides?: string;
   worktree_strategy?: WorktreeIsolationStrategy;
   worktree_root?: string;
+  worktree_deps_prompt_enabled?: number;
 }
 
 export interface UpdateProjectInput {
@@ -72,6 +74,7 @@ export interface UpdateProjectInput {
   provider_overrides?: string;
   worktree_strategy?: WorktreeIsolationStrategy;
   worktree_root?: string;
+  worktree_deps_prompt_enabled?: number;
 }
 
 export interface CreateGroupInput {

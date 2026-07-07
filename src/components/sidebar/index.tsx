@@ -841,6 +841,7 @@ export function Sidebar({
   };
 
   const maybePromptWorktreeDeps = async (project: Project, worktree: WorktreeRecord) => {
+    if (!project.worktree_deps_prompt_enabled) return;
     if (worktree.deps_prompt_dismissed || depsPromptingWorktreeIdsRef.current.has(worktree.id)) return;
     depsPromptingWorktreeIdsRef.current.add(worktree.id);
     try {
@@ -1020,7 +1021,7 @@ export function Sidebar({
   }, [activateFirstWorktreeSession, closeHistory, onTerminalScopeChange, projectScopedTerminalViewEnabled]);
 
   const handleOpenWorktree = useCallback((project: Project, worktree: WorktreeRecord) => {
-    void openWorktreeSession(project, worktree);
+    void openWorktreeSession(project, worktree).then(() => maybePromptWorktreeDeps(project, worktree));
   }, []);
 
   const handleOpenProjectFiles = useCallback(async (project: Project) => {

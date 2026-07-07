@@ -63,7 +63,7 @@ interface WorktreeStore {
 }
 
 function normalizeStrategy(value: string | null | undefined): WorktreeIsolationStrategy {
-  return value === "disabled" || value === "autoParallel" || value === "always" ? value : "prompt";
+  return value === "prompt" || value === "autoParallel" || value === "always" ? value : "disabled";
 }
 
 function isMissingWorktreesTableError(err: unknown): boolean {
