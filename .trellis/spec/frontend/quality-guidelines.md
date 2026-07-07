@@ -81,6 +81,40 @@ if (text.length >= maxBufferBytes) {
 }
 ```
 
+### Keep transient search state inside heavy popovers
+
+**What**: If a toolbar, sidebar, or panel renders a large tree/list, search input state for a small popover inside it must live in the popover component, not in the parent panel. Cap large popover result sections and ask the user to narrow the search.
+
+**Why**: Updating parent-level search state rerenders the entire panel on every keystroke. In Git changes, that can repaint the full changed-file tree while the user is only filtering branches.
+
+**Correct**:
+```tsx
+function BranchMenu({ branches }: { branches: Branch[] }) {
+  const [query, setQuery] = useState("");
+  const matcher = useMemo(() => makeMatcher(query), [query]);
+  const visible = useMemo(
+    () => branches.filter((branch) => matcher.test(branch.name)).slice(0, 80),
+    [branches, matcher],
+  );
+
+  return <input value={query} onChange={(event) => setQuery(event.target.value)} />;
+}
+```
+
+**Wrong**:
+```tsx
+function GitChangesPanel() {
+  const [branchQuery, setBranchQuery] = useState("");
+
+  return (
+    <>
+      <LargeChangedFileTree />
+      <BranchMenu query={branchQuery} onQueryChange={setBranchQuery} />
+    </>
+  );
+}
+```
+
 ---
 
 ## Testing Requirements

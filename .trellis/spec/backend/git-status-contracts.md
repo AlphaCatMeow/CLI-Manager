@@ -56,3 +56,97 @@ fn is_nested_repo_entry(repo: &Repository, file_path: &str) -> bool
 ### 已知未覆盖（后续项）
 
 - `parse_wsl_git_status`（WSL 链路）尚未过滤嵌套仓库条目（`?? dir/` 仍会进列表；diff 目录守卫可兜底不报错）。已记入任务 `07-05-feat-git-sub-repo-monitor` 一并处理。
+
+---
+
+## Git 分支菜单命令合约（V1.2.6）
+
+### 1. Scope / Trigger
+
+- Trigger: Git 变更面板新增分支列表、Fetch、checkout、本地新建分支能力，跨越 Tauri command、Rust Git 执行、Zustand store、React UI 和 i18n。
+- Target: `src-tauri/src/commands/git.rs` 中 Git 面板相关命令；前端只通过 Tauri command 调用，不拼接 shell 命令。
+
+### 2. Signatures
+
+```rust
+pub struct GitBranchInfo {
+    pub name: String,
+    pub branch_type: String, // "local" | "remote"
+    pub current: bool,
+    pub upstream: Option<String>,
+    pub remote: Option<String>,
+}
+
+#[tauri::command]
+pub async fn git_list_branches(project_path: String) -> Result<Vec<GitBranchInfo>, String>;
+
+#[tauri::command]
+pub async fn git_fetch(project_path: String) -> Result<String, String>;
+
+#[tauri::command]
+pub async fn git_checkout_branch(
+    project_path: String,
+    branch: String,
+    remote: bool,
+) -> Result<String, String>;
+
+#[tauri::command]
+pub async fn git_create_branch(project_path: String, branch: String) -> Result<String, String>;
+```
+
+### 3. Contracts
+
+- `project_path` 是当前 Git 面板生效仓库路径：根仓库或已选子仓库。非仓库返回 `open_repo_failed:*` 或 Git 原始错误映射。
+- `git_list_branches` 只读本地 Git 元数据，不触网；本地分支带 `current/upstream`，远程分支跳过 `*/HEAD`。
+- `git_fetch` 执行 `git fetch --prune`，只刷新远端 refs，不 merge/rebase，不修改工作区文件。
+- `git_checkout_branch(remote=false)` 执行 `git checkout <branch>`，不使用 force。
+- `git_checkout_branch(remote=true)` 要求分支形如 `<remote>/<name>`，执行 `git checkout --track <remote>/<name>`。
+- `git_create_branch` 执行 `git checkout -b <branch>`，从当前 HEAD 创建并切换。
+- checkout/create 成功后前端必须刷新 changes、branch status、branch list 和 repository list；失败后至少刷新 changes、branch status、branch list，避免 UI 停留在半旧状态。
+
+### 4. Validation & Error Matrix
+
+| 条件 | 行为 |
+|------|------|
+| `branch` 为空 | `empty_branch` |
+| `branch` 以 `-` 开头、含空白/control、`..`、`//`、`@{`、以 `/` 或 `.` 结尾、或含 `~`、`^`、`:`、`?`、`*`、`[`、反斜杠 | `invalid_branch` |
+| `git check-ref-format --branch <branch>` 失败 | `invalid_branch` |
+| `remote=true` 但分支没有 `<remote>/<name>` 结构 | `invalid_branch` |
+| checkout 会覆盖本地改动 | `checkout_conflict`，不强制切换 |
+| git 可执行文件不存在 | `git_not_found` |
+| remote 不存在或不可访问 | `no_remote` 或 Git 原始错误映射 |
+
+### 5. Good/Base/Bad Cases
+
+- Good: 面板打开时读取分支列表；用户点击本地分支，后端普通 checkout，成功后 UI 当前分支与变更列表刷新。
+- Good: 用户先 Fetch，再 checkout `origin/feature/x`，Git 创建本地跟踪分支并切换。
+- Base: 没有远程分支时远程区显示空状态；Fetch 失败只提示错误，不影响已有工作区。
+- Bad: 前端用字符串拼接执行 `git checkout ${branch}`。
+- Bad: checkout 失败后仍显示目标分支为当前分支。
+- Bad: 为了模拟 JetBrains Smart Checkout 在 Stage A 自动 stash 或强制 checkout。
+
+### 6. Tests Required
+
+- Rust 单测：合法分支名通过；空、`-bad`、空白、`..`、`:`、`\`、尾部 `/` 等非法分支名返回预期错误码。
+- TypeScript：`npx tsc --noEmit` 验证 `GitBranchInfo` 与 i18n key 完整。
+- Rust：`cargo check` 验证 Tauri command 注册和 Git 命令编译。
+- 手动：Fetch 不修改 `git status --short`；本地 checkout 成功刷新；远程 checkout 建立 upstream；checkout 冲突时当前分支和文件内容不变。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+// 前端不要直接拼命令，也不要绕过后端校验。
+await invoke("run_shell", { command: `git checkout ${branch}` });
+```
+
+#### Correct
+
+```typescript
+await invoke("git_checkout_branch", {
+  projectPath,
+  branch: item.name,
+  remote: item.branchType === "remote",
+});
+```

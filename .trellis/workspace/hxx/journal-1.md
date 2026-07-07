@@ -913,3 +913,38 @@ Add project-level Codex provider switching with generated profiles, cleanup, sid
 ### Next Steps
 
 - None - task complete
+
+
+## Session 28: V1.2.6 Git branch workflow Stage A
+
+**Date**: 2026-07-07
+**Task**: V1.2.6 Git branch workflow Stage A
+**Branch**: `master`
+
+### Summary
+
+Implemented Git branch menu Stage A with branch listing, fetch, local checkout, remote tracking checkout, create-and-switch, search performance fixes, docs, and specs.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9f2a103` | (see git log) |
+| `4983802` | (see git log) |
+| `4977506` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
