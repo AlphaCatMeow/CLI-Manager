@@ -1447,6 +1447,8 @@ const zh = {
   "stats.heatmap.barAria": "最近 {count} 天活跃条形图",
   "stats.heatmap.hourAria": "24 小时活跃热力图",
   "stats.heatmap.recentAria": "最近 {count} 天活跃热力图",
+  "git.smartCheckout.conflictTitle": "Smart Checkout 发生冲突",
+  "git.smartCheckout.conflictHint": "目标分支已经切换成功，但应用暂存时产生冲突。这里没有可自动中止的 merge/rebase；请先解决冲突，必要时在终端检查 `git status` 和 `git stash list`。",
 } as const;
 
 const en: Record<keyof typeof zh, string> = {
@@ -2866,6 +2868,8 @@ const en: Record<keyof typeof zh, string> = {
   "stats.heatmap.barAria": "Activity bar chart for the last {count} days",
   "stats.heatmap.hourAria": "24-hour activity heatmap",
   "stats.heatmap.recentAria": "Activity heatmap for the last {count} days",
+  "git.smartCheckout.conflictTitle": "Smart Checkout has conflicts",
+  "git.smartCheckout.conflictHint": "The target branch was switched successfully, but applying the stash caused conflicts. There is no merge/rebase state to abort here; resolve the conflicts first, and check `git status` plus `git stash list` in the terminal if needed.",
 };
 
 const dictionaries = {

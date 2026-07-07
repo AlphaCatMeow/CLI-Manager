@@ -292,6 +292,7 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
     branchLoading,
     checkingOutBranch,
     creatingBranch,
+    error,
     push,
     fetchRemote,
     checkoutBranch,
@@ -507,6 +508,7 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
   // 冲突态：存在冲突文件(C) 或 仓库处于合并/变基中 → 显示冲突横幅与中止/继续入口。
   const hasConflicts = changes.some((c) => c.status === "C");
   const pendingOp = branchStatus?.pendingOp ?? null;
+  const smartCheckoutConflict = hasConflicts && !!error && error.includes("smart_checkout_apply_conflict");
   const branchActionBusy = fetching || checkingOutBranch || creatingBranch;
 
   const handleToggleSelectAll = () => {
@@ -602,12 +604,13 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
     const target = smartCheckoutTarget;
     try {
       await smartCheckoutBranch(target.name, target.branchType === "remote");
-      setSmartCheckoutTarget(null);
-      setBranchMenuOpen(false);
       toast.success(t("git.toast.smartCheckedOutBranch", { branch: target.name }));
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);
       toast.error(formatGitNetError(t("git.error.smartCheckoutFailed"), m, t));
+    } finally {
+      setSmartCheckoutTarget(null);
+      setBranchMenuOpen(false);
     }
   };
 
@@ -1119,7 +1122,7 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
       })()}
 
       {/* 冲突横幅：合并/变基进行中或存在冲突文件时出现，提供「继续」(变基) 与「中止」安全退路。 */}
-      {projectPath && (pendingOp || hasConflicts) && (
+      {projectPath && pendingOp && (
         <div
           className="flex shrink-0 flex-col gap-1.5 border-t px-2 py-1.5"
           style={{ borderColor: panelColorTint(STATUS_CONFIG.C.color, 34), backgroundColor: panelColorTint(STATUS_CONFIG.C.color, 7) }}
@@ -1157,6 +1160,21 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
             >
               <X size={12} /> {t("git.conflict.abort")}
             </button>
+          </span>
+        </div>
+      )}
+
+      {projectPath && smartCheckoutConflict && (
+        <div
+          className="flex shrink-0 flex-col gap-1 border-t px-2 py-1.5"
+          style={{ borderColor: panelColorTint(STATUS_CONFIG.C.color, 34), backgroundColor: panelColorTint(STATUS_CONFIG.C.color, 7) }}
+        >
+          <span className="flex items-center gap-1.5 text-[11px] font-bold" style={{ color: STATUS_CONFIG.C.color }}>
+            <GitMerge size={12} strokeWidth={2} />
+            {t("git.smartCheckout.conflictTitle")}
+          </span>
+          <span className="text-[10px] leading-snug" style={{ color: TERM.dim }}>
+            {t("git.smartCheckout.conflictHint")}
           </span>
         </div>
       )}

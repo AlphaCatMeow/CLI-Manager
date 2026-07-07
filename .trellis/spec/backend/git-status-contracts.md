@@ -202,6 +202,7 @@ pub async fn git_smart_checkout_branch(
 - Bad: 普通 checkout 失败后前端直接自动调用 Smart Checkout。
 - Bad: `stash apply` 成功后自动 `stash drop`，导致用户失去恢复点。
 - Bad: checkout 失败后不尝试把 stash apply 回原分支。
+- Bad: `stash apply` 冲突时复用 pull/rebase 冲突横幅或调用 `git_pull_abort` / `merge --abort`；该场景不存在可自动中止的 merge state。
 
 ### 6. Tests Required
 
