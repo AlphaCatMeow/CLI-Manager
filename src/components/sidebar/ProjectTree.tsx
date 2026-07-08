@@ -265,6 +265,7 @@ export function ProjectTree({
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const treeContainerRef = useRef<HTMLDivElement | null>(null);
+  const suppressClickAfterDragRef = useRef(false);
   const searchActive = searchOpen && searchQuery.trim().length > 0;
   const filteredTree = useMemo(
     () => (searchActive ? filterTreeNodes(tree, searchQuery) : tree),
@@ -687,7 +688,10 @@ export function ProjectTree({
       <DndContext
         sensors={sensors}
         collisionDetection={treeCollisionDetection}
-        onDragStart={(event: DragStartEvent) => setActiveId(String(event.active.id))}
+        onDragStart={(event: DragStartEvent) => {
+          suppressClickAfterDragRef.current = true;
+          setActiveId(String(event.active.id));
+        }}
         onDragCancel={() => setActiveId(null)}
         onDragEnd={(event) => {
           setActiveId(null);
@@ -706,6 +710,12 @@ export function ProjectTree({
             tabIndex={-1}
             className={`${shouldFillTreeArea ? "min-h-full" : ""} outline-none`}
             onKeyDown={handleTreeKeyDown}
+            onClickCapture={(event) => {
+              if (!suppressClickAfterDragRef.current) return;
+              suppressClickAfterDragRef.current = false;
+              event.preventDefault();
+              event.stopPropagation();
+            }}
             onMouseDown={(event) => {
               if (event.button === 2) return;
               const target = event.target as HTMLElement | null;
