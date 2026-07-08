@@ -739,6 +739,11 @@ pub async fn history_list_sessions(
                 .into_iter()
                 .filter_map(|entry| {
                     let file_ref = &entry.file_ref;
+                    if let Some(filter) = &source_filter {
+                        if &file_ref.source != filter {
+                            return None;
+                        }
+                    }
                     let matched = target_project_path
                         .as_ref()
                         .map(|project_path| session_matches_project_path(&file_ref, project_path))
