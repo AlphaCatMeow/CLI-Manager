@@ -61,6 +61,7 @@ import { useI18n } from "../../../lib/i18n";
 const SWATCH_KEYS = ["background", "foreground", "red", "green", "blue", "cyan"] as const;
 const TERMINAL_FONT_FALLBACK = "monospace";
 type TerminalSettingsSectionKey = "behavior" | "shells" | "themes" | "background";
+type TerminalThemeLibraryMode = "light" | "dark" | "system";
 
 const DEFAULT_EXPANDED_SECTIONS: Record<TerminalSettingsSectionKey, boolean> = {
   behavior: true,
@@ -123,6 +124,10 @@ function clampTerminalScrollbackRows(value: number) {
   return Math.min(TERMINAL_SCROLLBACK_ROWS_MAX, Math.max(TERMINAL_SCROLLBACK_ROWS_MIN, Math.round(value)));
 }
 
+function getFirstTerminalThemeIdByTone(tone: "light" | "dark") {
+  return TERMINAL_THEME_PRESETS.find((preset) => preset.tone === tone)?.id ?? TERMINAL_THEME_PRESETS[0]?.id;
+}
+
 function CollapsibleSettingsSection({
   title,
   description,
@@ -181,6 +186,7 @@ export function ThemeSettingsPage() {
   const { language, t } = useI18n();
   const text = (zh: string, en: string) => (language === "zh-CN" ? zh : en);
   const terminalThemeName = useSettingsStore((s) => s.terminalThemeName);
+  const terminalThemeMode = useSettingsStore((s) => s.terminalThemeMode);
   const resolvedTheme = useSettingsStore((s) => s.resolvedTheme);
   const lightThemePalette = useSettingsStore((s) => s.lightThemePalette);
   const darkThemePalette = useSettingsStore((s) => s.darkThemePalette);
@@ -200,6 +206,7 @@ export function ThemeSettingsPage() {
   const projectScopedTerminalViewEnabled = useSettingsStore((s) => s.projectScopedTerminalViewEnabled);
   const terminalShellProfiles = useSettingsStore((s) => s.terminalShellProfiles);
   const update = useSettingsStore((s) => s.update);
+  const setTerminalThemeMode = useSettingsStore((s) => s.setTerminalThemeMode);
   const [query, setQuery] = useState("");
   const [fontSizeDraft, setFontSizeDraft] = useState(fontSize);
   const [terminalScrollbackRowsDraft, setTerminalScrollbackRowsDraft] = useState(terminalScrollbackRows);
@@ -272,13 +279,36 @@ export function ThemeSettingsPage() {
     setTerminalScrollbackRowsDraft(terminalScrollbackRows);
   }, [terminalScrollbackRows]);
 
-  const effectiveThemeName = terminalThemeName;
+  const effectiveThemeName = terminalThemeMode === "system" ? "auto" : terminalThemeName;
+
+  const autoThemeId = useMemo(
+    () => resolveTerminalThemeId("auto", resolvedTheme, lightThemePalette, darkThemePalette),
+    [darkThemePalette, lightThemePalette, resolvedTheme]
+  );
+  const selectedResolvedThemeId = useMemo(
+    () => resolveTerminalThemeId(effectiveThemeName, resolvedTheme, lightThemePalette, darkThemePalette),
+    [darkThemePalette, effectiveThemeName, lightThemePalette, resolvedTheme]
+  );
+  const selectedPreset = useMemo(
+    () => TERMINAL_THEME_PRESETS.find((item) => item.id === selectedResolvedThemeId) ?? null,
+    [selectedResolvedThemeId]
+  );
+  const themeLibraryMode: TerminalThemeLibraryMode =
+    terminalThemeMode === "system" || terminalThemeName === "auto"
+      ? "system"
+      : selectedPreset?.tone === "light"
+        ? "light"
+        : "dark";
 
   const filtered = useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    if (!keyword) return TERMINAL_THEME_PRESETS;
-    return TERMINAL_THEME_PRESETS.filter((preset) => preset.name.toLowerCase().includes(keyword));
-  }, [query]);
+    const scoped =
+      themeLibraryMode === "system"
+        ? TERMINAL_THEME_PRESETS.filter((preset) => preset.id === autoThemeId)
+        : TERMINAL_THEME_PRESETS.filter((preset) => preset.tone === themeLibraryMode);
+    if (!keyword) return scoped;
+    return scoped.filter((preset) => preset.name.toLowerCase().includes(keyword));
+  }, [autoThemeId, query, themeLibraryMode]);
 
   const groupedThemes = useMemo(
     () =>
@@ -291,16 +321,38 @@ export function ThemeSettingsPage() {
 
   const selectedTheme = useMemo(() => {
     const effective = getTerminalTheme(effectiveThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
-    const resolvedThemeId = resolveTerminalThemeId(effectiveThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
-    const selectedPreset =
-      TERMINAL_THEME_PRESETS.find((item) => item.id === resolvedThemeId) ??
-      null;
     return {
       label:
         selectedPreset?.name ?? text("独立终端主题", "Independent terminal theme"),
       theme: effective,
     };
-  }, [darkThemePalette, effectiveThemeName, language, lightThemePalette, resolvedTheme]);
+  }, [darkThemePalette, effectiveThemeName, language, lightThemePalette, resolvedTheme, selectedPreset]);
+
+  const themeLibraryOptions = useMemo(
+    () => [
+      { value: "light" as const, label: t("settings.options.theme.light") },
+      { value: "dark" as const, label: t("settings.options.theme.dark") },
+      { value: "system" as const, label: t("settings.options.theme.system") },
+    ],
+    [t]
+  );
+
+  const selectIndependentTerminalTheme = async (themeName: string) => {
+    await update("terminalThemeName", themeName);
+    await setTerminalThemeMode("independent");
+  };
+
+  const handleThemeLibraryModeChange = (value: TerminalThemeLibraryMode) => {
+    if (value === "system") {
+      void setTerminalThemeMode("system");
+      return;
+    }
+    const nextThemeName =
+      terminalThemeMode !== "system" && terminalThemeName !== "auto" && selectedPreset?.tone === value
+        ? selectedPreset.id
+        : getFirstTerminalThemeIdByTone(value);
+    if (nextThemeName) void selectIndependentTerminalTheme(nextThemeName);
+  };
 
   const fontFamilyOptions = useMemo(
     () =>
@@ -910,6 +962,14 @@ export function ThemeSettingsPage() {
           className="xl:col-start-1 xl:row-start-3"
         >
           <Stack gap="md">
+            <SegmentedControl<TerminalThemeLibraryMode>
+              value={themeLibraryMode}
+              onChange={handleThemeLibraryModeChange}
+              data={themeLibraryOptions}
+              color="cliPrimary"
+              fullWidth
+              aria-label={text("终端主题分组", "Terminal theme group")}
+            />
             <Group align="flex-end" justify="space-between" gap="md">
               <TextInput
                 value={query}
@@ -938,12 +998,15 @@ export function ThemeSettingsPage() {
                 </Group>
                 <SimpleGrid cols={{ base: 1, sm: 2, xl: 3 }} spacing="xs">
                   {group.presets.map((preset) => {
-                    const active = terminalThemeName === preset.id;
+                    const active =
+                      terminalThemeMode === "system" || terminalThemeName === "auto"
+                        ? selectedResolvedThemeId === preset.id
+                        : terminalThemeName === preset.id;
                     return (
                       <UnstyledButton
                         key={preset.id}
                         onClick={() => {
-                          void update("terminalThemeName", preset.id);
+                          void selectIndependentTerminalTheme(preset.id);
                         }}
                         className="ui-interactive ui-focus-ring ui-selection-card relative rounded-xl border p-4 text-left transition-[transform,box-shadow,border-color,background-color]"
                         data-selected={active ? "true" : "false"}

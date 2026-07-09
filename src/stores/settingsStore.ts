@@ -40,7 +40,7 @@ export type DarkThemePalette =
   | "terminal-green"
   | "dracula-purple"
   | "carbon-black";
-export type TerminalThemeMode = "follow-app" | "independent";
+export type TerminalThemeMode = "system" | "independent";
 export type SidebarDensity = "compact" | "comfortable";
 export type ViewMode = "standard" | "compact";
 export type CloseBehavior = "ask" | "minimize" | "exit";
@@ -865,7 +865,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     entries.language = migrateLanguagePreference(entries.language);
     entries.lastSettingsTab = migrateLastSettingsTab(entries.lastSettingsTab);
     const debugMode = (entries.debugMode as boolean) ?? DEFAULTS.debugMode;
-    const storedTerminalThemeMode = entries.terminalThemeMode as TerminalThemeMode | undefined;
+    const storedTerminalThemeMode = entries.terminalThemeMode as unknown;
     const resolvedTheme = resolveTheme(theme);
 
     const storedLightThemePalette = entries.lightThemePalette;
@@ -888,12 +888,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       persistSetting("terminalThemeName", terminalThemeName);
     }
 
-    if (storedTerminalThemeMode === "follow-app" || terminalThemeName === "auto") {
-      terminalThemeName = resolveAutoTerminalThemeId(resolvedTheme, lightThemePalette, darkThemePalette);
+    const terminalThemeMode: TerminalThemeMode =
+      storedTerminalThemeMode === "system" || storedTerminalThemeMode === "follow-app" || terminalThemeName === "auto"
+        ? "system"
+        : "independent";
+    if (terminalThemeMode === "system" && terminalThemeName !== "auto") {
+      terminalThemeName = "auto";
       persistSetting("terminalThemeName", terminalThemeName);
     }
-    const terminalThemeMode: TerminalThemeMode = "independent";
-    if (storedTerminalThemeMode === "follow-app") {
+    if (storedTerminalThemeMode !== terminalThemeMode) {
       persistSetting("terminalThemeMode", terminalThemeMode);
     }
 
@@ -1213,7 +1216,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const current = get();
     let nextThemeName = current.terminalThemeName;
 
-    if (nextThemeName === "auto" || mode === "follow-app") {
+    if (mode === "system") {
+      await s.set("terminalThemeMode", "system");
+      await s.set("terminalThemeName", "auto");
+      set({ terminalThemeMode: "system", terminalThemeName: "auto" });
+      return;
+    }
+
+    if (nextThemeName === "auto") {
       nextThemeName = resolveAutoTerminalThemeId(
         current.resolvedTheme,
         current.lightThemePalette,
