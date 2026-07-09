@@ -44,11 +44,12 @@ export function formatAiPath(
 }
 
 export function formatAiPathBlock(
-  project: Pick<Project, "name">,
   relativePath: string,
   kind: ProjectFileEntry["kind"] = "file"
 ): string {
-  return formatAiPath(project, relativePath, kind);
+  const normalizedPath = normalizeRelativePath(relativePath);
+  const path = normalizedPath ? `@${normalizedPath}` : "@";
+  return kind === "directory" && normalizedPath ? `${path}/` : path;
 }
 
 export function formatTerminalDragPath(

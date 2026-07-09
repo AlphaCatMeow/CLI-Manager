@@ -65,14 +65,6 @@ const FILE_EXPLORER_ENTRY_MIME = "application/x-cli-manager-file-entry";
 const FILE_WATCH_REFRESH_DEBOUNCE_MS = 600;
 const POINTER_DRAG_START_PX = 6;
 
-const formatTerminalLocalPath = (projectPath: string, entry: ProjectFileEntry) => {
-  const separator = projectPath.includes("\\") ? "\\" : "/";
-  const root = projectPath.replace(/[\\/]+$/u, "");
-  const relativePath = entry.path.replace(/^[/\\]+/u, "").replace(/[\\/]/g, separator);
-  const path = relativePath ? `${root}${separator}${relativePath}` : root;
-  return entry.kind === "directory" ? `${path.replace(/[\\/]+$/u, "")}${separator}` : path;
-};
-
 interface AutoCollapseGroupState {
   expandedGroupPaths: Set<string>;
   ignoredPaths: Set<string>;
@@ -607,7 +599,7 @@ function FileNode({
                 <FolderOpen size={13} /> {t("files.menu.openContainingFolder")}
               </ContextMenuItem>
               <ContextMenuSeparator />
-              <ContextMenuItem onSelect={() => void copyAiText(formatAiPathBlock(project, displayEntry.path, displayEntry.kind), t("files.toast.aiPathCopied"))}>
+              <ContextMenuItem onSelect={() => void copyAiText(formatAiPathBlock(displayEntry.path, displayEntry.kind), t("files.toast.aiPathCopied"))}>
                 <Copy size={13} /> {t("files.menu.copyAiPath")}
               </ContextMenuItem>
               {isDir && (
@@ -1137,7 +1129,7 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
 
   const handleFileDragStart = useCallback((event: ReactDragEvent<HTMLElement>, entry: ProjectFileEntry) => {
     if (!project) return;
-    const text = formatTerminalLocalPath(project.path, entry);
+    const text = formatAiPathBlock(entry.path, entry.kind);
     beginTerminalFileDrag(text);
     updateTerminalFileDragPointFromEvent(event);
     event.dataTransfer.effectAllowed = "copyMove";
@@ -1203,7 +1195,7 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
         resetPointerDrag();
         return;
       }
-      beginTerminalFileDrag(formatTerminalLocalPath(project.path, state.entry));
+      beginTerminalFileDrag(formatAiPathBlock(state.entry.path, state.entry.kind));
       document.body.style.userSelect = "none";
     }
 
@@ -1321,7 +1313,7 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
           <ContextMenuItem onSelect={() => void openFileBrowserFolder(project.path, match.path, t)}>
             <FolderOpen size={13} /> {t("files.menu.openContainingFolder")}
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => void copyAiText(formatAiPathBlock(project, match.path, "file"), t("files.toast.aiPathCopied"))}>
+          <ContextMenuItem onSelect={() => void copyAiText(formatAiPathBlock(match.path, "file"), t("files.toast.aiPathCopied"))}>
             <Copy size={13} /> {t("files.menu.copyAiPath")}
           </ContextMenuItem>
           {(() => {
@@ -1415,7 +1407,7 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
           <ContextMenuItem onSelect={() => void openFileBrowserFolder(project.path, entry.path, t)}>
             <FolderOpen size={13} /> {t("files.menu.openContainingFolder")}
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => void copyAiText(formatAiPathBlock(project, entry.path, entry.kind), t("files.toast.aiPathCopied"))}>
+          <ContextMenuItem onSelect={() => void copyAiText(formatAiPathBlock(entry.path, entry.kind), t("files.toast.aiPathCopied"))}>
             <Copy size={13} /> {t("files.menu.copyAiPath")}
           </ContextMenuItem>
           {entry.kind === "directory" && (
@@ -1436,7 +1428,7 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
 
   const copyRootAiPath = useCallback(() => {
     if (!project) return;
-    void copyAiText(formatAiPathBlock(project, "", "directory"), t("files.toast.aiPathCopied"));
+    void copyAiText(formatAiPathBlock("", "directory"), t("files.toast.aiPathCopied"));
   }, [project, t]);
 
   const copyRootAiTree = useCallback(() => {

@@ -194,3 +194,83 @@ pub async fn sync_local_import(zip_path: String) -> Result<SyncData, String> {
         .map_err(|e| format!("内部错误: {}", e))??;
     Ok(data)
 }
+
+// WebDAV 密码存 Windows 凭据管理器，固定条目（service=CLI-Manager, user=webdav），不落明文配置文件
+#[cfg(target_os = "windows")]
+fn webdav_password_entry() -> Result<keyring_core::Entry, String> {
+    use std::sync::OnceLock;
+    static STORE_INIT: OnceLock<Result<(), String>> = OnceLock::new();
+    STORE_INIT
+        .get_or_init(|| {
+            let store = windows_native_keyring_store::Store::new()
+                .map_err(|e| format!("初始化 Windows 凭据存储失败: {}", e))?;
+            keyring_core::set_default_store(store);
+            Ok(())
+        })
+        .clone()?;
+    keyring_core::Entry::new("CLI-Manager", "webdav")
+        .map_err(|e| format!("创建凭据条目失败: {}", e))
+}
+
+#[cfg(target_os = "windows")]
+fn delete_webdav_password_blocking() -> Result<(), String> {
+    let entry = webdav_password_entry()?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!("删除 WebDAV 密码失败: {}", e)),
+    }
+}
+
+#[tauri::command]
+pub async fn sync_save_password(password: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        tokio::task::spawn_blocking(move || {
+            if password.is_empty() {
+                return delete_webdav_password_blocking();
+            }
+            let entry = webdav_password_entry()?;
+            entry
+                .set_password(&password)
+                .map_err(|e| format!("保存 WebDAV 密码失败: {}", e))
+        })
+        .await
+        .map_err(|e| format!("内部错误: {}", e))?
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = password;
+        Err("WebDAV 密码安全存储仅支持 Windows".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn sync_load_password() -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        tokio::task::spawn_blocking(|| {
+            let entry = webdav_password_entry()?;
+            match entry.get_password() {
+                Ok(password) => Ok(Some(password)),
+                Err(keyring_core::Error::NoEntry) => Ok(None),
+                Err(e) => Err(format!("读取 WebDAV 密码失败: {}", e)),
+            }
+        })
+        .await
+        .map_err(|e| format!("内部错误: {}", e))?
+    }
+    #[cfg(not(target_os = "windows"))]
+    Ok(None)
+}
+
+#[tauri::command]
+pub async fn sync_delete_password() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        tokio::task::spawn_blocking(delete_webdav_password_blocking)
+            .await
+            .map_err(|e| format!("内部错误: {}", e))?
+    }
+    #[cfg(not(target_os = "windows"))]
+    Ok(())
+}

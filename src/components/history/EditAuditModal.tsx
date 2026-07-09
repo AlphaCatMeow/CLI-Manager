@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
-import { ArchiveRestore, History } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArchiveRestore, History, Undo2 } from "lucide-react";
+import { diffChars, type Change } from "diff";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { EmptyState } from "../ui/EmptyState";
 import { useHistoryStore } from "../../stores/historyStore";
 import { useI18n, type TranslationKey } from "../../lib/i18n";
-import type { HistoryBackupStatus, HistoryEditAuditEntry } from "../../lib/types";
+import type { HistoryBackupStatus, HistoryEditAuditEntry, HistoryMessage } from "../../lib/types";
 import { formatTime } from "./historyViewUtils";
 
 interface EditAuditModalProps {
@@ -22,35 +23,74 @@ const OP_LABEL_KEYS: Record<string, TranslationKey> = {
   restore: "history.edit.op.restore",
 };
 
-const OP_COLORS: Record<string, string> = {
-  edit: "var(--accent)",
-  delete: "var(--danger)",
-  insert: "var(--success)",
-  restore: "var(--warning)",
+const UNDO_TITLE_KEYS: Record<string, TranslationKey> = {
+  edit: "history.edit.undoEditTitle",
+  delete: "history.edit.undoDeleteTitle",
+  insert: "history.edit.undoInsertTitle",
 };
 
-function AuditTextBlock({ label, text, tone }: { label: string; text: string; tone: "before" | "after" }) {
+/** 字符级 diff 的一侧渲染：old 侧隐藏新增段、高亮删除段；new 侧反之。 */
+function DiffSegments({ parts, side }: { parts: Change[]; side: "old" | "new" }) {
   return (
-    <div className="min-w-0">
-      <div
-        className="ui-dev-label mb-0.5 text-[10px] font-semibold"
-        style={{ color: tone === "before" ? "var(--danger)" : "var(--success)" }}
-      >
-        {label}
-      </div>
-      <pre
-        className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-bg-secondary p-1.5 font-mono text-[11px] leading-4 text-text-primary"
-        style={{
-          borderColor:
-            tone === "before"
-              ? "color-mix(in srgb, var(--danger) 30%, var(--border) 70%)"
-              : "color-mix(in srgb, var(--success) 30%, var(--border) 70%)",
-        }}
-      >
-        {text}
-      </pre>
+    <>
+      {parts.map((part, index) => {
+        if (side === "old" && part.added) return null;
+        if (side === "new" && part.removed) return null;
+        const highlighted = side === "old" ? part.removed : part.added;
+        if (!highlighted) return <span key={index}>{part.value}</span>;
+        return side === "old" ? <del key={index}>{part.value}</del> : <ins key={index}>{part.value}</ins>;
+      })}
+    </>
+  );
+}
+
+function AuditDiffLine({ tone, children }: { tone: "del" | "ins"; children: React.ReactNode }) {
+  return (
+    <div className="ui-history-audit-line" data-tone={tone}>
+      <span className="ui-history-audit-gutter" aria-hidden="true">
+        {tone === "del" ? "−" : "＋"}
+      </span>
+      <span className="ui-history-audit-text">{children}</span>
     </div>
   );
+}
+
+function AuditDiff({ entry }: { entry: HistoryEditAuditEntry }) {
+  const parts = useMemo(
+    () =>
+      entry.op === "edit" && entry.before_text !== null && entry.after_text !== null
+        ? diffChars(entry.before_text, entry.after_text)
+        : null,
+    [entry.after_text, entry.before_text, entry.op]
+  );
+
+  if (entry.op === "edit" && parts) {
+    return (
+      <div className="ui-history-audit-diff">
+        <AuditDiffLine tone="del">
+          <DiffSegments parts={parts} side="old" />
+        </AuditDiffLine>
+        <AuditDiffLine tone="ins">
+          <DiffSegments parts={parts} side="new" />
+        </AuditDiffLine>
+      </div>
+    );
+  }
+  if (entry.op === "delete" && entry.before_text) {
+    return (
+      <div className="ui-history-audit-diff">
+        <AuditDiffLine tone="del">{entry.before_text}</AuditDiffLine>
+      </div>
+    );
+  }
+  if (entry.op === "insert" && entry.after_text) {
+    return (
+      <div className="ui-history-audit-diff">
+        <AuditDiffLine tone="ins">{entry.after_text}</AuditDiffLine>
+      </div>
+    );
+  }
+  return null;
 }
 
 export function EditAuditModal({ open, sessionKey, onClose }: EditAuditModalProps) {
@@ -58,12 +98,16 @@ export function EditAuditModal({ open, sessionKey, onClose }: EditAuditModalProp
   const listEditAudit = useHistoryStore((s) => s.listEditAudit);
   const fetchBackupStatus = useHistoryStore((s) => s.fetchBackupStatus);
   const restoreSessionBackup = useHistoryStore((s) => s.restoreSessionBackup);
+  const updateMessage = useHistoryStore((s) => s.updateMessage);
+  const deleteMessage = useHistoryStore((s) => s.deleteMessage);
+  const reinsertMessage = useHistoryStore((s) => s.reinsertMessage);
 
   const [entries, setEntries] = useState<HistoryEditAuditEntry[]>([]);
   const [backupStatus, setBackupStatus] = useState<HistoryBackupStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [undoingId, setUndoingId] = useState<number | null>(null);
 
   const reload = useCallback(async () => {
     if (!sessionKey) return;
@@ -102,6 +146,70 @@ export function EditAuditModal({ open, sessionKey, onClose }: EditAuditModalProp
     }
   };
 
+  // 撤回目标定位：审计里的行号会随后续编辑漂移，以"当前会话中内容 + 角色匹配、行号最近"为准。
+  const findCurrentMessage = useCallback(
+    (entry: HistoryEditAuditEntry): HistoryMessage | null => {
+      const state = useHistoryStore.getState();
+      if (state.activeSessionKey !== sessionKey) return null;
+      const targetText = entry.after_text;
+      if (!targetText) return null;
+      const candidates = (state.activeSession?.messages ?? []).filter(
+        (message) =>
+          message.editable === true &&
+          (message.editable_text ?? message.content) === targetText &&
+          (!entry.role || message.role === entry.role)
+      );
+      if (candidates.length === 0) return null;
+      if (entry.line_index === null) return candidates[0];
+      return candidates.reduce((best, message) =>
+        Math.abs((message.line_index ?? 0) - (entry.line_index ?? 0)) <
+        Math.abs((best.line_index ?? 0) - (entry.line_index ?? 0))
+          ? message
+          : best
+      );
+    },
+    [sessionKey]
+  );
+
+  const performUndo = useCallback(
+    async (entry: HistoryEditAuditEntry) => {
+      if (!sessionKey || undoingId !== null) return;
+      setUndoingId(entry.id);
+      try {
+        if (entry.op === "edit") {
+          const message = entry.before_text ? findCurrentMessage(entry) : null;
+          if (!message || !entry.before_text) {
+            toast.error(t("history.edit.undoTargetMissing"));
+            return;
+          }
+          await updateMessage(sessionKey, message, entry.before_text);
+        } else if (entry.op === "insert") {
+          const message = findCurrentMessage(entry);
+          if (!message) {
+            toast.error(t("history.edit.undoTargetMissing"));
+            return;
+          }
+          await deleteMessage(sessionKey, message);
+        } else if (entry.op === "delete") {
+          if (!entry.before_text || !entry.role) {
+            toast.error(t("history.edit.undoTargetMissing"));
+            return;
+          }
+          await reinsertMessage(sessionKey, entry.line_index ?? 0, entry.role, entry.before_text);
+        } else {
+          return;
+        }
+        toast.success(t("history.edit.undoSuccess"));
+        await reload();
+      } catch (err) {
+        toast.error(t("history.edit.failed"), { description: String(err) });
+      } finally {
+        setUndoingId(null);
+      }
+    },
+    [deleteMessage, findCurrentMessage, reinsertMessage, reload, sessionKey, t, undoingId, updateMessage]
+  );
+
   return (
     <>
       <Dialog
@@ -110,7 +218,7 @@ export function EditAuditModal({ open, sessionKey, onClose }: EditAuditModalProp
           if (!next) onClose();
         }}
       >
-        <DialogContent className="flex max-h-[76vh] w-[min(680px,92vw)] max-w-[680px] flex-col overflow-hidden">
+        <DialogContent className="flex max-h-[78vh] w-[min(700px,92vw)] max-w-[700px] flex-col overflow-hidden">
           <div className="flex items-center justify-between gap-2 pr-6">
             <DialogTitle className="flex items-center gap-1.5">
               <History size={14} />
@@ -133,46 +241,46 @@ export function EditAuditModal({ open, sessionKey, onClose }: EditAuditModalProp
             )}
           </div>
 
-          <div className="mt-2 min-h-0 flex-1 overflow-y-auto pr-1">
+          <div className="mt-1 min-h-0 flex-1 overflow-y-auto pr-1">
             {loading && <div className="text-xs text-text-muted">{t("history.detail.loading")}</div>}
             {!loading && entries.length === 0 && (
               <EmptyState icon={<History size={30} strokeWidth={1.5} />} title={t("history.edit.auditEmpty")} />
             )}
-            {!loading && entries.length > 0 && (
-              <div className="flex flex-col gap-2">
-                {entries.map((entry) => {
-                  const opLabelKey = OP_LABEL_KEYS[entry.op];
-                  return (
-                    <div key={entry.id} className="rounded-md border border-border bg-bg-primary p-2">
-                      <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-text-muted">
-                        <span
-                          className="rounded px-1.5 py-0.5 text-[10px] font-semibold"
-                          style={{
-                            color: OP_COLORS[entry.op] ?? "var(--text-secondary)",
-                            backgroundColor: `color-mix(in srgb, ${OP_COLORS[entry.op] ?? "var(--text-secondary)"} 12%, transparent)`,
+            {!loading &&
+              entries.map((entry) => {
+                const opLabelKey = OP_LABEL_KEYS[entry.op];
+                const undoTitleKey = UNDO_TITLE_KEYS[entry.op];
+                return (
+                  <div key={entry.id} className="ui-history-audit-entry">
+                    <div className="ui-history-audit-head">
+                      <span className="ui-history-audit-op" data-op={entry.op}>
+                        {opLabelKey ? t(opLabelKey) : entry.op}
+                      </span>
+                      {entry.role && <span className="ui-dev-label">{entry.role}</span>}
+                      {entry.line_index !== null && (
+                        <span className="ui-dev-label">{t("history.edit.auditLine", { line: entry.line_index })}</span>
+                      )}
+                      <span className="ui-history-audit-time">{formatTime(entry.created_at, language)}</span>
+                      {undoTitleKey && (
+                        <button
+                          type="button"
+                          className="ui-flat-action ui-toolbar-button ui-toolbar-button-compact"
+                          onClick={() => {
+                            void performUndo(entry);
                           }}
+                          disabled={undoingId !== null}
+                          title={t(undoTitleKey)}
+                          aria-label={t(undoTitleKey)}
                         >
-                          {opLabelKey ? t(opLabelKey) : entry.op}
-                        </span>
-                        {entry.role && <span className="ui-dev-label">{entry.role}</span>}
-                        {entry.line_index !== null && (
-                          <span className="ui-dev-label">{t("history.edit.auditLine", { line: entry.line_index })}</span>
-                        )}
-                        <span className="ml-auto">{formatTime(entry.created_at, language)}</span>
-                      </div>
-                      <div className="grid gap-1.5">
-                        {entry.before_text && (
-                          <AuditTextBlock label={t("history.edit.before")} text={entry.before_text} tone="before" />
-                        )}
-                        {entry.after_text && (
-                          <AuditTextBlock label={t("history.edit.after")} text={entry.after_text} tone="after" />
-                        )}
-                      </div>
+                          <Undo2 size={12} />
+                          {t("history.edit.undo")}
+                        </button>
+                      )}
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                    <AuditDiff entry={entry} />
+                  </div>
+                );
+              })}
           </div>
         </DialogContent>
       </Dialog>

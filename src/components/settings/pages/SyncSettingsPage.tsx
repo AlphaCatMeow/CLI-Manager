@@ -72,6 +72,7 @@ export function SyncSettingsPage() {
     load,
     setConfig,
     clearPassword,
+    getSessionPassword,
     testConnection,
     setDeviceName,
     setAutoSyncOnStartup,
@@ -129,11 +130,12 @@ export function SyncSettingsPage() {
     if (loaded) {
       setUrl(webdavUrl);
       setUsername(webdavUsername);
+      setPassword(getSessionPassword());
       setDeviceNameInput(deviceName);
       setRemoteDirInput(remoteDir);
       setPreviewDeviceName(deviceName);
     }
-  }, [loaded, webdavUrl, webdavUsername, deviceName, remoteDir]);
+  }, [loaded, webdavUrl, webdavUsername, hasPassword, getSessionPassword, deviceName, remoteDir]);
 
   const handleTest = async () => {
     if (!url.trim() || !username.trim() || !password.trim()) {
@@ -151,6 +153,8 @@ export function SyncSettingsPage() {
       } else {
         toast.error(text("连接失败", "Connection failed"), { description: result.message });
       }
+    } catch (error) {
+      toast.error(text("保存失败", "Save failed"), { description: error instanceof Error ? error.message : String(error) });
     } finally {
       setTesting(false);
     }
@@ -162,12 +166,16 @@ export function SyncSettingsPage() {
       return;
     }
 
-    if (password.trim()) {
-      await setConfig(url.trim(), username.trim(), password);
-      toast.success(text("配置已保存（包含密码）", "Configuration saved with password"));
-    } else {
-      await setConfig(url.trim(), username.trim());
-      toast.success(text("配置已保存", "Configuration saved"));
+    try {
+      if (password.trim()) {
+        await setConfig(url.trim(), username.trim(), password);
+        toast.success(text("配置已保存（包含密码）", "Configuration saved with password"));
+      } else {
+        await setConfig(url.trim(), username.trim());
+        toast.success(text("配置已保存", "Configuration saved"));
+      }
+    } catch (error) {
+      toast.error(text("保存失败", "Save failed"), { description: error instanceof Error ? error.message : String(error) });
     }
   };
 

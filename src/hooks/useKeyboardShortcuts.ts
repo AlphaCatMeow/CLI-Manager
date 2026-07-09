@@ -106,7 +106,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions = {}) {
         if (!project) return;
         e.preventDefault();
         void copyAiText(
-          formatAiPathBlock(project, activeFile?.path ?? "", activeFile ? "file" : "directory"),
+          formatAiPathBlock(activeFile?.path ?? "", activeFile ? "file" : "directory"),
           "AI 路径已复制"
         );
         return;

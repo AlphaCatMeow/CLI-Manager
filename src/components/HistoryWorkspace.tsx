@@ -10,6 +10,7 @@ import { useWorktreeStore } from "../stores/worktreeStore";
 import { useExternalSessionSyncStore } from "../stores/externalSessionSyncStore";
 import { useI18n } from "../lib/i18n";
 import { findWorktreeByPath, projectWithWorktreeProviderOverrides } from "../lib/terminalProject";
+import { appendResumeCliArgs } from "../lib/projectStartupCommand";
 import { PromptLibrary } from "./prompts/PromptLibrary";
 import { DiffModal } from "./history/DiffModal";
 import { EditAuditModal } from "./history/EditAuditModal";
@@ -110,11 +111,11 @@ function findHistoryProject(session: HistorySessionView | HistorySessionDetail, 
   }) ?? null;
 }
 
-function resolveResumeCommand(session: HistorySessionView | HistorySessionDetail): string | null {
+function resolveResumeCommand(session: HistorySessionView | HistorySessionDetail, project?: Project | null): string | null {
   const sessionId = session.session_id.trim();
   if (!sessionId || /\s/.test(sessionId) || /[\r\n]/.test(sessionId)) return null;
-  if (session.source === "claude") return `claude --resume ${sessionId}`;
-  if (session.source === "codex") return `codex resume ${sessionId}`;
+  if (session.source === "claude") return appendResumeCliArgs(`claude --resume ${sessionId}`, "claude", project);
+  if (session.source === "codex") return appendResumeCliArgs(`codex resume ${sessionId}`, "codex", project);
   return null;
 }
 
@@ -211,6 +212,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
   const updateMeta = useHistoryStore((s) => s.updateMeta);
   const updateMessage = useHistoryStore((s) => s.updateMessage);
   const deleteMessage = useHistoryStore((s) => s.deleteMessage);
+  const deleteMessages = useHistoryStore((s) => s.deleteMessages);
   const insertMessage = useHistoryStore((s) => s.insertMessage);
   const storedHistorySidebarWidth = useSettingsStore((s) => s.historySidebarWidth);
   const claudeConfigDir = useSettingsStore((s) => s.claudeHookConfigDir);
@@ -249,6 +251,8 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
   const [deleteIntent, setDeleteIntent] = useState<DeleteIntent | null>(null);
   const [editAuditOpen, setEditAuditOpen] = useState(false);
   const [deleteMessageIntent, setDeleteMessageIntent] = useState<HistoryMessage | null>(null);
+  const [batchDeleteIntent, setBatchDeleteIntent] = useState<HistoryMessage[] | null>(null);
+  const batchDeleteResolverRef = useRef<((done: boolean) => void) | null>(null);
   const [liveEditWarningOpen, setLiveEditWarningOpen] = useState(false);
   const liveEditResolverRef = useRef<((allowed: boolean) => void) | null>(null);
 
@@ -729,20 +733,60 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
       : base;
   }, [deleteMessageIntent, isActiveSessionLive, t]);
 
+  // 批量删除：确认弹窗 + 执行结果通过 resolver 回传给 pane（成功则退出选择模式）。
+  const finishBatchDelete = useCallback((done: boolean) => {
+    setBatchDeleteIntent(null);
+    batchDeleteResolverRef.current?.(done);
+    batchDeleteResolverRef.current = null;
+  }, []);
+
+  const requestDeleteMessages = useCallback((messages: HistoryMessage[]): Promise<boolean> => {
+    if (messages.length === 0) return Promise.resolve(false);
+    batchDeleteResolverRef.current?.(false);
+    setBatchDeleteIntent(messages);
+    return new Promise<boolean>((resolve) => {
+      batchDeleteResolverRef.current = resolve;
+    });
+  }, []);
+
+  const confirmBatchDeleteMessages = useCallback(async () => {
+    const messages = batchDeleteIntent;
+    if (!messages || !activeSessionKey) {
+      finishBatchDelete(false);
+      return;
+    }
+    try {
+      await deleteMessages(activeSessionKey, messages);
+      toast.success(t("history.edit.batchDeleteSuccess", { count: messages.length }));
+      finishBatchDelete(true);
+    } catch (err) {
+      handleMessageEditError(err);
+      finishBatchDelete(false);
+    }
+  }, [activeSessionKey, batchDeleteIntent, deleteMessages, finishBatchDelete, handleMessageEditError, t]);
+
+  const batchDeleteDialogMessage = useMemo(() => {
+    const base = t("history.edit.batchDeleteConfirmMessage");
+    return batchDeleteIntent && isActiveSessionLive()
+      ? `${base} ${t("history.edit.liveWarningMessage")}`
+      : base;
+  }, [batchDeleteIntent, isActiveSessionLive, t]);
+
   const resumeConversation = useCallback(async () => {
     if (!activeSession) {
       toast.error("会话详情尚未加载完成");
       return;
     }
 
-    const command = resolveResumeCommand(activeSession);
+    const worktree = findHistoryWorktree(activeSession, worktrees);
+    const project = findHistoryProject(activeSession, projects) ?? findProjectForWorktree(worktree, projects);
+    const launchProject = project && worktree ? projectWithWorktreeProviderOverrides(project, worktree) : project;
+    const command = resolveResumeCommand(activeSession, launchProject);
     if (!command) {
       toast.error("无法继续对话", { description: "历史会话缺少有效的 sessionId 或来源不受支持" });
       return;
     }
 
-    const worktree = findHistoryWorktree(activeSession, worktrees);
-    const project = findHistoryProject(activeSession, projects) ?? findProjectForWorktree(worktree, projects);
     const cwd = resolveHistoryResumeCwd(activeSession, project, worktree);
     if (!cwd) {
       toast.error("无法继续对话", { description: "未能识别该历史会话的项目目录" });
@@ -750,7 +794,6 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
     }
 
     try {
-      const launchProject = project && worktree ? projectWithWorktreeProviderOverrides(project, worktree) : project;
       const projectName = project?.name.trim();
       const title = worktree
         ? `${projectName || activeSession.project_key || activeSession.title} · ${worktree.name}`
@@ -867,21 +910,21 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
 
   const resumeSessionInTerminal = useCallback(
     (session: HistorySessionView) => {
-      const command = resolveResumeCommand(session);
+      const worktree = findHistoryWorktree(session, worktrees);
+      const project = findHistoryProject(session, projects) ?? findProjectForWorktree(worktree, projects);
+      const launchProject = project && worktree ? projectWithWorktreeProviderOverrides(project, worktree) : project;
+      const command = resolveResumeCommand(session, launchProject);
       if (!command) {
         toast.error(t("history.toast.resumeTerminalFailed"), { description: "历史会话缺少有效的 sessionId 或来源不受支持" });
         return;
       }
 
-      const worktree = findHistoryWorktree(session, worktrees);
-      const project = findHistoryProject(session, projects) ?? findProjectForWorktree(worktree, projects);
       const cwd = resolveHistoryResumeCwd(session, project, worktree);
       if (!cwd) {
         toast.error(t("history.toast.resumeTerminalFailed"), { description: "未能识别该历史会话的项目目录" });
         return;
       }
 
-      const launchProject = project && worktree ? projectWithWorktreeProviderOverrides(project, worktree) : project;
       const shell = launchProject?.shell && launchProject.shell !== "powershell" ? launchProject.shell : undefined;
       const projectName = project?.name.trim();
       const title = worktree
@@ -1070,6 +1113,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
             onRequestMessageEdit={confirmMessageEditAllowed}
             onSaveMessageEdit={handleSaveMessageEdit}
             onDeleteMessage={setDeleteMessageIntent}
+            onDeleteMessages={requestDeleteMessages}
             onInsertMessage={handleInsertMessage}
             onOpenEditAudit={() => setEditAuditOpen(true)}
           />
@@ -1119,6 +1163,19 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
           void confirmDeleteMessage();
         }}
         onClose={() => setDeleteMessageIntent(null)}
+      />
+
+      <ConfirmDialog
+        open={batchDeleteIntent !== null}
+        title={t("history.edit.batchDeleteConfirmTitle", { count: batchDeleteIntent?.length ?? 0 })}
+        message={batchDeleteDialogMessage}
+        confirmText={t("common.delete")}
+        cancelText={t("common.cancel")}
+        danger
+        onConfirm={() => {
+          void confirmBatchDeleteMessages();
+        }}
+        onClose={() => finishBatchDelete(false)}
       />
 
       <ConfirmDialog

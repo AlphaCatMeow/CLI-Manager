@@ -3,13 +3,16 @@ import {
   ArrowRightLeft,
   BookCopy,
   Check,
+  CheckSquare,
   ChevronDown,
   ChevronRight,
   Copy,
   CornerDownRight,
   GitCompare,
   History,
+  ListChecks,
   Pencil,
+  Square,
   Star,
   Terminal,
   Trash2,
@@ -77,6 +80,8 @@ interface SessionDetailPaneProps {
   /** 保存编辑；返回 true 表示成功（关闭编辑态）。 */
   onSaveMessageEdit: (message: HistoryMessage, newText: string) => Promise<boolean>;
   onDeleteMessage: (message: HistoryMessage) => void;
+  /** 批量删除；确认并执行完成返回 true（退出选择模式）。 */
+  onDeleteMessages: (messages: HistoryMessage[]) => Promise<boolean>;
   /** 插入消息；返回 true 表示成功（关闭插入表单）。 */
   onInsertMessage: (message: HistoryMessage, role: "user" | "assistant", text: string) => Promise<boolean>;
   onOpenEditAudit: () => void;
@@ -240,6 +245,9 @@ interface HistoryMessageCardProps {
   onSubmitInsert: () => void;
   onCopyMessage: () => void;
   onDeleteMessage: () => void;
+  selectionMode: boolean;
+  isSelected: boolean;
+  onToggleSelect: () => void;
 }
 
 function HistoryMessageCard({
@@ -269,6 +277,9 @@ function HistoryMessageCard({
   onSubmitInsert,
   onCopyMessage,
   onDeleteMessage,
+  selectionMode,
+  isSelected,
+  onToggleSelect,
 }: HistoryMessageCardProps) {
   const { t } = useI18n();
   const roleKind = normalizeMessageRole(message.role);
@@ -320,6 +331,8 @@ function HistoryMessageCard({
     <div
       data-index={index}
       data-role={roleKind}
+      data-editing={isEditing ? "true" : undefined}
+      data-inserting={isInserting ? "true" : undefined}
       ref={setCardRef}
       className="ui-history-message-card absolute left-0 top-0 w-full px-2.5 py-2"
       style={{
@@ -333,12 +346,25 @@ function HistoryMessageCard({
       )}
       <div className="ui-history-message-stack">
         <div className="ui-history-message-header">
+          {selectionMode && messageEditable && (
+            <button
+              type="button"
+              className="ui-history-message-select"
+              data-selected={isSelected ? "true" : undefined}
+              onClick={onToggleSelect}
+              title={t("history.edit.selectMessage")}
+              aria-label={t("history.edit.selectMessage")}
+              aria-pressed={isSelected}
+            >
+              {isSelected ? <CheckSquare size={13} /> : <Square size={13} />}
+            </button>
+          )}
           {messageMeta && (
             <div className="ui-history-message-meta" title={messageMeta}>
               {messageMeta}
             </div>
           )}
-          {!isEditing && (
+          {!isEditing && !selectionMode && (
             <div className="ui-history-message-actions">
               <button
                 type="button"
@@ -548,6 +574,7 @@ export function SessionDetailPane({
   onRequestMessageEdit,
   onSaveMessageEdit,
   onDeleteMessage,
+  onDeleteMessages,
   onInsertMessage,
   onOpenEditAudit,
 }: SessionDetailPaneProps) {
@@ -560,6 +587,9 @@ export function SessionDetailPane({
   const [insertRole, setInsertRole] = useState<InsertRole>("user");
   const [insertDraft, setInsertDraft] = useState("");
   const [insertSaving, setInsertSaving] = useState(false);
+  const [messageSelectionMode, setMessageSelectionMode] = useState(false);
+  const [selectedMessageIndices, setSelectedMessageIndices] = useState<Set<number>>(new Set());
+  const [batchDeleting, setBatchDeleting] = useState(false);
 
   useEffect(() => {
     setEditingIndex(null);
@@ -569,6 +599,9 @@ export function SessionDetailPane({
     setInsertRole("user");
     setInsertDraft("");
     setInsertSaving(false);
+    setMessageSelectionMode(false);
+    setSelectedMessageIndices(new Set());
+    setBatchDeleting(false);
   }, [activeView?.sessionKey]);
   // matchIndices.includes(idx) 在 visibleMessages.map 内对每个可见消息做 O(N) 扫描，
   // 当匹配数 N 和可见消息数 M 都达到几百时累计 O(N·M)。改 Set 后是 O(1) lookup。
@@ -658,6 +691,51 @@ export function SessionDetailPane({
       }
     } finally {
       setInsertSaving(false);
+    }
+  };
+
+  const exitMessageSelection = () => {
+    setMessageSelectionMode(false);
+    setSelectedMessageIndices(new Set());
+  };
+
+  const toggleMessageSelectionMode = () => {
+    if (messageSelectionMode) {
+      exitMessageSelection();
+      return;
+    }
+    setEditingIndex(null);
+    setInsertIndex(null);
+    setMessageSelectionMode(true);
+    onDetailViewChange("transcript");
+  };
+
+  const toggleMessageSelected = (index: number) => {
+    setSelectedMessageIndices((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+  };
+
+  const submitBatchDelete = async () => {
+    if (batchDeleting) return;
+    const messages = Array.from(selectedMessageIndices)
+      .sort((a, b) => a - b)
+      .map((index) => visibleMessages[index])
+      .filter((message): message is HistoryMessage => Boolean(message?.editable));
+    if (messages.length === 0) return;
+    setBatchDeleting(true);
+    try {
+      if (await onDeleteMessages(messages)) {
+        exitMessageSelection();
+      }
+    } finally {
+      setBatchDeleting(false);
     }
   };
 
@@ -753,6 +831,19 @@ export function SessionDetailPane({
               <History size={12} />
               {t("history.edit.auditOpen")}
             </button>
+            {canEditMessages && (
+              <button
+                onClick={toggleMessageSelectionMode}
+                aria-label={t("history.edit.batchDelete")}
+                aria-pressed={messageSelectionMode}
+                className="ui-flat-action ui-toolbar-button ui-toolbar-button-compact"
+                style={{ color: messageSelectionMode ? "var(--accent)" : "var(--text-secondary)" }}
+                title={t("history.edit.batchDelete")}
+              >
+                <ListChecks size={12} />
+                {t("history.edit.batchDelete")}
+              </button>
+            )}
             <button
               onClick={onToggleStar}
               aria-label={activeView.starred ? t("history.detail.unstar") : t("history.detail.star")}
@@ -800,6 +891,35 @@ export function SessionDetailPane({
             </button>
           ))}
         </div>
+
+        {messageSelectionMode && (
+          <div className="ui-history-message-select-bar">
+            <span>{t("history.edit.selectedCount", { count: selectedMessageIndices.size })}</span>
+            <span className="ui-history-message-edit-buttons">
+              <button
+                type="button"
+                className="ui-flat-action ui-toolbar-button ui-toolbar-button-compact"
+                onClick={exitMessageSelection}
+                disabled={batchDeleting}
+              >
+                <X size={12} />
+                {t("common.cancel")}
+              </button>
+              <button
+                type="button"
+                className="ui-flat-action ui-toolbar-button ui-toolbar-button-compact"
+                style={{ color: "var(--danger)" }}
+                onClick={() => {
+                  void submitBatchDelete();
+                }}
+                disabled={batchDeleting || selectedMessageIndices.size === 0}
+              >
+                <Trash2 size={12} />
+                {t("history.edit.batchDeleteSelected")}
+              </button>
+            </span>
+          </div>
+        )}
       </div>
 
       <div
@@ -859,6 +979,9 @@ export function SessionDetailPane({
                     }}
                     onCopyMessage={() => copyMessageContent(msg)}
                     onDeleteMessage={() => onDeleteMessage(msg)}
+                    selectionMode={messageSelectionMode}
+                    isSelected={selectedMessageIndices.has(virtualRow.index)}
+                    onToggleSelect={() => toggleMessageSelected(virtualRow.index)}
                   />
                 </div>
               );

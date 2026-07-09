@@ -114,12 +114,15 @@ interface HistoryStore {
   updateMeta: (sessionKey: string, patch: MetaPatchInput) => Promise<void>;
   updateMessage: (sessionKey: string, message: HistoryMessage, newText: string) => Promise<void>;
   deleteMessage: (sessionKey: string, message: HistoryMessage) => Promise<void>;
+  deleteMessages: (sessionKey: string, messages: HistoryMessage[]) => Promise<void>;
   insertMessage: (
     sessionKey: string,
     afterMessage: HistoryMessage,
     role: "user" | "assistant",
     text: string
   ) => Promise<void>;
+  /** 审计撤回"删除"用：按原行号提示就近恢复一条消息（行号漂移由后端锚点扫描兜底）。 */
+  reinsertMessage: (sessionKey: string, lineIndexHint: number, role: string, text: string) => Promise<void>;
   restoreSessionBackup: (sessionKey: string) => Promise<void>;
   fetchBackupStatus: (sessionKey: string) => Promise<HistoryBackupStatus>;
   listEditAudit: (sessionKey: string, limit?: number) => Promise<HistoryEditAuditEntry[]>;
@@ -1064,6 +1067,31 @@ function normalizeEditOutcome(raw: unknown): HistoryEditOutcome {
   };
 }
 
+interface HistoryBatchDeleteOutcome {
+  detail: HistorySessionDetail;
+  backupPath: string | null;
+  removed: Array<{ lineIndex: number | null; role: string; text: string }>;
+}
+
+function normalizeBatchDeleteOutcome(raw: unknown): HistoryBatchDeleteOutcome {
+  const rec = (raw ?? {}) as Record<string, unknown>;
+  const removedRaw = Array.isArray(rec.removed) ? rec.removed : [];
+  return {
+    detail: normalizeDetail(rec.detail),
+    backupPath: asString(rec.backupPath ?? rec.backup_path ?? "") || null,
+    removed: removedRaw.map((item) => {
+      const removed = (item ?? {}) as Record<string, unknown>;
+      const rawLineIndex = removed.lineIndex ?? removed.line_index;
+      return {
+        lineIndex:
+          typeof rawLineIndex === "number" && Number.isFinite(rawLineIndex) ? rawLineIndex : null,
+        role: asString(removed.role),
+        text: asString(removed.text),
+      };
+    }),
+  };
+}
+
 function normalizeBackupStatus(raw: unknown): HistoryBackupStatus {
   const rec = (raw ?? {}) as Record<string, unknown>;
   const backupAtRaw = rec.backupAt ?? rec.backup_at;
@@ -1127,6 +1155,25 @@ function mergeDetailIntoSessions(
   );
 }
 
+/** 编辑写回成功后的共用状态应用：原地替换 detail、更新列表摘要、同步收藏快照。 */
+async function applyEditedDetail(
+  sessionKey: string,
+  target: HistorySessionView,
+  detail: HistorySessionDetail
+): Promise<void> {
+  useHistoryStore.setState((state) => ({
+    activeSession: state.activeSessionKey === sessionKey ? detail : state.activeSession,
+    sessions: mergeDetailIntoSessions(state.sessions, sessionKey, detail),
+  }));
+  if (target.starred) {
+    try {
+      await writeFavoriteSnapshot(sessionKey, detail);
+    } catch (err) {
+      logWarn("history.edit.snapshotSyncFailed", { sessionKey, error: String(err) });
+    }
+  }
+}
+
 /** 编辑命令成功后的统一收尾：原地替换 detail、更新列表摘要、写审计、同步收藏快照。 */
 async function finalizeEditOutcome(options: {
   sessionKey: string;
@@ -1138,10 +1185,7 @@ async function finalizeEditOutcome(options: {
 }): Promise<void> {
   const { sessionKey, target, op, lineIndex, role, outcome } = options;
   const detail = outcome.detail;
-  useHistoryStore.setState((state) => ({
-    activeSession: state.activeSessionKey === sessionKey ? detail : state.activeSession,
-    sessions: mergeDetailIntoSessions(state.sessions, sessionKey, detail),
-  }));
+  await applyEditedDetail(sessionKey, target, detail);
   try {
     await insertEditAuditRecord({
       sessionKey,
@@ -1158,13 +1202,6 @@ async function finalizeEditOutcome(options: {
   } catch (err) {
     // 审计失败不阻断编辑结果，但要留日志可查。
     logWarn("history.edit.auditWriteFailed", { sessionKey, op, error: String(err) });
-  }
-  if (target.starred) {
-    try {
-      await writeFavoriteSnapshot(sessionKey, detail);
-    } catch (err) {
-      logWarn("history.edit.snapshotSyncFailed", { sessionKey, op, error: String(err) });
-    }
   }
 }
 
@@ -2002,6 +2039,47 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     }
   },
 
+  deleteMessages: async (sessionKey, messages) => {
+    const { target, active } = requireActiveEditContext(sessionKey);
+    const targets = messages.map((message) => {
+      const { lineIndex, expectedText } = requireMessageLocator(message);
+      return { lineIndex, expectedRole: message.role, expectedText };
+    });
+    if (targets.length === 0) return;
+    try {
+      const raw = await invoke<unknown>("history_delete_messages", {
+        filePath: active.file_path,
+        ...getHistoryPathArgs(),
+        source: active.source,
+        projectKey: active.project_key,
+        targets,
+        expectedUpdatedAt: active.updated_at,
+      });
+      const outcome = normalizeBatchDeleteOutcome(raw);
+      await applyEditedDetail(sessionKey, target, outcome.detail);
+      for (const removed of outcome.removed) {
+        try {
+          await insertEditAuditRecord({
+            sessionKey,
+            sessionId: outcome.detail.session_id,
+            source: outcome.detail.source,
+            filePath: outcome.detail.file_path,
+            op: "delete",
+            lineIndex: removed.lineIndex,
+            role: removed.role || null,
+            beforeText: removed.text || null,
+            afterText: null,
+            backupPath: outcome.backupPath,
+          });
+        } catch (err) {
+          logWarn("history.edit.auditWriteFailed", { sessionKey, op: "delete", error: String(err) });
+        }
+      }
+    } catch (err) {
+      await reloadAfterEditConflict(sessionKey, err);
+    }
+  },
+
   insertMessage: async (sessionKey, afterMessage, role, text) => {
     const { target, active } = requireActiveEditContext(sessionKey);
     const { lineIndex } = requireMessageLocator(afterMessage);
@@ -2021,6 +2099,32 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
         target,
         op: "insert",
         lineIndex,
+        role,
+        outcome: normalizeEditOutcome(raw),
+      });
+    } catch (err) {
+      await reloadAfterEditConflict(sessionKey, err);
+    }
+  },
+
+  reinsertMessage: async (sessionKey, lineIndexHint, role, text) => {
+    const { target, active } = requireActiveEditContext(sessionKey);
+    try {
+      const raw = await invoke<unknown>("history_reinsert_message", {
+        filePath: active.file_path,
+        ...getHistoryPathArgs(),
+        source: active.source,
+        projectKey: active.project_key,
+        lineIndexHint,
+        role,
+        text,
+        expectedUpdatedAt: active.updated_at,
+      });
+      await finalizeEditOutcome({
+        sessionKey,
+        target,
+        op: "insert",
+        lineIndex: lineIndexHint,
         role,
         outcome: normalizeEditOutcome(raw),
       });

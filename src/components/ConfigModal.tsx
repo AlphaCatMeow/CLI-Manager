@@ -303,15 +303,19 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
 
   const saveProject = async () => {
     setSubmitting(true);
+    // CLI 工具与启动命令在表单里二选一：保存时清空被隐藏的字段，避免残留配置继续生效。
+    const trimmedCliTool = cliTool.trim();
+    const trimmedCliArgs = trimmedCliTool ? cliArgs.trim() : "";
+    const trimmedStartupCmd = trimmedCliTool ? "" : startupCmd.trim();
     try {
       if (isEdit && project) {
         await updateProject(project.id, {
           name: name.trim(),
           path: path.trim(),
           group_id: groupId,
-          cli_tool: cliTool.trim(),
-          cli_args: cliArgs.trim(),
-          startup_cmd: startupCmd.trim(),
+          cli_tool: trimmedCliTool,
+          cli_args: trimmedCliArgs,
+          startup_cmd: trimmedStartupCmd,
           env_vars: envVarsText.trim(),
           shell,
           worktree_strategy: worktreeStrategy,
@@ -324,9 +328,9 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
           name: name.trim(),
           path: path.trim(),
           group_id: groupId,
-          cli_tool: cliTool.trim() || undefined,
-          cli_args: cliArgs.trim() || undefined,
-          startup_cmd: startupCmd.trim() || undefined,
+          cli_tool: trimmedCliTool || undefined,
+          cli_args: trimmedCliArgs || undefined,
+          startup_cmd: trimmedStartupCmd || undefined,
           env_vars: envVarsText.trim() || undefined,
           shell,
           worktree_strategy: worktreeStrategy,
@@ -479,12 +483,14 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
                 />
               </div>
 
-              <Field
-                label="CLI 启动参数"
-                value={cliArgs}
-                onChange={setCliArgs}
-                placeholder="--permission-mode bypassPermissions"
-              />
+              {cliTool.trim() !== "" && (
+                <Field
+                  label="CLI 启动参数"
+                  value={cliArgs}
+                  onChange={setCliArgs}
+                  placeholder="--permission-mode bypassPermissions"
+                />
+              )}
 
               <div>
                 <label htmlFor={shellFieldId} className="mb-1 block text-xs text-text-muted">Shell</label>
@@ -517,7 +523,9 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
                 </Select>
               </div>
 
-              <Field label="启动命令" value={startupCmd} onChange={setStartupCmd} placeholder="npm run dev" />
+              {cliTool.trim() === "" && (
+                <Field label="启动命令" value={startupCmd} onChange={setStartupCmd} placeholder="npm run dev" />
+              )}
               <div>
                 <label className="mb-1 block text-xs text-text-muted">环境变量（JSON）</label>
                 <Textarea

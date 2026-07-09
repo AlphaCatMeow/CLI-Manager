@@ -14,10 +14,11 @@
 //! - Codex 行（type=response_item message）：payload.content 文本块替换，并就近同步配对的
 //!   `event_msg`（user_message/agent_message）——模型上下文与 TUI 重放必须一致（与互转功能同口径）。
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -48,6 +49,31 @@ pub struct HistoryBackupStatus {
     pub has_backup: bool,
     pub backup_path: Option<String>,
     pub backup_at: Option<i64>,
+}
+
+/// 批量删除的单个目标定位 + 守卫（与单条删除同口径）。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryDeleteTarget {
+    pub line_index: usize,
+    pub expected_role: String,
+    pub expected_text: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryRemovedMessage {
+    pub line_index: usize,
+    pub role: String,
+    pub text: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryBatchDeleteOutcome {
+    pub detail: HistorySessionDetail,
+    pub backup_path: Option<String>,
+    pub removed: Vec<HistoryRemovedMessage>,
 }
 
 /// 按 '\n' 切分并记录末尾换行，未改动的行（含可能的行尾 '\r'）原样回写。
@@ -433,6 +459,7 @@ fn update_message_in_file(
     finish_edit(file_ref, Some(before_text), Some(new_text.to_string()), backup)
 }
 
+/// 单条删除 = 批量删除的单目标特例，保证两条入口共用同一套守卫/重链/配对逻辑。
 fn delete_message_in_file(
     file_ref: &SessionFileRef,
     backups_dir: &Path,
@@ -441,34 +468,134 @@ fn delete_message_in_file(
     expected_text: &str,
     expected_updated_at: i64,
 ) -> Result<HistoryEditOutcome, String> {
+    let targets = vec![HistoryDeleteTarget {
+        line_index,
+        expected_role: expected_role.to_string(),
+        expected_text: expected_text.to_string(),
+    }];
+    let outcome = delete_messages_in_file(file_ref, backups_dir, &targets, expected_updated_at)?;
+    let before_text = outcome.removed.into_iter().next().map(|removed| removed.text);
+    Ok(HistoryEditOutcome {
+        detail: outcome.detail,
+        before_text,
+        after_text: None,
+        backup_path: outcome.backup_path,
+    })
+}
+
+fn delete_messages_in_file(
+    file_ref: &SessionFileRef,
+    backups_dir: &Path,
+    targets: &[HistoryDeleteTarget],
+    expected_updated_at: i64,
+) -> Result<HistoryBatchDeleteOutcome, String> {
+    if targets.is_empty() {
+        return Err("history_line_conflict".to_string());
+    }
     ensure_fingerprint(&file_ref.path, expected_updated_at)?;
     let mut file_lines = read_session_file_lines(&file_ref.path)?;
-    let value = parse_line_value(&file_lines, line_index)?;
-    let before_text = ensure_line_matches(&value, expected_role, expected_text)?;
+
+    // 全量校验后才动文件：任一目标行冲突整批拒绝，不产生半完成状态。
+    let mut seen_lines: HashSet<usize> = HashSet::new();
+    let mut validated: Vec<(usize, Value, String, String)> = Vec::new();
+    for target in targets {
+        if !seen_lines.insert(target.line_index) {
+            return Err("history_line_conflict".to_string());
+        }
+        let value = parse_line_value(&file_lines, target.line_index)?;
+        let before_text = ensure_line_matches(&value, &target.expected_role, &target.expected_text)?;
+        validated.push((target.line_index, value, target.expected_role.clone(), before_text));
+    }
     let backup = ensure_backup(&file_ref.path, backups_dir)?;
 
-    let mut remove_indices = vec![line_index];
-    if is_codex_message_line(&value) {
-        if let Some(pair_line) =
-            find_codex_event_pair(&file_lines, line_index, expected_role, &before_text)
-        {
-            remove_indices.push(pair_line);
+    // Codex 配对行在任何删除发生前定位（索引仍然有效）。
+    let mut remove_indices: HashSet<usize> = validated.iter().map(|(idx, ..)| *idx).collect();
+    for (line_index, value, role, before_text) in &validated {
+        if is_codex_message_line(value) {
+            if let Some(pair_line) = find_codex_event_pair(&file_lines, *line_index, role, before_text) {
+                remove_indices.insert(pair_line);
+            }
         }
     }
-    // 由高到低移除，避免前面的删除使后面的索引失效。
-    remove_indices.sort_unstable();
-    for idx in remove_indices.into_iter().rev() {
+    // Claude 重链映射：被删 uuid -> 其原 parentUuid，供跨代上溯。
+    let mut removed_parents: HashMap<String, Value> = HashMap::new();
+    for (_, value, _, _) in &validated {
+        if is_claude_message_line(value) {
+            if let Some(uuid) = value.get("uuid").and_then(Value::as_str) {
+                removed_parents.insert(
+                    uuid.to_string(),
+                    value.get("parentUuid").cloned().unwrap_or(Value::Null),
+                );
+            }
+        }
+    }
+
+    let mut sorted_indices: Vec<usize> = remove_indices.into_iter().collect();
+    sorted_indices.sort_unstable();
+    for idx in sorted_indices.into_iter().rev() {
         file_lines.lines.remove(idx);
     }
 
-    if is_claude_message_line(&value) {
-        if let Some(removed_uuid) = value.get("uuid").and_then(Value::as_str) {
-            let new_parent = value.get("parentUuid").cloned().unwrap_or(Value::Null);
-            relink_claude_children(&mut file_lines, removed_uuid, &new_parent);
-        }
+    if !removed_parents.is_empty() {
+        relink_claude_children_after_removal(&mut file_lines, &removed_parents);
     }
     write_session_file_lines(&file_ref.path, &file_lines)?;
-    finish_edit(file_ref, Some(before_text), None, backup)
+    invalidate_history_caches();
+    let detail = build_session_detail(file_ref, false)?;
+    Ok(HistoryBatchDeleteOutcome {
+        detail,
+        backup_path: Some(backup.to_string_lossy().to_string()),
+        removed: validated
+            .into_iter()
+            .map(|(line_index, _, role, text)| HistoryRemovedMessage { line_index, role, text })
+            .collect(),
+    })
+}
+
+/// 连续删除时子链跨代上溯：沿被删 uuid 链向上找到第一个幸存祖先（全被删则为 null）。
+fn resolve_surviving_parent(start_uuid: &str, removed_parents: &HashMap<String, Value>) -> Value {
+    let mut current = removed_parents
+        .get(start_uuid)
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut hops = 0usize;
+    while let Some(uuid) = current.as_str() {
+        let Some(next) = removed_parents.get(uuid) else {
+            break;
+        };
+        current = next.clone();
+        hops += 1;
+        if hops > removed_parents.len() {
+            // 防御性：数据异常成环时断链到根，避免死循环。
+            return Value::Null;
+        }
+    }
+    current
+}
+
+fn relink_claude_children_after_removal(
+    file_lines: &mut SessionFileLines,
+    removed_parents: &HashMap<String, Value>,
+) {
+    for line in &mut file_lines.lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(mut value) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        let Some(parent) = value.get("parentUuid").and_then(Value::as_str) else {
+            continue;
+        };
+        if !removed_parents.contains_key(parent) {
+            continue;
+        }
+        value["parentUuid"] = resolve_surviving_parent(parent, removed_parents);
+        if let Ok(encoded) = serialize_line(&value) {
+            *line = encoded;
+        }
+    }
 }
 
 fn insert_message_in_file(
@@ -483,11 +610,65 @@ fn insert_message_in_file(
     ensure_non_empty_text(text)?;
     ensure_fingerprint(&file_ref.path, expected_updated_at)?;
     let mut file_lines = read_session_file_lines(&file_ref.path)?;
-    let anchor = parse_line_value(&file_lines, after_line_index)?;
     // 锚点必须是带规范文本的消息行：文本消息之间是回合边界，插入不会拆散 tool 配对。
+    editable_message_line(&file_lines, after_line_index)
+        .ok_or_else(|| "message_not_editable".to_string())?;
+    let backup = ensure_backup(&file_ref.path, backups_dir)?;
+    insert_after_message(&mut file_lines, after_line_index, role, text)?;
+    write_session_file_lines(&file_ref.path, &file_lines)?;
+    finish_edit(file_ref, None, Some(text.to_string()), backup)
+}
+
+/// 审计撤回"删除"用：原行号只是提示（文件可能已再变化），
+/// 优先在提示行上方就近找可编辑消息锚点插到其后；上方没有则插到下方首个消息之前；
+/// 文件已无消息行时按来源格式追加到末尾。
+fn reinsert_message_in_file(
+    file_ref: &SessionFileRef,
+    backups_dir: &Path,
+    line_index_hint: usize,
+    role: &str,
+    text: &str,
+    expected_updated_at: i64,
+) -> Result<HistoryEditOutcome, String> {
+    ensure_insert_role(role)?;
+    ensure_non_empty_text(text)?;
+    ensure_fingerprint(&file_ref.path, expected_updated_at)?;
+    let mut file_lines = read_session_file_lines(&file_ref.path)?;
+    let backup = ensure_backup(&file_ref.path, backups_dir)?;
+
+    let line_count = file_lines.lines.len();
+    let anchor_above = (0..line_index_hint.min(line_count))
+        .rev()
+        .find(|idx| editable_message_line(&file_lines, *idx).is_some());
+    if let Some(anchor_index) = anchor_above {
+        insert_after_message(&mut file_lines, anchor_index, role, text)?;
+    } else if let Some(target_index) =
+        (line_index_hint.min(line_count)..line_count)
+            .find(|idx| editable_message_line(&file_lines, *idx).is_some())
+    {
+        insert_before_message(&mut file_lines, target_index, role, text)?;
+    } else {
+        append_message_at_end(&mut file_lines, role, text)?;
+    }
+    write_session_file_lines(&file_ref.path, &file_lines)?;
+    finish_edit(file_ref, None, Some(text.to_string()), backup)
+}
+
+fn editable_message_line(file_lines: &SessionFileLines, line_index: usize) -> Option<Value> {
+    let value = parse_line_value(file_lines, line_index).ok()?;
+    extract_editable_text(&value)?;
+    Some(value)
+}
+
+fn insert_after_message(
+    file_lines: &mut SessionFileLines,
+    after_line_index: usize,
+    role: &str,
+    text: &str,
+) -> Result<(), String> {
+    let anchor = parse_line_value(file_lines, after_line_index)?;
     let anchor_text =
         extract_editable_text(&anchor).ok_or_else(|| "message_not_editable".to_string())?;
-    let backup = ensure_backup(&file_ref.path, backups_dir)?;
 
     if is_claude_message_line(&anchor) {
         let anchor_uuid = anchor
@@ -496,13 +677,15 @@ fn insert_message_in_file(
             .ok_or_else(|| "message_not_editable".to_string())?
             .to_string();
         let new_uuid = Uuid::new_v4().to_string();
-        let inserted = build_claude_inserted_line(&file_lines, &anchor, role, text, &new_uuid);
+        let inserted = build_claude_inserted_line(file_lines, &anchor, role, text, &new_uuid);
         // 先把锚点的既有子链接管到新消息，再插入新行（新行自身不受重链影响）。
-        relink_claude_children(&mut file_lines, &anchor_uuid, &json!(new_uuid.clone()));
+        relink_claude_children(file_lines, &anchor_uuid, &json!(new_uuid.clone()));
         file_lines
             .lines
             .insert(after_line_index + 1, serialize_line(&inserted)?);
-    } else if is_codex_message_line(&anchor) {
+        return Ok(());
+    }
+    if is_codex_message_line(&anchor) {
         let anchor_role = anchor
             .get("payload")
             .and_then(|payload| payload.get("role"))
@@ -511,7 +694,7 @@ fn insert_message_in_file(
         // 落点跳过锚点自身的 TUI 配对行，避免插进 response_item 与 event_msg 之间。
         let mut insert_at = after_line_index + 1;
         if let Some(pair_line) =
-            find_codex_event_pair(&file_lines, after_line_index, anchor_role, &anchor_text)
+            find_codex_event_pair(file_lines, after_line_index, anchor_role, &anchor_text)
         {
             if pair_line > after_line_index {
                 insert_at = pair_line + 1;
@@ -522,12 +705,82 @@ fn insert_message_in_file(
         file_lines
             .lines
             .insert(insert_at, serialize_line(&response)?);
-    } else {
-        return Err("message_not_editable".to_string());
+        return Ok(());
     }
+    Err("message_not_editable".to_string())
+}
 
-    write_session_file_lines(&file_ref.path, &file_lines)?;
-    finish_edit(file_ref, None, Some(text.to_string()), backup)
+/// 在目标消息之前插入：Claude 新消息接管目标的父链、目标改挂到新消息下；
+/// Codex 直接在 response_item 前放入新配对（顺序即上下文顺序）。
+fn insert_before_message(
+    file_lines: &mut SessionFileLines,
+    target_index: usize,
+    role: &str,
+    text: &str,
+) -> Result<(), String> {
+    let target = parse_line_value(file_lines, target_index)?;
+    if is_claude_message_line(&target) {
+        let new_uuid = Uuid::new_v4().to_string();
+        let mut inserted = build_claude_inserted_line(file_lines, &target, role, text, &new_uuid);
+        inserted["parentUuid"] = target.get("parentUuid").cloned().unwrap_or(Value::Null);
+        let mut reparented = target.clone();
+        reparented["parentUuid"] = json!(new_uuid);
+        file_lines.lines[target_index] = serialize_line(&reparented)?;
+        file_lines
+            .lines
+            .insert(target_index, serialize_line(&inserted)?);
+        return Ok(());
+    }
+    if is_codex_message_line(&target) {
+        let (response, event) = build_codex_inserted_lines(&target, role, text);
+        file_lines.lines.insert(target_index, serialize_line(&event)?);
+        file_lines
+            .lines
+            .insert(target_index, serialize_line(&response)?);
+        return Ok(());
+    }
+    Err("message_not_editable".to_string())
+}
+
+/// 文件里已没有任何可编辑消息行时的兜底：按文件形态追加到末尾。
+fn append_message_at_end(
+    file_lines: &mut SessionFileLines,
+    role: &str,
+    text: &str,
+) -> Result<(), String> {
+    let mut is_codex = false;
+    let mut last_uuid = Value::Null;
+    for line in &file_lines.lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        if matches!(
+            value.get("type").and_then(Value::as_str),
+            Some("response_item") | Some("session_meta") | Some("event_msg") | Some("turn_context")
+        ) {
+            is_codex = true;
+        }
+        if let Some(uuid) = value.get("uuid") {
+            if !uuid.is_null() {
+                last_uuid = uuid.clone();
+            }
+        }
+    }
+    if is_codex {
+        let (response, event) = build_codex_inserted_lines(&json!({}), role, text);
+        file_lines.lines.push(serialize_line(&response)?);
+        file_lines.lines.push(serialize_line(&event)?);
+    } else {
+        let anchor_like = json!({ "uuid": last_uuid });
+        let new_uuid = Uuid::new_v4().to_string();
+        let inserted = build_claude_inserted_line(file_lines, &anchor_like, role, text, &new_uuid);
+        file_lines.lines.push(serialize_line(&inserted)?);
+    }
+    Ok(())
 }
 
 fn restore_backup_for_file(
@@ -651,6 +904,31 @@ pub async fn history_delete_message(
 }
 
 #[tauri::command]
+pub async fn history_delete_messages(
+    file_path: String,
+    claude_config_dir: Option<String>,
+    codex_config_dir: Option<String>,
+    source: String,
+    project_key: String,
+    targets: Vec<HistoryDeleteTarget>,
+    expected_updated_at: i64,
+) -> Result<HistoryBatchDeleteOutcome, String> {
+    tokio::task::spawn_blocking(move || {
+        let file_ref = validated_file_ref(
+            &file_path,
+            claude_config_dir,
+            codex_config_dir,
+            &source,
+            &project_key,
+        )?;
+        let backups_dir = resolve_backups_dir()?;
+        delete_messages_in_file(&file_ref, &backups_dir, &targets, expected_updated_at)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
 pub async fn history_insert_message(
     file_path: String,
     claude_config_dir: Option<String>,
@@ -675,6 +953,40 @@ pub async fn history_insert_message(
             &file_ref,
             &backups_dir,
             after_line_index,
+            &role,
+            &text,
+            expected_updated_at,
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub async fn history_reinsert_message(
+    file_path: String,
+    claude_config_dir: Option<String>,
+    codex_config_dir: Option<String>,
+    source: String,
+    project_key: String,
+    line_index_hint: usize,
+    role: String,
+    text: String,
+    expected_updated_at: i64,
+) -> Result<HistoryEditOutcome, String> {
+    tokio::task::spawn_blocking(move || {
+        let file_ref = validated_file_ref(
+            &file_path,
+            claude_config_dir,
+            codex_config_dir,
+            &source,
+            &project_key,
+        )?;
+        let backups_dir = resolve_backups_dir()?;
+        reinsert_message_in_file(
+            &file_ref,
+            &backups_dir,
+            line_index_hint,
             &role,
             &text,
             expected_updated_at,
@@ -937,6 +1249,245 @@ mod tests {
             line["payload"]["message"] != json!("question one")
                 && line["payload"]["content"][0]["text"] != json!("question one")
         }));
+    }
+
+    #[test]
+    fn batch_delete_consecutive_claude_messages_relinks_across_generations() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("session.jsonl");
+        let backups = temp.path().join("backups");
+        write_text(&session, &claude_fixture());
+        let updated_at = fingerprint_updated_at(&session);
+
+        // 同时删除 u1(行1) 与 a1(行2)：u2 的父链需跨代上溯到 u1 的父节点（null）
+        let targets = vec![
+            HistoryDeleteTarget {
+                line_index: 1,
+                expected_role: "user".to_string(),
+                expected_text: "question one".to_string(),
+            },
+            HistoryDeleteTarget {
+                line_index: 2,
+                expected_role: "assistant".to_string(),
+                expected_text: "answer one".to_string(),
+            },
+        ];
+        let outcome =
+            delete_messages_in_file(&file_ref(&session, "claude"), &backups, &targets, updated_at)
+                .unwrap();
+
+        assert_eq!(outcome.removed.len(), 2);
+        assert_eq!(outcome.removed[0].text, "question one");
+        let lines = read_lines(&session);
+        assert_eq!(lines.len(), 2);
+        let u2 = lines
+            .iter()
+            .find(|line| line["uuid"] == json!("u2"))
+            .unwrap();
+        assert_eq!(u2["parentUuid"], Value::Null);
+    }
+
+    #[test]
+    fn batch_delete_codex_messages_removes_all_event_pairs() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout-session.jsonl");
+        let backups = temp.path().join("backups");
+        write_text(&session, &codex_fixture());
+        let updated_at = fingerprint_updated_at(&session);
+
+        let targets = vec![
+            HistoryDeleteTarget {
+                line_index: 1,
+                expected_role: "user".to_string(),
+                expected_text: "question one".to_string(),
+            },
+            HistoryDeleteTarget {
+                line_index: 3,
+                expected_role: "assistant".to_string(),
+                expected_text: "answer one".to_string(),
+            },
+        ];
+        delete_messages_in_file(&file_ref(&session, "codex"), &backups, &targets, updated_at)
+            .unwrap();
+
+        // 两条 response_item 与各自 event_msg 配对全部移除，仅剩 session_meta
+        let lines = read_lines(&session);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["type"], json!("session_meta"));
+    }
+
+    #[test]
+    fn batch_delete_rejects_duplicate_or_conflicting_targets_without_writing() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("session.jsonl");
+        let backups = temp.path().join("backups");
+        write_text(&session, &claude_fixture());
+        let updated_at = fingerprint_updated_at(&session);
+        let session_ref = file_ref(&session, "claude");
+
+        let duplicate = vec![
+            HistoryDeleteTarget {
+                line_index: 1,
+                expected_role: "user".to_string(),
+                expected_text: "question one".to_string(),
+            },
+            HistoryDeleteTarget {
+                line_index: 1,
+                expected_role: "user".to_string(),
+                expected_text: "question one".to_string(),
+            },
+        ];
+        assert_eq!(
+            delete_messages_in_file(&session_ref, &backups, &duplicate, updated_at)
+                .err()
+                .unwrap(),
+            "history_line_conflict"
+        );
+
+        // 一条命中 + 一条冲突：整批拒绝且文件保持原样
+        let partial = vec![
+            HistoryDeleteTarget {
+                line_index: 1,
+                expected_role: "user".to_string(),
+                expected_text: "question one".to_string(),
+            },
+            HistoryDeleteTarget {
+                line_index: 2,
+                expected_role: "assistant".to_string(),
+                expected_text: "stale text".to_string(),
+            },
+        ];
+        assert_eq!(
+            delete_messages_in_file(&session_ref, &backups, &partial, updated_at)
+                .err()
+                .unwrap(),
+            "history_line_conflict"
+        );
+        assert_eq!(std::fs::read_to_string(&session).unwrap(), claude_fixture());
+    }
+
+    #[test]
+    fn reinsert_restores_deleted_claude_message_near_original_position() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("session.jsonl");
+        let backups = temp.path().join("backups");
+        write_text(&session, &claude_fixture());
+
+        // 删除中间的 a1（行2），再按原行号提示恢复
+        delete_message_in_file(
+            &file_ref(&session, "claude"),
+            &backups,
+            2,
+            "assistant",
+            "answer one",
+            fingerprint_updated_at(&session),
+        )
+        .unwrap();
+        reinsert_message_in_file(
+            &file_ref(&session, "claude"),
+            &backups,
+            2,
+            "assistant",
+            "answer one",
+            fingerprint_updated_at(&session),
+        )
+        .unwrap();
+
+        let lines = read_lines(&session);
+        assert_eq!(lines.len(), 4);
+        // 恢复的消息位于 u1 之后，父链 u1 -> 新消息 -> u2 完整重建
+        let restored = &lines[2];
+        assert_eq!(
+            restored["message"]["content"][0]["text"],
+            json!("answer one")
+        );
+        assert_eq!(restored["parentUuid"], json!("u1"));
+        let restored_uuid = restored["uuid"].as_str().unwrap().to_string();
+        let u2 = lines
+            .iter()
+            .find(|line| line["uuid"] == json!("u2"))
+            .unwrap();
+        assert_eq!(u2["parentUuid"], json!(restored_uuid));
+    }
+
+    #[test]
+    fn reinsert_before_first_message_when_no_anchor_above() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("session.jsonl");
+        let backups = temp.path().join("backups");
+        write_text(&session, &claude_fixture());
+
+        // 删除首条消息 u1（行1）后按原行号恢复：上方无锚点，应插到当前首条消息之前
+        delete_message_in_file(
+            &file_ref(&session, "claude"),
+            &backups,
+            1,
+            "user",
+            "question one",
+            fingerprint_updated_at(&session),
+        )
+        .unwrap();
+        reinsert_message_in_file(
+            &file_ref(&session, "claude"),
+            &backups,
+            1,
+            "user",
+            "question one",
+            fingerprint_updated_at(&session),
+        )
+        .unwrap();
+
+        let lines = read_lines(&session);
+        assert_eq!(lines.len(), 4);
+        let restored = &lines[1];
+        assert_eq!(restored["message"]["content"], json!("question one"));
+        assert_eq!(restored["parentUuid"], Value::Null);
+        let restored_uuid = restored["uuid"].as_str().unwrap().to_string();
+        // 原首条消息 a1 重新挂到恢复消息之下
+        let a1 = lines
+            .iter()
+            .find(|line| line["uuid"] == json!("a1"))
+            .unwrap();
+        assert_eq!(a1["parentUuid"], json!(restored_uuid));
+    }
+
+    #[test]
+    fn reinsert_codex_message_writes_pair_before_following_message() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout-session.jsonl");
+        let backups = temp.path().join("backups");
+        write_text(&session, &codex_fixture());
+
+        delete_message_in_file(
+            &file_ref(&session, "codex"),
+            &backups,
+            1,
+            "user",
+            "question one",
+            fingerprint_updated_at(&session),
+        )
+        .unwrap();
+        reinsert_message_in_file(
+            &file_ref(&session, "codex"),
+            &backups,
+            1,
+            "user",
+            "question one",
+            fingerprint_updated_at(&session),
+        )
+        .unwrap();
+
+        let lines = read_lines(&session);
+        assert_eq!(lines.len(), 5);
+        assert_eq!(
+            lines[1]["payload"]["content"][0]["text"],
+            json!("question one")
+        );
+        assert_eq!(lines[2]["payload"]["message"], json!("question one"));
+        assert_eq!(
+            lines[3]["payload"]["content"][0]["text"],
+            json!("answer one")
+        );
     }
 
     #[test]

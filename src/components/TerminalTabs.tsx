@@ -581,7 +581,7 @@ function SortableTab({
                 submitEdit();
               }}
               className="ui-input h-5 min-w-0 flex-1 rounded-md px-1.5 py-0 text-[12px] text-on-surface outline-none"
-              aria-label={t("terminal.tab.rename", { title })}
+              aria-label={t("terminal.tab.rename")}
             />
           ) : (
             <span className="ui-terminal-tab-title min-w-0 flex-1 truncate tracking-[0.01em]">{title}</span>
@@ -1070,7 +1070,7 @@ function PaneTabBar({
                       window.setTimeout(() => onStartEdit(session.id), 0);
                     }}
                   >
-                    {t("terminal.tab.rename", { title: session.title })}
+                    {t("terminal.tab.rename")}
                   </ContextMenuItem>
                   <ContextMenuItem onSelect={() => closeOtherPaneSessions(session.id, getAnchor())}>{t("terminal.tab.closeOthers")}</ContextMenuItem>
                   <ContextMenuItem onSelect={() => closePaneSessionsToLeft(session.id, getAnchor())}>{t("terminal.tab.closeLeft")}</ContextMenuItem>
@@ -1776,26 +1776,20 @@ function SortableToolbarButton({
 function CpuCatIndicator({
   enabled,
   active,
-  pollingEnabled,
   onClick,
 }: {
   enabled: boolean;
   active: boolean;
-  pollingEnabled: boolean;
   onClick: () => void;
 }) {
   const { t } = useI18n();
-  const lastUsageRef = useRef(0);
   const cpuOnlyOptions = useMemo(() => ({ fullDetail: false, system: false, cpu: true, memory: false }), []);
-  const { snapshot } = useSystemResources(enabled && pollingEnabled, cpuOnlyOptions, 3000);
-  useEffect(() => {
-    if (!snapshot) return;
-    lastUsageRef.current = Math.max(0, Math.min(100, snapshot.cpu.usagePercent));
-  }, [snapshot]);
+  const { snapshot } = useSystemResources(enabled, cpuOnlyOptions, 3000);
   if (!enabled) return null;
 
-  const usage = snapshot ? Math.max(0, Math.min(100, snapshot.cpu.usagePercent)) : lastUsageRef.current;
-  const speed = `${Math.max(0.38, 1.6 - usage / 85).toFixed(2)}s`;
+  const usage = snapshot ? Math.max(0, Math.min(100, snapshot.cpu.usagePercent)) : 0;
+  // 速度按跑动频率线性映射（0%≈1.67s/圈 → 100%≈0.31s/圈），日常低占用区间的变速才肉眼可辨
+  const speed = `${(1 / (0.6 + 2.6 * (usage / 100))).toFixed(2)}s`;
   const color =
     usage >= 75
       ? "var(--term-panel-red, #f25e5e)"
@@ -2940,7 +2934,6 @@ export function TerminalTabs({
             <CpuCatIndicator
               enabled={systemResourceMonitoringEnabled && cpuResourceCardVisible}
               active={systemResourcesPanelActive}
-              pollingEnabled={!systemResourcesPanelActive}
               onClick={handleToggleSystemResourcesPanel}
             />
           </div>

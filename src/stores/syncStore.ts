@@ -89,6 +89,7 @@ interface SyncStore {
   load: () => Promise<void>;
   setConfig: (url: string, username: string, password?: string) => Promise<void>;
   clearPassword: () => Promise<void>;
+  getSessionPassword: () => string;
   testConnection: (url: string, username: string, password: string) => Promise<{ success: boolean; message: string }>;
   setDeviceName: (name: string) => Promise<void>;
   setAutoSyncOnStartup: (action: AutoSyncAction) => Promise<void>;
@@ -208,9 +209,15 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
     const url = (await s.get<string>("webdavUrl")) ?? "";
     const username = (await s.get<string>("webdavUsername")) ?? "";
     await s.delete("webdavPassword").catch(() => false);
-    await s.set("hasPassword", false);
-    sessionWebdavPassword = "";
-    const hasPassword = false;
+    await s.delete("hasPassword").catch(() => false);
+    let password = "";
+    try {
+      password = (await invoke<string | null>("sync_load_password")) ?? "";
+    } catch (error) {
+      console.error("[sync] 读取 WebDAV 密码失败:", error);
+    }
+    sessionWebdavPassword = password;
+    const hasPassword = password.length > 0;
     const syncMode = ((await s.get<string>("syncMode")) as SyncMode | undefined) ?? "cloud";
     const localSyncDir = (await s.get<string>("localSyncDir")) ?? "";
     const remoteDir = (await s.get<string>("remoteDir")) ?? "";
@@ -262,10 +269,14 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
     await s.set("webdavUrl", url);
     await s.set("webdavUsername", username);
     if (password !== undefined) {
-      sessionWebdavPassword = password;
       const hasPassword = password.length > 0;
+      if (hasPassword) {
+        await invoke("sync_save_password", { password });
+      } else {
+        await invoke("sync_delete_password");
+      }
+      sessionWebdavPassword = password;
       await s.delete("webdavPassword").catch(() => false);
-      await s.set("hasPassword", hasPassword);
       set({ webdavUrl: url, webdavUsername: username, hasPassword });
     } else {
       // Preserve existing hasPassword state when not providing new password
@@ -275,11 +286,13 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
 
   clearPassword: async () => {
     const s = await getStore();
-    await s.set("hasPassword", false);
+    await invoke("sync_delete_password");
     await s.delete("webdavPassword").catch(() => false);
     sessionWebdavPassword = "";
     set({ hasPassword: false });
   },
+
+  getSessionPassword: () => sessionWebdavPassword,
 
   testConnection: async (url, username, password) => {
     const result = await invoke<{ success: boolean; message: string }>("sync_test_connection", {

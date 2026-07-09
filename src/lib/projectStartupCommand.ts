@@ -63,20 +63,12 @@ export function withCodexLightTuiTheme(command?: string): string | undefined {
   return `${match[1]} ${CODEX_LIGHT_TUI_THEME_ARG}${normalized.slice(match[1].length)}`;
 }
 
-export function resolveProjectStartupCommand(
-  project: Pick<Project, "cli_tool" | "cli_args" | "startup_cmd" | "provider_overrides" | "shell">,
+function appendProviderOverrideArgs(
+  baseCommand: string,
+  project: Pick<Project, "cli_tool" | "provider_overrides" | "shell">,
   options: { includeCodexProviderProfile?: boolean } = {}
-): string | undefined {
-  const startupCmd = project.startup_cmd.trim();
-  if (startupCmd) return normalizeDirectCodexStartupCommand(startupCmd);
-
-  const cliTool = project.cli_tool.trim();
-  if (!cliTool) return undefined;
-
-  // 先拼用户维护的 CLI 附加参数，再做供应商覆盖追加：
-  // hasProfileArg / hasClaudeSettingsArg 对整条 command 检测，用户手写过的参数天然去重。
-  const cliArgs = project.cli_args.trim();
-  let command = cliArgs ? `${cliTool} ${cliArgs}` : cliTool;
+): string {
+  let command = baseCommand;
   if (options.includeCodexProviderProfile !== false && isExactCodexProject(project)) {
     const override = getCodexProviderOverride(project);
     if (override && !hasProfileArg(command)) {
@@ -90,4 +82,35 @@ export function resolveProjectStartupCommand(
     }
   }
   return command;
+}
+
+export function resolveProjectStartupCommand(
+  project: Pick<Project, "cli_tool" | "cli_args" | "startup_cmd" | "provider_overrides" | "shell">,
+  options: { includeCodexProviderProfile?: boolean } = {}
+): string | undefined {
+  const startupCmd = project.startup_cmd.trim();
+  if (startupCmd) return normalizeDirectCodexStartupCommand(startupCmd);
+
+  const cliTool = project.cli_tool.trim();
+  if (!cliTool) return undefined;
+
+  // 先拼用户维护的 CLI 附加参数，再做供应商覆盖追加：
+  // hasProfileArg / hasClaudeSettingsArg 对整条 command 检测，用户手写过的参数天然去重。
+  const cliArgs = project.cli_args.trim();
+  return appendProviderOverrideArgs(cliArgs ? `${cliTool} ${cliArgs}` : cliTool, project, options);
+}
+
+// 历史会话 resume 命令继承项目启动参数：仅当项目走 cli_tool 分支且工具类型与会话来源一致时追加；
+// startup_cmd 是自由文本（可能含一次性 prompt），无法安全拆参，保持不继承。
+export function appendResumeCliArgs(
+  baseCommand: string,
+  source: "claude" | "codex",
+  project: Pick<Project, "cli_tool" | "cli_args" | "startup_cmd" | "provider_overrides" | "shell"> | null | undefined
+): string {
+  if (!project || project.startup_cmd.trim()) return baseCommand;
+  const matchesSource = source === "codex" ? isExactCodexProject(project) : getProviderSwitchAppType(project) === "claude";
+  if (!matchesSource) return baseCommand;
+
+  const cliArgs = project.cli_args.trim();
+  return appendProviderOverrideArgs(cliArgs ? `${baseCommand} ${cliArgs}` : baseCommand, project);
 }

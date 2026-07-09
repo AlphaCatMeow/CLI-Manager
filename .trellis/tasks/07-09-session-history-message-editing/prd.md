@@ -32,16 +32,16 @@ Changelog Target: V1.2.8
 
 ## Acceptance Criteria
 
-- [ ] 编辑一条 user/assistant 消息后，`claude --resume` 该会话，CLI 内显示修改后内容且可正常继续对话。
-- [ ] Codex 会话编辑后 `codex resume`，模型上下文与 TUI 重放显示一致（response_item 与 event_msg 同步）。
-- [ ] 删除一条消息后 resume，会话链不断裂（Claude parentUuid 链完整）。
-- [ ] 插入一条 user 消息后 resume，新消息出现在正确位置且可继续对话。
-- [ ] 首次编辑自动生成备份；还原入口可完整恢复原文件。
-- [ ] 每次编辑/删除/插入在审计日志中可见 before/after diff。
-- [ ] 活跃会话编辑时出现警告确认；外部改动过的文件写入被拒绝并提示。
-- [ ] tool 消息不出现编辑/删除入口。
-- [ ] 编辑后 CLI-Manager 内重新打开该会话，显示新内容，消息数/统计正确；收藏快照同步。
-- [ ] `npx tsc --noEmit` 与 `cd src-tauri && cargo test` 通过。
+- [ ] 编辑一条 user/assistant 消息后，`claude --resume` 该会话，CLI 内显示修改后内容且可正常继续对话。（人工验收）
+- [ ] Codex 会话编辑后 `codex resume`，模型上下文与 TUI 重放显示一致（response_item 与 event_msg 同步）。（人工验收；写回同步已有 cargo test 覆盖）
+- [ ] 删除一条消息后 resume，会话链不断裂（Claude parentUuid 链完整）。（人工验收；重链逻辑已有 cargo test 覆盖）
+- [ ] 插入一条 user 消息后 resume，新消息出现在正确位置且可继续对话。（人工验收；插入链路已有 cargo test 覆盖）
+- [x] 首次编辑自动生成备份；还原入口可完整恢复原文件。（cargo test：backup_created_once_and_restore_recovers_original）
+- [x] 每次编辑/删除/插入在审计日志中可见 before/after diff。（history_edit_audit 表 + EditAuditModal）
+- [x] 活跃会话编辑时出现警告确认；外部改动过的文件写入被拒绝并提示。（hook sessionId 匹配警告 + fingerprint 守卫 cargo test）
+- [x] tool 消息不出现编辑/删除入口。（editable 门控，读路径 cargo test）
+- [x] 编辑后 CLI-Manager 内重新打开该会话，显示新内容，消息数/统计正确；收藏快照同步。（命令返回刷新 detail + finalizeEditOutcome）
+- [x] `npx tsc --noEmit` 与 `cd src-tauri && cargo test` 通过。（tsc 无输出；cargo test 318/318）
 
 ## Definition of Done
 

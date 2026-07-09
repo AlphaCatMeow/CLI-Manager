@@ -5261,10 +5261,187 @@
   outline-offset: 1px;
 }
 
-/* 气泡内行内编辑态 */
+/* 批量删除：消息选择框与顶部选择工具条 */
+.ui-history-message-select {
+  display: inline-flex;
+  height: 1.3rem;
+  width: 1.3rem;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  background-color: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 130ms ease, background-color 130ms ease;
+}
+
+.ui-history-message-select:hover {
+  background-color: color-mix(in srgb, var(--on-surface) 7%, transparent);
+  color: var(--text-secondary);
+}
+
+.ui-history-message-select[data-selected="true"] {
+  color: var(--accent);
+}
+
+.ui-history-message-select:focus-visible {
+  outline: 2px solid var(--interactive-focus-ring);
+  outline-offset: 1px;
+}
+
+.ui-history-message-select-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.45rem;
+  border: 1px dashed color-mix(in srgb, var(--danger) 38%, var(--border) 62%);
+  border-radius: 6px;
+  background-color: color-mix(in srgb, var(--danger) 4%, var(--surface-container-lowest) 96%);
+  color: var(--text-secondary);
+  padding: 0.28rem 0.55rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+/* 消息编辑记录：连续时间线布局 + diff 视觉 */
+.ui-history-audit-entry {
+  padding: 0.55rem 0.1rem 0.65rem;
+}
+
+.ui-history-audit-entry + .ui-history-audit-entry {
+  border-top: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
+}
+
+.ui-history-audit-head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 0.42rem;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.ui-history-audit-op {
+  flex: none;
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.ui-history-audit-op[data-op="edit"] {
+  background-color: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.ui-history-audit-op[data-op="delete"] {
+  background-color: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.ui-history-audit-op[data-op="insert"] {
+  background-color: color-mix(in srgb, var(--success) 14%, transparent);
+  color: var(--success);
+}
+
+.ui-history-audit-op[data-op="restore"] {
+  background-color: color-mix(in srgb, var(--warning) 14%, transparent);
+  color: var(--warning);
+}
+
+.ui-history-audit-time {
+  margin-left: auto;
+  font-family: var(--font-ui-mono);
+  font-size: 0.68rem;
+}
+
+.ui-history-audit-diff {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  border-radius: 6px;
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.ui-history-audit-line {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.34rem 0.6rem 0.34rem 0.45rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background-color: var(--surface-container-lowest);
+  color: var(--on-surface);
+}
+
+.ui-history-audit-line + .ui-history-audit-line {
+  border-top: 1px solid color-mix(in srgb, var(--border) 35%, transparent);
+}
+
+.ui-history-audit-line[data-tone="del"] {
+  background-color: color-mix(in srgb, var(--danger) 7%, var(--surface-container-lowest) 93%);
+}
+
+.ui-history-audit-line[data-tone="ins"] {
+  background-color: color-mix(in srgb, var(--success) 7%, var(--surface-container-lowest) 93%);
+}
+
+.ui-history-audit-gutter {
+  flex: none;
+  width: 0.95rem;
+  text-align: center;
+  font-family: var(--font-ui-mono);
+  font-weight: 700;
+  user-select: none;
+}
+
+.ui-history-audit-line[data-tone="del"] .ui-history-audit-gutter {
+  color: var(--danger);
+}
+
+.ui-history-audit-line[data-tone="ins"] .ui-history-audit-gutter {
+  color: var(--success);
+}
+
+.ui-history-audit-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.ui-history-audit-text del {
+  border-radius: 2px;
+  background-color: color-mix(in srgb, var(--danger) 24%, transparent);
+  color: inherit;
+  padding: 0 0.08em;
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--danger) 72%, transparent);
+}
+
+.ui-history-audit-text ins {
+  border-radius: 2px;
+  background-color: color-mix(in srgb, var(--success) 24%, transparent);
+  color: inherit;
+  padding: 0 0.08em;
+  text-decoration: none;
+}
+
+/* 气泡内行内编辑态：宽度全部相对容器，禁止视口单位（窄窗口会越过详情面板边界） */
+.ui-history-message-card[data-editing="true"] .ui-history-message-stack,
+.ui-history-message-card[data-inserting="true"] .ui-history-message-stack {
+  width: min(72%, 780px);
+}
+
+.ui-history-message-card[data-editing="true"] .ui-history-message-bubble {
+  width: 100%;
+}
+
 .ui-history-message-edit {
   display: flex;
-  min-width: min(30rem, 62vw);
+  width: 100%;
+  min-width: 0;
   flex-direction: column;
   gap: 0.4rem;
 }
@@ -5317,7 +5494,8 @@
 /* 在此后插入：气泡下方的行内小表单 */
 .ui-history-message-insert {
   display: flex;
-  width: min(34rem, 100%);
+  width: 100%;
+  min-width: 0;
   flex-direction: column;
   gap: 0.4rem;
   margin-top: 0.45rem;

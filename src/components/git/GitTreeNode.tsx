@@ -197,7 +197,7 @@ export function GitTreeNodeComponent({ project, node, depth, treeId, onFileClick
             disabled={!project}
             onSelect={() => {
               if (!project) return;
-              void copyAiText(formatAiPathBlock(project, node.path, "file"), t("files.toast.aiPathCopied"));
+              void copyAiText(formatAiPathBlock(node.path, "file"), t("files.toast.aiPathCopied"));
             }}
           >
             <Copy size={12} />
@@ -360,7 +360,7 @@ export function GitTreeNodeComponent({ project, node, depth, treeId, onFileClick
             disabled={!project}
             onSelect={() => {
               if (!project) return;
-              void copyAiText(formatAiPathBlock(project, displayNode.path, "directory"), t("files.toast.aiPathCopied"));
+              void copyAiText(formatAiPathBlock(displayNode.path, "directory"), t("files.toast.aiPathCopied"));
             }}
           >
             <Copy size={12} />
