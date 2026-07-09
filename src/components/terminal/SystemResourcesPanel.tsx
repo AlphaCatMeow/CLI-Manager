@@ -412,7 +412,7 @@ function CpuCard({ snapshot, history }: { snapshot: SystemResourceSnapshot; hist
       icon={<Cpu size={15} />}
       title={t("systemResources.cpu")}
       accent={MODULE_TITLE_COLOR}
-      right={<span className="text-[22px] font-bold leading-none tabular-nums" style={{ color: TERM_PANEL.dim }}>{formatPercent(snapshot.cpu.usagePercent)}</span>}
+      right={<span className="text-[12px] tabular-nums" style={{ color: TERM_PANEL.dim }}>{formatPercent(snapshot.cpu.usagePercent)}</span>}
     >
       <TrendChart
         series={[{ points, color: PANEL_ACCENT }]}
@@ -659,8 +659,8 @@ function DiskCard({ snapshot }: { snapshot: SystemResourceSnapshot; history: Sys
             {diskRows.map((row) => (
               <div key={row.label} className="grid grid-cols-[10px_minmax(0,1fr)_auto] items-center gap-2 text-[11px]">
                 <span className="h-2 w-2 rounded-full" style={{ backgroundColor: row.color }} />
-                <span className="truncate" style={{ color: TERM_PANEL.dim }}>{row.label}</span>
-                <span className="max-w-[92px] truncate text-right font-semibold tabular-nums" style={{ color: TERM_PANEL.fg }}>{row.value}</span>
+                <span className="truncate text-right" style={{ color: TERM_PANEL.dim }}>{row.label}</span>
+                <span className="max-w-[92px] truncate text-right font-semibold tabular-nums" style={{ color: TERM_PANEL.dim }}>{row.value}</span>
               </div>
             ))}
           </div>
