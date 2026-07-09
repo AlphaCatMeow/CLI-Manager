@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCliManagerDataPaths } from "./appPaths";
 import { sourceLabel, type SyncedHistoryGroup } from "./externalSessionGrouping";
-import { normalizeShellKey } from "./shell";
+import { getOsPlatform, normalizeShellKey } from "./shell";
 import type { HistoryMessage, HistorySessionDetail } from "./types";
 import { useSettingsStore } from "../stores/settingsStore";
 
@@ -12,7 +12,7 @@ const MAX_MESSAGE_CHARS = 1200;
 const MAX_CONTEXT_CHARS = 18000;
 const MAX_CODEX_CONTEXT_CHARS = 6000;
 const CLAUDE_CONTEXT_ARG_PATTERN = /(^|\s)--(?:append-)?system-prompt(?:-file)?(?:\s|=|$)/i;
-const CODEX_CONTEXT_ARG_PATTERN = /(^|\s)-c\s+developer_instructions=|(^|\s)--config\s+developer_instructions=/i;
+const CODEX_CONTEXT_ARG_PATTERN = /(^|\s)(?:-c|--config)(?:\s+|=)(?:\(\s*)?["']?developer_instructions\s*=/i;
 
 function historyPathArgs() {
   const settings = useSettingsStore.getState();
@@ -82,12 +82,21 @@ function shellQuoteArg(value: string): string {
   return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
 }
 
+function posixSingleQuoteArg(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 function powerShellSingleQuoteArg(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-function tomlString(value: string): string {
-  return JSON.stringify(value);
+function base64Utf16Le(value: string): string {
+  let binary = "";
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    binary += String.fromCharCode(code & 0xff, code >> 8);
+  }
+  return btoa(binary);
 }
 
 function windowsPathToWsl(path: string): string | null {
@@ -99,8 +108,18 @@ function windowsPathToWsl(path: string): string | null {
   return tail ? `/mnt/${drive}/${tail}` : `/mnt/${drive}`;
 }
 
+function windowsPathToGitBash(path: string): string | null {
+  const trimmed = path.trim();
+  const match = /^([A-Za-z]):[\\/](.*)$/.exec(trimmed);
+  if (!match) return null;
+  const drive = match[1].toLowerCase();
+  const tail = match[2].replace(/\\/g, "/").replace(/^\/+/, "");
+  return tail ? `/${drive}/${tail}` : `/${drive}`;
+}
+
 function contextPathForShell(path: string, shell?: string | null): string {
   const normalizedShell = normalizeShellKey(shell);
+  if (normalizedShell === "gitbash") return windowsPathToGitBash(path) ?? path;
   if (normalizedShell !== "wsl" && normalizedShell !== "bash") return path;
   return windowsPathToWsl(path) ?? path;
 }
@@ -221,7 +240,7 @@ export async function writeSyncedHistoryContextFile(group: SyncedHistoryGroup): 
   return nativeJoin(paths.dataDir, CONTEXT_DIR_NAME, fileName);
 }
 
-async function writeCodexSyncedHistoryConfigValueFile(group: SyncedHistoryGroup): Promise<string | null> {
+async function writeCodexSyncedHistoryContextTextFile(group: SyncedHistoryGroup): Promise<string | null> {
   const context = await buildSyncedHistoryContext(group);
   if (!context) return null;
   const paths = await getCliManagerDataPaths();
@@ -235,11 +254,11 @@ async function writeCodexSyncedHistoryConfigValueFile(group: SyncedHistoryGroup)
   } catch (err) {
     if (!String(err).includes("target_exists")) throw err;
   }
-  const fileName = safeFileName(group).replace(/\.md$/i, ".toml-value");
+  const fileName = safeFileName(group).replace(/\.md$/i, ".txt");
   await invoke("file_write_text", {
     rootPath: paths.dataDir,
     relativePath: `${CONTEXT_DIR_NAME}/${fileName}`,
-    content: tomlString(context),
+    content: context,
   });
   return nativeJoin(paths.dataDir, CONTEXT_DIR_NAME, fileName);
 }
@@ -247,13 +266,25 @@ async function writeCodexSyncedHistoryConfigValueFile(group: SyncedHistoryGroup)
 function codexDeveloperInstructionsArgFromFile(path: string, shell?: string | null): string {
   const normalizedShell = normalizeShellKey(shell);
   if (normalizedShell === "powershell" || normalizedShell === "pwsh") {
-    return `-c "developer_instructions=$(Get-Content -Raw ${powerShellSingleQuoteArg(path)})"`;
+    return `-c ("developer_instructions=" + (Get-Content -Raw -LiteralPath ${powerShellSingleQuoteArg(path)}))`;
   }
-  if (normalizedShell === "cmd") {
-    const psPath = powerShellSingleQuoteArg(path);
-    return `-c "developer_instructions=$(powershell -NoProfile -Command \\"Get-Content -Raw ${psPath}\\")"`;
+  if (normalizedShell === "fish") {
+    return `-c "developer_instructions="(cat ${posixSingleQuoteArg(contextPathForShell(path, shell))} | string collect)`;
   }
-  return `-c developer_instructions="$(cat ${shellQuoteArg(contextPathForShell(path, shell))})"`;
+  return `-c "developer_instructions=$(cat ${posixSingleQuoteArg(contextPathForShell(path, shell))})"`;
+}
+
+function codexCommandWithDeveloperInstructions(startupCmd: string, path: string, shell?: string | null): string {
+  const normalizedShell = normalizeShellKey(shell);
+  if (normalizedShell !== "cmd") {
+    return `${startupCmd} ${codexDeveloperInstructionsArgFromFile(path, shell)}`;
+  }
+
+  const script = [
+    `$context = Get-Content -Raw -LiteralPath ${powerShellSingleQuoteArg(path)}`,
+    `${startupCmd} -c ('developer_instructions=' + $context)`,
+  ].join("\n");
+  return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${base64Utf16Le(script)}`;
 }
 
 export async function appendClaudeSyncedHistoryContextArg(
@@ -277,9 +308,10 @@ export async function appendSyncedHistoryContextArg(
 
   if (source === "codex") {
     if (CODEX_CONTEXT_ARG_PATTERN.test(startupCmd)) return startupCmd;
-    const contextValuePath = await writeCodexSyncedHistoryConfigValueFile(group);
-    if (!contextValuePath) return startupCmd;
-    return `${startupCmd} ${codexDeveloperInstructionsArgFromFile(contextValuePath, shell)}`;
+    const contextPath = await writeCodexSyncedHistoryContextTextFile(group);
+    if (!contextPath) return startupCmd;
+    const effectiveShell = shell ?? ((await getOsPlatform()) === "windows" ? "powershell" : undefined);
+    return codexCommandWithDeveloperInstructions(startupCmd, contextPath, effectiveShell);
   }
 
   if (CLAUDE_CONTEXT_ARG_PATTERN.test(startupCmd)) return startupCmd;

@@ -9,6 +9,7 @@
 - **更新后设置保留修复**：统一设置、会话、同步和外部会话同步记录的持久化路径到 `.cli-manager` 数据目录，并在启动迁移旧 Tauri 数据目录时只补缺失项、不覆盖已有用户值；设置写入改为立即落盘，终端辅助面板宽度也改由 `settings.json` 保存，降低更新或重启后恢复默认值的风险。
 
 ### 修复
+- **Codex 同步历史上下文启动修复**：从历史上下文启动 Codex 时改为按 PowerShell、cmd、fish 与 POSIX shell 分支生成注入命令，未显式传入 Shell 时在 Windows 默认按 PowerShell 处理，并传入原始上下文文本，避免 `developer_instructions` 被拆成 `starting` 等错误子命令。
 - **历史会话转换体验优化**：Claude / Codex 会话互转时跳过转换前的全量历史文件候选扫描，并在转换成功后把新会话直接插入当前列表再打开，避免列表清空重载造成卡顿。
 - **Claude 转 Codex 会话恢复**：转换后的 Codex rollout 会补齐 `session_id`、`cli_version`、`source=cli`、`thread_source=user` 等 Codex resume 必需元数据，并按用户自定义 Codex 配置目录写入历史索引与 `state_5.sqlite`，避免 `No saved session found` 和 `does not start with session metadata`。
 - **Codex 恢复后历史可见**：Claude 转 Codex 时同时写入模型上下文 `response_item` 与 TUI 重放所需的 `event_msg.user_message` / `event_msg.agent_message`，避免 resume 后模型知道上下文但控制台不显示旧对话。
