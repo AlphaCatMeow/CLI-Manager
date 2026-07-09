@@ -5818,6 +5818,12 @@
   z-index: 0;
 }
 
+.ui-terminal-bg-layer[data-bg-enabled="true"]::before,
+.ui-terminal-bg-layer[data-bg-enabled="true"]::after {
+  pointer-events: none;
+  user-select: none;
+}
+
 .ui-terminal-bg-layer[data-bg-enabled="true"][data-bg-fit="contain"]::before {
   background-size: contain;
 }
@@ -5854,7 +5860,6 @@
   position: absolute;
   inset: 0;
   background-color: rgba(var(--terminal-bg-overlay-color, 0, 0, 0), var(--terminal-bg-darken, 0));
-  pointer-events: none;
   z-index: 1;
   transition: background-color 300ms ease;
 }
@@ -5863,6 +5868,16 @@
 .ui-terminal-bg-layer[data-bg-enabled="true"] > * {
   position: relative;
   z-index: 2;
+}
+
+/* Background image and dimming overlays are decorative. Keep xterm as the
+   mouse target so drag selection, link hover and context-menu selection keep
+   working while the transparent background fix remains untouched. */
+.ui-terminal-bg-layer[data-bg-enabled="true"] .xterm,
+.ui-terminal-bg-layer[data-bg-enabled="true"] .xterm-viewport,
+.ui-terminal-bg-layer[data-bg-enabled="true"] .xterm-screen,
+.ui-terminal-bg-layer[data-bg-enabled="true"] .xterm-helper-textarea {
+  pointer-events: auto;
 }
 
 /* When the background image is active, force xterm's internal containers to
