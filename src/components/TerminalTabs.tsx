@@ -310,7 +310,7 @@ function buildProjectSplitOptions(project: Project): SplitTerminalOptions {
   return {
     projectId: project.id,
     cwd: project.path,
-    title: project.cli_tool ? `${project.name} (${project.cli_tool})` : project.name,
+    title: project.name,
     startupCmd: cmd,
     envVars: parseProjectEnvVars(project),
     shell,
@@ -330,6 +330,7 @@ interface SortableTabProps {
   worktreeMenuContent?: (closeMenu: () => void) => ReactNode;
   hoverInfo: TerminalTabHoverInfo;
   onActivate: () => void;
+  onStartEdit: () => void;
   onClose: (anchor?: SplitPickerAnchor) => void;
   onSubmitEdit: (title: string) => void;
   onCancelEdit: () => void;
@@ -351,6 +352,7 @@ function SortableTab({
   worktreeMenuContent,
   hoverInfo,
   onActivate,
+  onStartEdit,
   onClose,
   onSubmitEdit,
   onCancelEdit,
@@ -489,7 +491,11 @@ function SortableTab({
           data-terminal-tab-id={id}
           data-session-kind={sessionKind}
           data-selected={isActive ? "true" : "false"}
-          onClick={onActivate}
+          onClick={() => {
+            hideHoverCard();
+            onActivate();
+            onStartEdit();
+          }}
           onPointerEnter={scheduleHoverCard}
           onPointerLeave={scheduleHideHoverCard}
           onDoubleClick={(event) => {
@@ -1049,6 +1055,7 @@ function PaneTabBar({
               } : undefined}
               hoverInfo={buildTerminalTabHoverInfo(session, session.projectId ? projectById.get(session.projectId) : undefined)}
               onActivate={() => onActivateSession(session.id)}
+              onStartEdit={() => onStartEdit(session.id)}
               onClose={(anchor) => closePaneSessions([session.id], anchor)}
               onSubmitEdit={(title) => onSubmitEdit(session.id, title)}
               onCancelEdit={onCancelEdit}
@@ -1832,6 +1839,7 @@ export function TerminalTabs({
       tree: s.tree,
     }))
   );
+  const updateProject = useProjectStore((s) => s.updateProject);
   const worktrees = useWorktreeStore((s) => s.worktrees);
   const checkWorktreeDeps = useWorktreeStore((s) => s.checkDeps);
   const dismissWorktreeDepsPrompt = useWorktreeStore((s) => s.dismissDepsPrompt);
@@ -2907,6 +2915,42 @@ export function TerminalTabs({
     toolbarSensors,
   ]);
 
+  const renameOpenProjectTabs = useCallback(
+    (projectId: string, title: string) => {
+      sessions
+        .filter((session) => session.projectId === projectId && !session.worktreeId && (session.kind ?? "pty") === "pty")
+        .forEach((session) => renameSession(session.id, title));
+    },
+    [renameSession, sessions]
+  );
+
+  const handleSubmitTabEdit = useCallback(
+    async (sessionId: string, title: string) => {
+      const trimmed = title.trim();
+      const session = sessions.find((item) => item.id === sessionId);
+      if (!session || !trimmed) {
+        setEditingSessionId(null);
+        return;
+      }
+
+      if (session.projectId && !session.worktreeId && (session.kind ?? "pty") === "pty") {
+        try {
+          await updateProject(session.projectId, { name: trimmed });
+          renameOpenProjectTabs(session.projectId, trimmed);
+        } catch (err) {
+          toast.error(t("terminal.tab.renameFailed"), { description: String(err) });
+        } finally {
+          setEditingSessionId(null);
+        }
+        return;
+      }
+
+      renameSession(sessionId, trimmed);
+      setEditingSessionId(null);
+    },
+    [renameOpenProjectTabs, renameSession, sessions, t, updateProject]
+  );
+
   const renderLeaf = useCallback((pane: TerminalPaneLeaf) => (
     <MemoPaneLeafView
       key={pane.id}
@@ -2936,8 +2980,7 @@ export function TerminalTabs({
       onCloseSessions={handleCloseSessions}
       onStartEdit={setEditingSessionId}
       onSubmitEdit={(sessionId, title) => {
-        renameSession(sessionId, title);
-        setEditingSessionId(null);
+        void handleSubmitTabEdit(sessionId, title);
       }}
       onCancelEdit={() => setEditingSessionId(null)}
       onNewTab={() => void handleNewTab()}
@@ -2980,7 +3023,7 @@ export function TerminalTabs({
     lightThemePalette,
     moveSessionToPane,
     projects,
-    renameSession,
+    handleSubmitTabEdit,
     resolvedTheme,
     effectiveActiveSessionId,
     visibleSessions,
