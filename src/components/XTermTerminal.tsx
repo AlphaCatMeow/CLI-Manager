@@ -1912,15 +1912,25 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
 
     let selectedInputSnapshot: string | null = null;
 
-    const rewriteCurrentInput = (nextInput: string, stage: string) => {
+    const rewriteCurrentInput = (
+      nextInput: string,
+      stage: string,
+      cursorIndex: number = getTextCursorLength(nextInput)
+    ) => {
+      const nextCursorIndex = clampTextCursorIndex(nextInput, cursorIndex);
+      const cursorRestore = repeatControlSequence(
+        "\x1b[D",
+        getTextCursorLength(nextInput) - nextCursorIndex
+      );
       inputBuffer.current = nextInput;
-      inputCursorIndexRef.current = getTextCursorLength(nextInput);
+      inputCursorIndexRef.current = nextCursorIndex;
       terminal.clearSelection();
       selectedInputSnapshot = null;
       markAttentionInputHandled();
       clearSuggestionGhost();
       cancelAiSuggestionRefresh();
-      invoke("pty_write", { sessionId, data: `\x15${nextInput}` }).catch((err) => reportPtyWriteError(stage, err));
+      invoke("pty_write", { sessionId, data: `\x15${nextInput}${cursorRestore}` })
+        .catch((err) => reportPtyWriteError(stage, err));
     };
 
     const isReplaceableInputData = (data: string) => {
@@ -2077,7 +2087,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
 
       const index = currentInput.indexOf(matchedText);
       const nextInput = `${currentInput.slice(0, index)}${currentInput.slice(index + matchedText.length)}`;
-      rewriteCurrentInput(nextInput, "selection_delete");
+      rewriteCurrentInput(nextInput, "selection_delete", getTextCursorLength(currentInput.slice(0, index)));
       return true;
     };
 
