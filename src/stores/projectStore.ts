@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { getDb, batchUpdateSortOrder } from "../lib/db";
+import { getDb, batchUpdateSortOrder, batchUpdateProjectShell as dbBatchUpdateProjectShell } from "../lib/db";
 import { resolveProjectFetchPolicy, type ProjectFetchReason } from "../lib/projectLoadPolicy";
 import { useSettingsStore } from "./settingsStore";
 import { logWarn } from "../lib/logger";
@@ -50,6 +50,7 @@ interface ProjectStore {
   cleanupUnusedCodexProfiles: () => Promise<void>;
   createProject: (input: CreateProjectInput) => Promise<Project>;
   updateProject: (id: string, input: UpdateProjectInput) => Promise<void>;
+  batchUpdateProjectShell: (ids: string[], shell: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   createGroup: (input: CreateGroupInput) => Promise<Group>;
   renameGroup: (id: string, name: string) => Promise<void>;
@@ -435,6 +436,19 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     if (shouldCleanupCodexProfiles) {
       await get().cleanupUnusedCodexProfiles();
     }
+  },
+
+  batchUpdateProjectShell: async (ids, shell) => {
+    const uniqueIds = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
+    const trimmed = shell.trim();
+    if (uniqueIds.length === 0 || !trimmed) return;
+    const os = await getOsPlatform();
+    const resolved =
+      normalizeShellForOs(trimmed, os) ??
+      (!normalizeShellKey(trimmed) ? trimmed : defaultShellForOs(os));
+    const db = await getDb();
+    await dbBatchUpdateProjectShell(db, uniqueIds, resolved, Date.now().toString());
+    await get().fetchAll();
   },
 
   deleteProject: async (id) => {

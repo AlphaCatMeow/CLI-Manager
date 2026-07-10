@@ -1,4 +1,4 @@
-import type { OsPlatform } from "./shell";
+import { normalizeShellKey, type OsPlatform } from "./shell";
 import { getShellOptions, type ShellOption } from "./types";
 
 export type TerminalShellProfileKind = "known" | "custom";
@@ -115,6 +115,23 @@ export function getEnabledTerminalShellOptions(
   return platformProfiles
     .filter((profile) => profile.enabled && (profile.detected || profile.kind === "custom"))
     .map((profile) => ({ value: profile.command, label: profile.label }));
+}
+
+/**
+ * 在启用的 Shell 选项中解析“默认 Shell”设置对应的选项值：
+ * 先按 command 精确匹配，再按归一化 ShellKey 匹配，最后回退到第一个可用选项。
+ */
+export function resolvePreferredShellOption(
+  os: OsPlatform,
+  defaultShell: string,
+  profiles: readonly TerminalShellProfile[],
+): string {
+  const enabledOptions = getEnabledTerminalShellOptions(os, profiles);
+  const normalizedDefaultShell = normalizeShellKey(defaultShell);
+  const preferred =
+    enabledOptions.find((option) => option.value === defaultShell)?.value ??
+    enabledOptions.find((option) => normalizeShellKey(option.value) === normalizedDefaultShell)?.value;
+  return preferred ?? enabledOptions[0]?.value ?? "";
 }
 
 export function makeCustomTerminalShellProfile(

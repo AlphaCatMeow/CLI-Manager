@@ -37,6 +37,7 @@ import { toast } from "sonner";
 import { logError } from "../../lib/logger";
 import { SidebarHeader } from "./SidebarHeader";
 import { ProjectTree } from "./ProjectTree";
+import { BatchShellDialog } from "./BatchShellDialog";
 import { SidebarFooter } from "./SidebarFooter";
 import { groupSyncedExternalSessions } from "../../lib/externalSessionGrouping";
 import { FileExplorerSidebar } from "../files/FileExplorerSidebar";
@@ -53,6 +54,7 @@ import {
   Plus,
   SquareSplitHorizontal,
   SquareSplitVertical,
+  Terminal,
   TerminalSquare,
   Trash2,
   X,
@@ -260,6 +262,8 @@ export function Sidebar({
   >(null);
   const [showAdd, setShowAdd] = useState(false);
   const [addToGroupId, setAddToGroupId] = useState<string | null>(null);
+  // 批量修改 Shell 弹窗：null=关闭，Set=打开时预勾选的项目 id
+  const [batchShellPreselected, setBatchShellPreselected] = useState<Set<string> | null>(null);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(
     () => new Set(useSettingsStore.getState().collapsedGroupIds)
   );
@@ -1252,14 +1256,16 @@ export function Sidebar({
   }, []);
 
   const handleSelectProject = useCallback((e: ReactMouseEvent, project: Project) => {
-    setSelectedId(project.id);
-    if (projectScopedTerminalViewEnabled) {
-      onTerminalScopeChange?.({ kind: "project", projectId: project.id });
-    }
-
     const additive = e.ctrlKey || e.metaKey; // Ctrl(Win/Linux) / Cmd(Mac) 切换单项
     const rangeSelect = e.shiftKey;          // Shift 连续范围选择（Windows 风格）
     const anchorId = selectionAnchorRef.current;
+
+    const markActive = () => {
+      setSelectedId(project.id);
+      if (projectScopedTerminalViewEnabled) {
+        onTerminalScopeChange?.({ kind: "project", projectId: project.id });
+      }
+    };
 
     // Shift 范围选择：从锚点到当前项，按可见顺序取区间
     if (rangeSelect && anchorId && anchorId !== project.id) {
@@ -1275,11 +1281,13 @@ export function Sidebar({
           range.forEach((id) => next.add(id));
           return next;
         });
+        markActive();
         return; // 锚点保持不变，便于以同一锚点继续扩展区间
       }
     }
 
     if (additive) {
+      const deselecting = selectedProjectIds.has(project.id);
       setSelectedProjectIds((prev) => {
         const next = new Set(prev);
         if (next.has(project.id)) next.delete(project.id);
@@ -1287,15 +1295,22 @@ export function Sidebar({
         return next;
       });
       selectionAnchorRef.current = project.id;
+      if (deselecting) {
+        // 取消勾选时同时清掉“当前项”高亮，避免高亮残留；不切换终端范围
+        setSelectedId((current) => (current === project.id ? null : current));
+      } else {
+        markActive();
+      }
       return;
     }
 
+    markActive();
     setSelectedProjectIds(new Set([project.id]));
     selectionAnchorRef.current = project.id;
     if (activateFirstProjectSession(project.id)) {
       closeHistory();
     }
-  }, [activateFirstProjectSession, closeHistory, onTerminalScopeChange, projectScopedTerminalViewEnabled, visibleProjectIds]);
+  }, [activateFirstProjectSession, closeHistory, onTerminalScopeChange, projectScopedTerminalViewEnabled, selectedProjectIds, visibleProjectIds]);
 
   const handleSelectProjectByKeyboard = useCallback((project: Project) => {
     setSelectedId(project.id);
@@ -1539,6 +1554,12 @@ export function Sidebar({
   const selectedProjects = useMemo(
     () => projects.filter((p) => selectedProjectIds.has(p.id)),
     [projects, selectedProjectIds]
+  );
+
+  // 分组右键菜单“批量修改本组 Shell”的作用范围（含子组项目）；组内项目数 >1 才显示入口
+  const contextMenuGroupProjectIds = useMemo(
+    () => (contextMenu?.kind === "group" ? collectProjectIdsForGroup(groups, projects, contextMenu.groupId) : null),
+    [contextMenu, groups, projects]
   );
 
   const treeActions = useMemo<TreeActions>(
@@ -1939,6 +1960,19 @@ export function Sidebar({
                   <TerminalSquare size={14} strokeWidth={1.5} />
                   {t("sidebar.menu.launchSelected", { count: selectedProjects.length })}
                 </button>
+                {selectedProjectIds.size > 1 && (
+                  <button
+                    className="context-menu-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setBatchShellPreselected(new Set(selectedProjectIds));
+                      setContextMenu(null);
+                    }}
+                  >
+                    <Terminal size={14} strokeWidth={1.5} />
+                    {t("sidebar.menu.batchShell")}
+                  </button>
+                )}
                 <button
                   className="context-menu-item"
                   role="menuitem"
@@ -2218,6 +2252,19 @@ export function Sidebar({
                   <Pencil size={14} strokeWidth={1.5} />
                   {t("sidebar.menu.rename")}
                 </button>
+                {contextMenuGroupProjectIds && contextMenuGroupProjectIds.size > 1 && (
+                  <button
+                    className="context-menu-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setBatchShellPreselected(contextMenuGroupProjectIds);
+                      setContextMenu(null);
+                    }}
+                  >
+                    <Terminal size={14} strokeWidth={1.5} />
+                    {t("sidebar.menu.batchShellGroup")}
+                  </button>
+                )}
                 <div className="context-menu-separator" role="separator" />
                 {selectedGroupIds.size > 0 && (
                   <button
@@ -2454,6 +2501,12 @@ export function Sidebar({
         />
       )}
       {editingProject && <ConfigModal project={editingProject} onClose={() => setEditingProject(null)} />}
+      {batchShellPreselected && (
+        <BatchShellDialog
+          preselectedIds={batchShellPreselected}
+          onClose={() => setBatchShellPreselected(null)}
+        />
+      )}
       {providerSwitchTarget && providerSwitchProject && (
         <ProviderSwitchModal
           project={providerSwitchProject}

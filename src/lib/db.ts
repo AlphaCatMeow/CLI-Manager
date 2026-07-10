@@ -87,6 +87,26 @@ export async function batchUpdateSortOrder(
 }
 
 /**
+ * 把 N 次 `UPDATE projects SET shell = ? WHERE id = ?` 合并成单条
+ * `UPDATE projects SET shell = $1, updated_at = $2 WHERE id IN (...)`，按参数上限分批。
+ */
+export async function batchUpdateProjectShell(
+  db: Database,
+  ids: readonly string[],
+  shell: string,
+  updatedAt: string,
+): Promise<void> {
+  if (ids.length === 0) return;
+  const batchSize = MAX_PARAMS_PER_STMT - 2;
+  for (let i = 0; i < ids.length; i += batchSize) {
+    const chunk = ids.slice(i, i + batchSize);
+    const idParams = chunk.map((_, n) => `$${n + 3}`);
+    const sql = `UPDATE projects SET shell = $1, updated_at = $2 WHERE id IN (${idParams.join(",")})`;
+    await db.execute(sql, [shell, updatedAt, ...chunk]);
+  }
+}
+
+/**
  * 把 N 次 `INSERT INTO ... VALUES (...)` 合并成单条多值 INSERT，按参数上限分批。
  * `table` 与 `columns` 是受信任的常量（不接受用户输入）。
  */

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -12,8 +12,8 @@ import { Check, RefreshCw } from "./icons";
 import { useExternalSessionSyncStore, type ExternalSessionProjectCandidate } from "../stores/externalSessionSyncStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useI18n, type TranslationKey } from "../lib/i18n";
-import { getOsPlatform, normalizeShellKey, type OsPlatform } from "../lib/shell";
-import { getEnabledTerminalShellOptions } from "../lib/terminalShellProfiles";
+import { getOsPlatform, type OsPlatform } from "../lib/shell";
+import { getEnabledTerminalShellOptions, resolvePreferredShellOption } from "../lib/terminalShellProfiles";
 import type { HistorySource } from "../lib/types";
 
 type Translate = (key: TranslationKey, params?: Record<string, string | number>) => string;
@@ -107,15 +107,6 @@ export function ExternalSessionSyncDialog() {
   const [shell, setShell] = useState("");
   const shellFieldId = useId();
 
-  const resolveDefaultShell = useCallback((platform: OsPlatform) => {
-    const enabledOptions = getEnabledTerminalShellOptions(platform, terminalShellProfiles);
-    const normalizedDefaultShell = normalizeShellKey(defaultShell);
-    const preferred =
-      enabledOptions.find((option) => option.value === defaultShell)?.value ??
-      enabledOptions.find((option) => normalizeShellKey(option.value) === normalizedDefaultShell)?.value;
-    return preferred ?? enabledOptions[0]?.value ?? "";
-  }, [defaultShell, terminalShellProfiles]);
-
   useEffect(() => {
     if (!open) return;
     setSelectedKeys(new Set(candidates.map((candidate) => candidate.key)));
@@ -128,12 +119,12 @@ export function ExternalSessionSyncDialog() {
       const platform = await getOsPlatform();
       if (cancelled) return;
       setOsPlatform(platform);
-      setShell(resolveDefaultShell(platform));
+      setShell(resolvePreferredShellOption(platform, defaultShell, terminalShellProfiles));
     })();
     return () => {
       cancelled = true;
     };
-  }, [open, resolveDefaultShell]);
+  }, [open, defaultShell, terminalShellProfiles]);
 
   const shellOptions = useMemo(
     () => getEnabledTerminalShellOptions(osPlatform, terminalShellProfiles),
