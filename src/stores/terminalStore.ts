@@ -6,7 +6,7 @@ import type { SubagentTranscriptSource, TerminalSession, Project } from "../lib/
 import { debugConsoleWarn } from "../lib/debugConsole";
 import { sourceTool, type SyncedHistoryGroup } from "../lib/externalSessionGrouping";
 import { logError, logInfo, logWarn } from "../lib/logger";
-import { isDirectCodexStartupCommand, normalizeDirectCodexStartupCommand, withCodexLightTuiTheme } from "../lib/projectStartupCommand";
+import { appendResumeCliArgs, isDirectCodexStartupCommand, normalizeDirectCodexStartupCommand, withCodexLightTuiTheme } from "../lib/projectStartupCommand";
 import { getTerminalTheme } from "../lib/terminalThemes";
 import { useSettingsStore } from "./settingsStore";
 import { useSessionStore } from "./sessionStore";
@@ -698,6 +698,48 @@ function prepareStartupCommandForPty(command: string | undefined, shell: ShellKe
   if (!command || shell !== "gitbash" || !isCurrentTerminalBackgroundLight()) return command;
   return withCodexLightTuiTheme(command);
 }
+
+// startupCmd 里 codex/claude 可能出现在任意位置（如 `wsl codex`、`claude --settings ...`），
+// 与 isDirectCodexStartupCommand（要求 codex 位于命令开头）不同，这里用更宽松的整词匹配做类型判定。
+const CODEX_COMMAND_PATTERN = /(?:^|\s)codex(?:\.(?:cmd|exe|ps1))?(?:\s|$)/i;
+const CLAUDE_COMMAND_PATTERN = /(?:^|\s)claude(?:\.(?:cmd|exe|ps1))?(?:\s|$)/i;
+
+// 恢复会话时判定它是否为 codex/claude 这类 TUI CLI 会话。判定依据 = startupCmd 文本 + 项目 cli_tool 配置。
+// 判不出（如普通 pwsh/bash）返回 null，走 shell 分支（静态贴回 scrollback）。
+function detectCliResumeKind(
+  startupCmd: string | undefined,
+  project: Project | undefined
+): "claude" | "codex" | null {
+  const cmd = startupCmd?.trim() ?? "";
+  const projectKind = project ? getProviderSwitchAppType(project) : null;
+  // codex 优先：codex 项目可能带自定义 startupCmd，仍应当 codex resume。
+  if (projectKind === "codex" || (project ? isExactCodexProject(project) : false) || CODEX_COMMAND_PATTERN.test(cmd)) {
+    return "codex";
+  }
+  if (projectKind === "claude" || CLAUDE_COMMAND_PATTERN.test(cmd)) {
+    return "claude";
+  }
+  return null;
+}
+
+// 构造 CLI 会话的 resume 启动命令。为什么不贴 scrollback 而改走 resume：codex/claude 启动用绝对光标
+// 定位整屏重绘，会盖掉我们贴回的历史文本（见 research/tui-startup-clear-sequences.md），因此改由 CLI
+// 自己 resume 重画上次对话。有 cliSessionId 走带 id 的 resume；无 id 兜底续最近一次（用户已拍板）。
+function buildCliResumeStartupCommand(
+  kind: "claude" | "codex",
+  cliSessionId: string | undefined,
+  project: Project | undefined
+): string {
+  const id = cliSessionId?.trim();
+  const hasValidId = !!id && !/\s/.test(id) && !/[\r\n]/.test(id);
+  if (kind === "codex") {
+    const base = hasValidId ? `codex resume --no-alt-screen ${id}` : "codex resume --no-alt-screen --last";
+    return appendResumeCliArgs(base, "codex", project ?? null);
+  }
+  const base = hasValidId ? `claude --resume ${id}` : "claude --continue";
+  return appendResumeCliArgs(base, "claude", project ?? null);
+}
+
 
 function buildDirectCodexLaunchCommand(command: string): string {
   const normalized = normalizeDirectCodexStartupCommand(command) ?? command.trim();
@@ -1537,16 +1579,44 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
       newIdMap[ps.id] = newSessionId;
 
-      const restoredStartupCmd = normalizeDirectCodexStartupCommand(ps.startupCmd);
-      const launchStartupCmd = prepareStartupCommandForPty(restoredStartupCmd, normalizeShellKey(resolvedShell) ?? null);
+      const shellKey = normalizeShellKey(resolvedShell) ?? null;
+      // 恢复按会话类型分流：CLI 会话（codex/claude）走原生 resume，普通 shell 会话静态贴回 scrollback。
+      const restoreProject = ps.projectId ? projectMap.get(ps.projectId) : undefined;
+      const cliKind = detectCliResumeKind(ps.startupCmd, restoreProject);
+
+      let launchStartupCmd: string | undefined;
+      let initialTerminalOutput: string | undefined;
+      let deferStartupUntilInitialOutput = false;
+
+      if (cliKind) {
+        // CLI 会话：不贴 initialTerminalOutput（TUI 绝对定位重绘会盖掉它，见
+        // research/tui-startup-clear-sequences.md），改用 resume 让 CLI 自己重画上次对话并可继续。
+        const resumeCmd = buildCliResumeStartupCommand(cliKind, ps.cliSessionId, restoreProject);
+        launchStartupCmd = prepareStartupCommandForPty(resumeCmd, shellKey);
+      } else {
+        // 普通 shell 会话：静态贴回历史滚动内容（shell 不清屏，历史可见），startupCmd 保持首轮行为。
+        const restoredStartupCmd = normalizeDirectCodexStartupCommand(ps.startupCmd);
+        launchStartupCmd = prepareStartupCommandForPty(restoredStartupCmd, shellKey);
+        initialTerminalOutput = ps.initialTerminalOutput;
+        // 有历史画面时：先静态贴回 initialTerminalOutput，再由 XTermTerminal 在贴回完成后重放 startupCmd，
+        // 避免"setTimeout 写入"与"贴回大段文本"竞态导致启动命令淹没在历史输出里。
+        deferStartupUntilInitialOutput = !!ps.initialTerminalOutput && !!launchStartupCmd;
+      }
+
+      const hasInitialOutput = !!initialTerminalOutput;
       const restoredSession: TerminalSession = {
         id: newSessionId,
         projectId: ps.projectId,
+        worktreeId: ps.worktreeId,
         title: ps.title,
         cwd: ps.cwd,
         shell: resolvedShell,
         envVars: ps.envVars,
-        startupCmd: restoredStartupCmd,
+        startupCmd: launchStartupCmd,
+        // 保留 cliSessionId：hook 上报会用它绑定实时统计；下次落盘也需要它继续 resume。
+        cliSessionId: ps.cliSessionId,
+        initialTerminalOutput,
+        deferStartupUntilInitialOutput,
       };
 
       let unlisten: UnlistenFn;
@@ -1569,14 +1639,16 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       restoredStatuses[newSessionId] = "running";
       restoredListeners[newSessionId] = unlisten;
 
-      // 执行启动命令
-      if (launchStartupCmd) {
+      // 执行启动命令：CLI resume 命令 / 无历史画面的普通命令走这里直接写入；
+      // 有历史画面时（仅 shell 分支）改由 XTermTerminal 在贴回完成后重放（deferStartupUntilInitialOutput），
+      // 这里不再 setTimeout 写入，避免同一条 startupCmd 被执行两次。
+      if (launchStartupCmd && !hasInitialOutput) {
         setTimeout(() => {
-          invoke("pty_write", { sessionId: newSessionId, data: formatStartupInputForPty(launchStartupCmd, normalizeShellKey(resolvedShell) ?? null) }).catch((err) => {
+          invoke("pty_write", { sessionId: newSessionId, data: formatStartupInputForPty(launchStartupCmd!, shellKey) }).catch((err) => {
             logError("Failed to write startup command on restore", {
               sessionId: newSessionId,
               hasStartupCmd: true,
-              startupCmdSummary: summarizeStartupCmd(launchStartupCmd),
+              startupCmdSummary: summarizeStartupCmd(launchStartupCmd!),
               err,
             });
           });

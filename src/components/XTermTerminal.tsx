@@ -83,6 +83,7 @@ const TUI_BORDER_CHAR_PATTERN = /^[│┃║▏▎▍▌▋▊▉█┆┊╎╏
 const TUI_BORDER_PREFIX_PATTERN = /^[\s│┃║▏▎▍▌▋▊▉█┆┊╎╏]+/u;
 import { toast } from "sonner";
 import { logError, logInfo } from "../lib/logger";
+import { registerTerminalSnapshotSource, markTerminalSnapshotDirty } from "../lib/sessionSnapshotPersistence";
 
 // Shell integration OSC 序列在原始 PTY 流上解析（而非 xterm parser hook）：
 // 后台 Tab 的输出会进入 inactive ring buffer 且可能被截断丢弃，状态事件必须
@@ -1614,6 +1615,8 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     terminal.unicode.activeVersion = "11";
     terminal.loadAddon(webLinksAddon);
     terminal.open(containerRef.current);
+    // 注册定时节流落盘的快照来源：让崩溃/强杀也能恢复到最近一次落盘的画面。
+    const unregisterSnapshotSource = registerTerminalSnapshotSource(sessionId, () => serializeAddon.serialize());
     const searchResultDisposable = searchAddon.onDidChangeResults((event) => {
       setSearchResult({ resultIndex: event.resultIndex, resultCount: event.resultCount });
     });
@@ -2685,6 +2688,8 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       }
       const text = processShellIntegrationOsc(processSpecialOscQueries(textDecoder.decode(bytes, { stream: true })));
       if (!text) return;
+      // 标记脏，供定时节流落盘判断是否需要重新序列化该终端。
+      markTerminalSnapshotDirty(sessionId);
       if (isVisibleRef.current) {
         pendingChunks.push(text);
         if (writeRafId === null) {
@@ -3230,6 +3235,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       inactiveBufferRef.current = [];
       inactiveBufferSizeRef.current = 0;
       needsViewportRefreshRef.current = false;
+      unregisterSnapshotSource();
       unlisten?.();
       searchResultDisposable.dispose();
       cursorStyleDisposable.dispose();
