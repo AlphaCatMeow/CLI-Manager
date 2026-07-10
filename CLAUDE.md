@@ -65,7 +65,7 @@ cd src-tauri && cargo test <test_name>   # 运行单个 Rust 测试
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **CLI-Manager** (12200 symbols, 23827 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **task-0710-1923** (11620 symbols, 22130 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -88,10 +88,10 @@ This project is indexed by GitNexus as **CLI-Manager** (12200 symbols, 23827 rel
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/CLI-Manager/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/CLI-Manager/clusters` | All functional areas |
-| `gitnexus://repo/CLI-Manager/processes` | All execution flows |
-| `gitnexus://repo/CLI-Manager/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/task-0710-1923/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/task-0710-1923/clusters` | All functional areas |
+| `gitnexus://repo/task-0710-1923/processes` | All execution flows |
+| `gitnexus://repo/task-0710-1923/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 
