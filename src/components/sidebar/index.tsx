@@ -281,7 +281,7 @@ export function Sidebar({
     | null
     | { kind: "delete-project"; project: Project }
     | { kind: "delete-group"; groupId: string; groupName: string }
-    | { kind: "delete-groups"; groups: { groupId: string; groupName: string }[] }
+    | { kind: "delete-selection"; groups: { groupId: string; groupName: string }[]; projects: Project[] }
   >(null);
   const [worktreePrompt, setWorktreePrompt] = useState<{
     project: Project;
@@ -1259,6 +1259,8 @@ export function Sidebar({
     const additive = e.ctrlKey || e.metaKey; // Ctrl(Win/Linux) / Cmd(Mac) 切换单项
     const rangeSelect = e.shiftKey;          // Shift 连续范围选择（Windows 风格）
     const anchorId = selectionAnchorRef.current;
+    // 项目多选与 worktree 多选互斥；与文件夹多选可混合累积，普通点击时整体重置
+    setSelectedWorktreeIds((prev) => (prev.size === 0 ? prev : new Set()));
 
     const markActive = () => {
       setSelectedId(project.id);
@@ -1306,6 +1308,7 @@ export function Sidebar({
 
     markActive();
     setSelectedProjectIds(new Set([project.id]));
+    setSelectedGroupIds((prev) => (prev.size === 0 ? prev : new Set()));
     selectionAnchorRef.current = project.id;
     if (activateFirstProjectSession(project.id)) {
       closeHistory();
@@ -1342,7 +1345,7 @@ export function Sidebar({
     const additive = e.ctrlKey || e.metaKey; // Ctrl(Win/Linux) / Cmd(Mac) 切换单项
     const rangeSelect = e.shiftKey;          // Shift 连续范围选择（Windows 风格）
     const anchorId = groupSelectionAnchorRef.current;
-    // 文件夹多选与 worktree 多选互斥（与项目多选的互斥在各分支内处理）
+    // 文件夹多选与 worktree 多选互斥；与项目多选可混合累积
     setSelectedWorktreeIds((prev) => (prev.size === 0 ? prev : new Set()));
 
     // Shift 范围选择：从锚点到当前项，按可见顺序取区间
@@ -1353,7 +1356,6 @@ export function Sidebar({
       if (from !== -1 && to !== -1) {
         const [lo, hi] = from <= to ? [from, to] : [to, from];
         const range = order.slice(lo, hi + 1);
-        setSelectedProjectIds((prev) => (prev.size === 0 ? prev : new Set())); // 两套多选互斥
         setSelectedGroupIds((prev) => {
           const next = additive ? new Set(prev) : new Set<string>();
           range.forEach((id) => next.add(id));
@@ -1364,7 +1366,6 @@ export function Sidebar({
     }
 
     if (additive) {
-      setSelectedProjectIds((prev) => (prev.size === 0 ? prev : new Set()));
       setSelectedGroupIds((prev) => {
         const next = new Set(prev);
         if (next.has(groupId)) next.delete(groupId);
@@ -1394,6 +1395,8 @@ export function Sidebar({
   }, [onTerminalScopeChange]);
 
   const handleToggleSelection = useCallback((project: Project) => {
+    // 项目多选与 worktree 多选互斥；与文件夹多选可混合
+    setSelectedWorktreeIds((prev) => (prev.size === 0 ? prev : new Set()));
     setSelectedProjectIds((prev) => {
       const next = new Set(prev);
       if (next.has(project.id)) next.delete(project.id);
@@ -1403,7 +1406,7 @@ export function Sidebar({
   }, []);
 
   const handleToggleGroupSelection = useCallback((groupId: string) => {
-    setSelectedProjectIds((prev) => (prev.size === 0 ? prev : new Set()));
+    // 文件夹多选与 worktree 多选互斥；与项目多选可混合
     setSelectedWorktreeIds((prev) => (prev.size === 0 ? prev : new Set()));
     setSelectedGroupIds((prev) => {
       const next = new Set(prev);
@@ -1414,14 +1417,15 @@ export function Sidebar({
     groupSelectionAnchorRef.current = groupId;
   }, []);
 
-  const handleRequestDeleteSelectedGroups = useCallback(() => {
-    const items = Array.from(selectedGroupIds)
+  const handleRequestDeleteSelection = useCallback(() => {
+    const groupItems = Array.from(selectedGroupIds)
       .map((id) => groups.find((g) => g.id === id))
       .filter((g): g is Group => !!g)
       .map((g) => ({ groupId: g.id, groupName: g.name }));
-    if (items.length === 0) return;
-    setConfirmAction({ kind: "delete-groups", groups: items });
-  }, [groups, selectedGroupIds]);
+    const projectItems = projects.filter((project) => selectedProjectIds.has(project.id));
+    if (groupItems.length + projectItems.length === 0) return;
+    setConfirmAction({ kind: "delete-selection", groups: groupItems, projects: projectItems });
+  }, [groups, projects, selectedGroupIds, selectedProjectIds]);
 
   const handleRenameGroup = useCallback((id: string, _name: string) => {
     setRenamingGroupId(id);
@@ -1727,17 +1731,30 @@ export function Sidebar({
       };
     }
 
-    const deleteGroups = confirmAction.groups;
+    // kind === "delete-selection"：文件夹与终端的混合批量删除
+    const selGroups = confirmAction.groups;
+    const selProjects = confirmAction.projects;
+    const totalCount = selGroups.length + selProjects.length;
+    const title = selGroups.length === 0
+      ? t("sidebar.confirm.deleteTerminalsTitle", { count: selProjects.length })
+      : selProjects.length === 0
+        ? t("sidebar.confirm.deleteGroupsTitle", { count: selGroups.length })
+        : t("sidebar.confirm.deleteSelectionTitle", { count: totalCount });
+    const message = selGroups.length === 0
+      ? t("sidebar.confirm.deleteTerminalsMessage", { count: selProjects.length })
+      : selProjects.length === 0
+        ? t("sidebar.confirm.deleteGroupsMessage", { count: selGroups.length })
+        : t("sidebar.confirm.deleteSelectionMessage", { groupCount: selGroups.length, terminalCount: selProjects.length });
     return {
-      title: t("sidebar.confirm.deleteGroupsTitle", { count: deleteGroups.length }),
-      message: t("sidebar.confirm.deleteGroupsMessage", { count: deleteGroups.length }),
+      title,
+      message,
       confirmText: t("sidebar.menu.delete"),
       danger: true,
       onConfirm: async () => {
         try {
-          const groupIds = deleteGroups.map((g) => g.groupId);
-          // 多个目录（含嵌套父子）取项目并集去重，避免重复删除
-          const projectIds = new Set<string>();
+          const groupIds = selGroups.map((g) => g.groupId);
+          // 目录（含嵌套父子）与直接选中的终端取项目并集去重，避免重复删除
+          const projectIds = new Set<string>(selProjects.map((project) => project.id));
           for (const groupId of groupIds) {
             collectProjectIdsForGroup(groups, projects, groupId).forEach((id) => projectIds.add(id));
           }
@@ -1766,7 +1783,16 @@ export function Sidebar({
           for (const groupId of groupIds) {
             await deleteGroup(groupId);
           }
-          toast.success(t("sidebar.toast.groupsDeleteSuccess", { count: groupIds.length }));
+          if (selProjects.length === 0) {
+            toast.success(t("sidebar.toast.groupsDeleteSuccess", { count: selGroups.length }));
+          } else if (selGroups.length === 0) {
+            toast.success(t("sidebar.toast.terminalsDeleteSuccess", { count: selProjects.length }));
+          } else {
+            toast.success(t("sidebar.toast.selectionDeleteSuccess", {
+              groupCount: selGroups.length,
+              terminalCount: selProjects.length,
+            }));
+          }
           setConfirmAction(null);
           if (selectedId && projectIds.has(selectedId)) setSelectedId(null);
           setSelectedProjectIds((prev) => {
@@ -1776,7 +1802,7 @@ export function Sidebar({
           });
           setSelectedGroupIds(new Set());
         } catch (err) {
-          toast.error(t("sidebar.toast.groupDeleteFailed"), { description: String(err) });
+          toast.error(t("sidebar.toast.selectionDeleteFailed"), { description: String(err) });
         }
       },
     };
@@ -2043,6 +2069,19 @@ export function Sidebar({
                   {t("sidebar.menu.edit")}
                 </button>
                 <div className="context-menu-separator" role="separator" />
+                {selectedProjectIds.size + selectedGroupIds.size > 1 && (
+                  <button
+                    className="context-menu-item danger"
+                    role="menuitem"
+                    onClick={() => {
+                      handleRequestDeleteSelection();
+                      setContextMenu(null);
+                    }}
+                  >
+                    <Trash2 size={14} strokeWidth={1.5} />
+                    {t("sidebar.menu.deleteSelected", { count: selectedProjectIds.size + selectedGroupIds.size })}
+                  </button>
+                )}
                 <button
                   className="context-menu-item danger"
                   onClick={() => {
@@ -2266,17 +2305,17 @@ export function Sidebar({
                   </button>
                 )}
                 <div className="context-menu-separator" role="separator" />
-                {selectedGroupIds.size > 0 && (
+                {selectedProjectIds.size + selectedGroupIds.size > 1 && (
                   <button
                     className="context-menu-item danger"
                     role="menuitem"
                     onClick={() => {
-                      handleRequestDeleteSelectedGroups();
+                      handleRequestDeleteSelection();
                       setContextMenu(null);
                     }}
                   >
                     <Trash2 size={14} strokeWidth={1.5} />
-                    {t("sidebar.menu.deleteSelectedGroups", { count: selectedGroupIds.size })}
+                    {t("sidebar.menu.deleteSelected", { count: selectedProjectIds.size + selectedGroupIds.size })}
                   </button>
                 )}
                 <button
