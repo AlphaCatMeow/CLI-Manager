@@ -44,6 +44,8 @@ export type TerminalThemeMode = "system" | "independent";
 export type SidebarDensity = "compact" | "comfortable";
 export type ViewMode = "standard" | "compact";
 export type CloseBehavior = "ask" | "minimize" | "exit";
+export const LINUX_GRAPHICS_MODES = ["auto", "system", "disable-dmabuf", "disable-compositing"] as const;
+export type LinuxGraphicsMode = (typeof LINUX_GRAPHICS_MODES)[number];
 type LastSettingsTab =
   | "general"
   | "developer"
@@ -292,6 +294,7 @@ interface Settings {
   symlinkCompatibilityEnabled: boolean;
   lowMemoryMode: boolean;
   disableHardwareAcceleration: boolean;
+  linuxGraphicsMode: LinuxGraphicsMode;
   terminalBackground: TerminalBackgroundSettings;
   terminalShellProfiles: TerminalShellProfile[];
   /** 终端设置页各可折叠区块的展开状态记忆。 */
@@ -423,6 +426,7 @@ const DEFAULTS: Settings = {
   symlinkCompatibilityEnabled: false,
   lowMemoryMode: false,
   disableHardwareAcceleration: false,
+  linuxGraphicsMode: "auto",
   terminalBackground: {
     enabled: false,
     imagePath: null,
@@ -1065,6 +1069,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       typeof entries.disableHardwareAcceleration === "boolean"
         ? entries.disableHardwareAcceleration
         : DEFAULTS.disableHardwareAcceleration;
+    entries.linuxGraphicsMode = LINUX_GRAPHICS_MODES.includes(entries.linuxGraphicsMode as LinuxGraphicsMode)
+      ? entries.linuxGraphicsMode as LinuxGraphicsMode
+      : DEFAULTS.linuxGraphicsMode;
     entries.terminalInputSuggestionsEnabled =
       typeof entries.terminalInputSuggestionsEnabled === "boolean"
         ? entries.terminalInputSuggestionsEnabled

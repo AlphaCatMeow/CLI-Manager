@@ -123,6 +123,7 @@ with:
 - Install/relaunch requires explicit confirmation.
 - If terminal sessions are active, the confirmation must show the active count and warn that tasks may be interrupted; the user may still confirm.
 - Keep a Release-page fallback link for manifest/signature/network failures.
+- AUR-managed installs (`get_app_version().distribution === "aur"`) must skip updater check/download/install and use the AUR package page as the fallback. Package-manager ownership takes precedence over the standalone updater UX.
 
 ### 4. Validation & Error Matrix
 

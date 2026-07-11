@@ -1,12 +1,21 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { Box, Card, Group, Stack, Switch, Text } from "@mantine/core";
+import { Box, Card, Group, Select, Stack, Switch, Text } from "@mantine/core";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { Bug, Cpu, GitBranch, HardDrive, History, Link2, MonitorCog } from "lucide-react";
+import { Bug, Copy, Cpu, GitBranch, HardDrive, History, Link2, MonitorCog } from "lucide-react";
 import { toast } from "sonner";
-import { useSettingsStore } from "../../../stores/settingsStore";
+import {
+  LINUX_GRAPHICS_MODES,
+  useSettingsStore,
+  type LinuxGraphicsMode,
+} from "../../../stores/settingsStore";
 import { getOsPlatform, type OsPlatform } from "../../../lib/shell";
 import { useI18n, type TranslationKey } from "../../../lib/i18n";
+import {
+  formatLinuxGraphicsDiagnostics,
+  getLinuxGraphicsDiagnostics,
+  type LinuxGraphicsDiagnostics,
+} from "../../../lib/linuxGraphics";
 import { ConfirmDialog } from "../../ConfirmDialog";
 
 interface SettingSwitchCardProps {
@@ -59,15 +68,28 @@ export function DeveloperSettingsPage() {
   const symlinkCompatibilityEnabled = useSettingsStore((s) => s.symlinkCompatibilityEnabled);
   const lowMemoryMode = useSettingsStore((s) => s.lowMemoryMode);
   const disableHardwareAcceleration = useSettingsStore((s) => s.disableHardwareAcceleration);
+  const linuxGraphicsMode = useSettingsStore((s) => s.linuxGraphicsMode);
   const debugMode = useSettingsStore((s) => s.debugMode);
   const update = useSettingsStore((s) => s.update);
   const [osPlatform, setOsPlatform] = useState<OsPlatform>("unknown");
+  const [graphicsDiagnostics, setGraphicsDiagnostics] = useState<LinuxGraphicsDiagnostics | null>(null);
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
+  const [restartMessageKey, setRestartMessageKey] = useState<TranslationKey>(
+    "settings.developer.restartRequiredMessage"
+  );
 
   useEffect(() => {
     let cancelled = false;
-    void getOsPlatform().then((platform) => {
-      if (!cancelled) setOsPlatform(platform);
+    void getOsPlatform().then(async (platform) => {
+      if (cancelled) return;
+      setOsPlatform(platform);
+      if (platform !== "linux") return;
+      try {
+        const diagnostics = await getLinuxGraphicsDiagnostics();
+        if (!cancelled) setGraphicsDiagnostics(diagnostics);
+      } catch {
+        if (!cancelled) setGraphicsDiagnostics(null);
+      }
     });
     return () => {
       cancelled = true;
@@ -89,8 +111,27 @@ export function DeveloperSettingsPage() {
 
   const toggleWindowsConptyCompatibilityFix = (checked: boolean) => {
     void update("windowsConptyCompatibilityFixEnabled", checked).then(() => {
+      setRestartMessageKey("settings.developer.restartRequiredMessage");
       setRestartConfirmOpen(true);
     });
+  };
+
+  const updateLinuxGraphicsMode = (value: string | null) => {
+    if (!value || !LINUX_GRAPHICS_MODES.includes(value as LinuxGraphicsMode)) return;
+    void update("linuxGraphicsMode", value as LinuxGraphicsMode).then(() => {
+      setRestartMessageKey("settings.developer.linuxGraphicsRestartMessage");
+      setRestartConfirmOpen(true);
+    });
+  };
+
+  const copyGraphicsDiagnostics = async () => {
+    if (!graphicsDiagnostics) return;
+    try {
+      await navigator.clipboard.writeText(formatLinuxGraphicsDiagnostics(graphicsDiagnostics));
+      toast.success(t("settings.developer.graphicsDiagnosticsCopied"));
+    } catch (err) {
+      toast.error(t("settings.developer.graphicsDiagnosticsCopyFailed"), { description: String(err) });
+    }
   };
 
   const restartNow = async () => {
@@ -201,6 +242,54 @@ export function DeveloperSettingsPage() {
             />
           )}
 
+          {osPlatform === "linux" && (
+            <Box className="rounded-lg border border-border bg-surface-container-lowest p-3">
+              <Text size="xs" fw={600} c="var(--on-surface)">
+                {t("settings.developer.linuxGraphicsMode")}
+              </Text>
+              <Text mt={4} size="xs" lh={1.55} c="var(--text-muted)">
+                {t("settings.developer.linuxGraphicsModeDescription")}
+              </Text>
+              <Select
+                mt="sm"
+                size="xs"
+                allowDeselect={false}
+                value={linuxGraphicsMode}
+                onChange={updateLinuxGraphicsMode}
+                aria-label={t("settings.developer.linuxGraphicsMode")}
+                data={[
+                  { value: "auto", label: t("settings.developer.linuxGraphicsModeAuto") },
+                  { value: "system", label: t("settings.developer.linuxGraphicsModeSystem") },
+                  { value: "disable-dmabuf", label: t("settings.developer.linuxGraphicsModeDisableDmabuf") },
+                  { value: "disable-compositing", label: t("settings.developer.linuxGraphicsModeDisableCompositing") },
+                ]}
+              />
+
+              {graphicsDiagnostics && (
+                <Box mt="sm">
+                  <Group justify="space-between" gap="sm">
+                    <Text size="xs" fw={600} c="var(--on-surface-variant)">
+                      {t("settings.developer.graphicsDiagnostics")}
+                    </Text>
+                    <button
+                      type="button"
+                      onClick={() => void copyGraphicsDiagnostics()}
+                      className="ui-interactive ui-focus-ring inline-flex h-7 items-center gap-1 rounded-md border border-border px-2 text-xs text-on-surface-variant"
+                      aria-label={t("settings.developer.copyGraphicsDiagnostics")}
+                      title={t("settings.developer.copyGraphicsDiagnostics")}
+                    >
+                      <Copy size={13} />
+                      {t("common.copy")}
+                    </button>
+                  </Group>
+                  <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-container-high p-2 text-[11px] leading-5 text-on-surface-variant">
+                    {formatLinuxGraphicsDiagnostics(graphicsDiagnostics)}
+                  </pre>
+                </Box>
+              )}
+            </Box>
+          )}
+
           {developerCards.map((card) => (
             <SettingSwitchCard
               key={card.key}
@@ -218,7 +307,7 @@ export function DeveloperSettingsPage() {
       <ConfirmDialog
         open={restartConfirmOpen}
         title={t("settings.developer.restartRequiredTitle")}
-        message={t("settings.developer.restartRequiredMessage")}
+        message={t(restartMessageKey)}
         confirmText={t("settings.developer.restartNow")}
         cancelText={t("settings.developer.restartLater")}
         onConfirm={() => void restartNow()}

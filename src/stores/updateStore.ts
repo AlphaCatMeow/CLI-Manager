@@ -4,7 +4,9 @@ import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updat
 import { create } from "zustand";
 
 const RELEASES_URL = "https://github.com/dark-hxx/CLI-Manager/releases";
+const AUR_PACKAGE_URL = "https://aur.archlinux.org/packages/cli-manager-bin";
 const MAX_RELEASE_NOTES_LENGTH = 1200;
+export type AppDistribution = "standalone" | "aur";
 
 export interface UpdateInfo {
   version: string;
@@ -15,6 +17,7 @@ export interface UpdateInfo {
 
 interface UpdateState {
   currentVersion: string | null;
+  distribution: AppDistribution;
   checking: boolean;
   updateAvailable: boolean;
   updateInfo: UpdateInfo | null;
@@ -96,6 +99,7 @@ function closeUpdateResource(update: Update | null): void {
 
 export const useUpdateStore = create<UpdateState>((set, get) => ({
   currentVersion: null,
+  distribution: "standalone",
   checking: false,
   updateAvailable: false,
   updateInfo: null,
@@ -112,8 +116,13 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
 
   fetchVersion: async () => {
     try {
-      const result = await invoke<{ version: string; name: string }>("get_app_version");
-      set({ currentVersion: result.version });
+      const result = await invoke<{ version: string; name: string; distribution?: string }>("get_app_version");
+      const distribution: AppDistribution = result.distribution === "aur" ? "aur" : "standalone";
+      set({
+        currentVersion: result.version,
+        distribution,
+        releaseFallbackUrl: distribution === "aur" ? AUR_PACKAGE_URL : `${RELEASES_URL}/latest`,
+      });
     } catch (e) {
       console.error("Failed to fetch version:", e);
     }
@@ -121,6 +130,18 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
 
   checkUpdate: async (options) => {
     const silent = options?.silent ?? false;
+    if (get().distribution === "aur") {
+      set({
+        checking: false,
+        updateAvailable: false,
+        updateInfo: null,
+        pendingUpdate: null,
+        error: null,
+        lastCheckedAt: silent ? get().lastCheckedAt : new Date().toISOString(),
+        releaseFallbackUrl: AUR_PACKAGE_URL,
+      });
+      return null;
+    }
     set({ checking: true, error: null });
 
     try {
@@ -174,6 +195,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   },
 
   downloadUpdate: async () => {
+    if (get().distribution === "aur") return false;
     let update = get().pendingUpdate;
     if (!update) {
       await get().checkUpdate();
@@ -233,6 +255,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   },
 
   installAndRelaunch: async () => {
+    if (get().distribution === "aur") return;
     const update = get().pendingUpdate;
     if (!update || !get().readyToInstall) {
       set({ error: "请先下载更新" });
@@ -265,7 +288,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       readyToInstall: false,
       installing: false,
       error: null,
-      releaseFallbackUrl: `${RELEASES_URL}/latest`,
+      releaseFallbackUrl: get().distribution === "aur" ? AUR_PACKAGE_URL : `${RELEASES_URL}/latest`,
     });
   },
 }));

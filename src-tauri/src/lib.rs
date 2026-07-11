@@ -7,6 +7,7 @@ mod conpty_sideload;
 mod file_watcher;
 mod git_watcher;
 pub mod hook_client;
+mod linux_graphics;
 mod log_rotation;
 mod pty;
 mod shell_resolver;
@@ -389,6 +390,11 @@ fn apply_webview_disable_gpu_config(config: &mut tauri::Config) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let linux_graphics = linux_graphics::initialize(
+        app_paths::cli_manager_data_dir()
+            .ok()
+            .map(|dir| dir.join("settings.json")),
+    );
     let debug_logs = cfg!(debug_assertions)
         || matches!(
             std::env::var("CLI_MANAGER_DEBUG")
@@ -458,6 +464,7 @@ pub fn run() {
                 },
                 log_file_name
             );
+            log::info!("Linux graphics diagnostics: {:?}", linux_graphics);
 
             let show_item = MenuItem::with_id(app, "tray_show", "显示", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "tray_quit", "退出", true, None::<&str>)?;
@@ -575,6 +582,7 @@ pub fn run() {
             commands::system_resources::system_resources_get_snapshot,
             commands::version::get_app_version,
             commands::version::get_os_platform,
+            linux_graphics::app_get_graphics_diagnostics,
             app_open_devtools,
             app_paths::app_get_data_paths,
             commands::db_repair::db_repair_known_migration_drift,

@@ -48,6 +48,11 @@ import {
 } from "../lib/terminalFileDrag";
 import { planTerminalVisibilityRestore, refreshTerminalViewport } from "../lib/terminalVisibility";
 import {
+  getLinuxGraphicsDiagnostics,
+  isLinuxGraphicsConstrained,
+  shouldDisableTerminalWebgl,
+} from "../lib/linuxGraphics";
+import {
   defaultShellForOs,
   getOsPlatform,
   normalizeShellForOs,
@@ -82,7 +87,7 @@ const HIDDEN_WEBGL_DISPOSE_DELAY_MS = 10_000;
 const TUI_BORDER_CHAR_PATTERN = /^[│┃║▏▎▍▌▋▊▉█┆┊╎╏]$/u;
 const TUI_BORDER_PREFIX_PATTERN = /^[\s│┃║▏▎▍▌▋▊▉█┆┊╎╏]+/u;
 import { toast } from "sonner";
-import { logError, logInfo } from "../lib/logger";
+import { logError, logInfo, logWarn } from "../lib/logger";
 import { registerTerminalSnapshotSource, markTerminalSnapshotDirty } from "../lib/sessionSnapshotPersistence";
 
 // Shell integration OSC 序列在原始 PTY 流上解析（而非 xterm parser hook）：
@@ -621,6 +626,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const webglAddonRef = useRef<WebglAddon | null>(null);
   const webglDisposeTimerRef = useRef<number | null>(null);
+  const webglContextLostRef = useRef(false);
   const inputBuffer = useRef("");
   const inputCursorIndexRef = useRef(0);
   const fitRafRef = useRef<number | null>(null);
@@ -678,6 +684,8 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const [menuState, setMenuState] = useState<{ x: number; y: number; hasSelection: boolean } | null>(null);
   const [inactiveReplayPending, setInactiveReplayPending] = useState(false);
   const [suggestionGhost, setSuggestionGhost] = useState<TerminalSuggestionGhostState | null>(null);
+  const [linuxGraphicsConstrained, setLinuxGraphicsConstrained] = useState(false);
+  const [linuxGraphicsDisableWebgl, setLinuxGraphicsDisableWebgl] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const osPlatformRef = useRef<OsPlatform>("unknown");
   const codexImeDebugRef = useRef<CodexImeDebugState>({
@@ -714,6 +722,22 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getLinuxGraphicsDiagnostics()
+      .then((diagnostics) => {
+        if (cancelled) return;
+        setLinuxGraphicsConstrained(isLinuxGraphicsConstrained(diagnostics));
+        setLinuxGraphicsDisableWebgl(shouldDisableTerminalWebgl(diagnostics));
+      })
+      .catch((err) => {
+        logWarn("Failed to load Linux graphics diagnostics for terminal renderer", { sessionId, err });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -771,16 +795,22 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   };
 
   const canUseWebglRenderer = (theme: ReturnType<typeof getTerminalTheme>) => (
-    !disableHardwareAcceleration && !isTransparentRef.current && !isLightTerminalTheme(theme)
+    !disableHardwareAcceleration
+    && !linuxGraphicsDisableWebgl
+    && !webglContextLostRef.current
+    && !isTransparentRef.current
+    && !isLightTerminalTheme(theme)
   );
 
   const createWebglAddon = () => {
     const addon = new WebglAddon();
     addon.onContextLoss(() => {
+      webglContextLostRef.current = true;
       addon.dispose();
       if (webglAddonRef.current === addon) {
         webglAddonRef.current = null;
       }
+      logWarn("Terminal WebGL context lost; keeping the default renderer for this session", { sessionId });
     });
     return addon;
   };
@@ -1492,7 +1522,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     }
     normalizeTuiComposerBackground(terminal);
     scheduleTuiComposerBackgroundNormalization(terminal);
-  }, [fontSize, effectiveFontFamily, terminalScrollbackRows, resolvedTheme, terminalThemeName, lightThemePalette, darkThemePalette, isTransparent, background.overlayDarken, lowMemoryMode, disableHardwareAcceleration]);
+  }, [fontSize, effectiveFontFamily, terminalScrollbackRows, resolvedTheme, terminalThemeName, lightThemePalette, darkThemePalette, isTransparent, background.overlayDarken, lowMemoryMode, disableHardwareAcceleration, linuxGraphicsDisableWebgl]);
 
   // Visibility drives live rendering. A pane tab is "visible" when it is the
   // shown tab in its own pane — which, in a split, includes panes that are not
@@ -1505,7 +1535,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
 
     if (!isVisible) {
       clearHiddenWebglDisposeTimer();
-      if (lowMemoryMode && webglAddonRef.current) {
+      if ((lowMemoryMode || linuxGraphicsConstrained) && webglAddonRef.current) {
         webglDisposeTimerRef.current = window.setTimeout(() => {
           webglDisposeTimerRef.current = null;
           if (isVisibleRef.current) return;
@@ -1563,7 +1593,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       normalizeTuiComposerBackground(terminalRef.current);
       scheduleTuiComposerBackgroundNormalization(terminalRef.current);
     }
-  }, [isVisible, lowMemoryMode, disableHardwareAcceleration, resolvedTheme, terminalThemeName, lightThemePalette, darkThemePalette]);
+  }, [isVisible, lowMemoryMode, disableHardwareAcceleration, linuxGraphicsConstrained, linuxGraphicsDisableWebgl, resolvedTheme, terminalThemeName, lightThemePalette, darkThemePalette]);
 
   // Focus follows the single globally active tab. Keyboard, cursor and IME stay
   // bound to this; a visible-but-unfocused split pane renders but never steals

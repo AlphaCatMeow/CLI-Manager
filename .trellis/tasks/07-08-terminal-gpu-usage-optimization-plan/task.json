@@ -18,7 +18,9 @@
   "commit": null,
   "pr_url": null,
   "subtasks": [],
-  "children": [],
+  "children": [
+    "07-11-linux-wayland-nvidia-performance-aur"
+  ],
   "parent": null,
   "relatedFiles": [],
   "notes": "",

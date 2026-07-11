@@ -21,6 +21,7 @@ import { useI18n } from "../../lib/i18n";
 const REPOSITORY_URL = "https://github.com/dark-hxx/CLI-Manager";
 const MANUAL_URL = `${REPOSITORY_URL}/blob/master/docs/%E5%8A%9F%E8%83%BD%E6%B8%85%E5%8D%95.md`;
 const AUTHOR_URL = "https://github.com/dark-hxx";
+const AUR_PACKAGE_URL = "https://aur.archlinux.org/packages/cli-manager-bin";
 
 const PROJECT_HIGHLIGHTS = [
   { zh: "多项目 PTY 终端管理", en: "Multi-project PTY terminal management" },
@@ -66,10 +67,11 @@ function ExternalLinkItem({ icon: Icon, title, description, url }: ExternalLinkI
 }
 
 export function AboutSection() {
-  const { language } = useI18n();
+  const { language, t } = useI18n();
   const text = (zh: string, en: string) => (language === "zh-CN" ? zh : en);
   const {
     currentVersion,
+    distribution,
     checking,
     updateAvailable,
     updateInfo,
@@ -109,7 +111,7 @@ export function AboutSection() {
   }, [readyToInstall, updateInfo?.version]);
 
   const handleCheckUpdate = () => {
-    if (checking || downloading || installing) return;
+    if (!currentVersion || distribution === "aur" || checking || downloading || installing) return;
     setInstallConfirmVisible(false);
     checkUpdate();
   };
@@ -123,7 +125,7 @@ export function AboutSection() {
   };
 
   const handleOpenReleaseFallback = () => {
-    void openExternalUrl(updateInfo?.downloadUrl ?? releaseFallbackUrl);
+    void openExternalUrl(distribution === "aur" ? AUR_PACKAGE_URL : updateInfo?.downloadUrl ?? releaseFallbackUrl);
   };
 
   const handleConfirmInstall = () => {
@@ -156,8 +158,8 @@ export function AboutSection() {
     return `${size.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
   };
 
-  const canDownload = updateAvailable && updateInfo && !downloading && !readyToInstall && !installing;
-  const showLatest = Boolean(lastCheckedAt && !checking && !error && !updateAvailable);
+  const canDownload = distribution !== "aur" && updateAvailable && updateInfo && !downloading && !readyToInstall && !installing;
+  const showLatest = distribution !== "aur" && Boolean(lastCheckedAt && !checking && !error && !updateAvailable);
   const progressLabel = downloadTotalBytes
     ? `${downloadProgress}%（${formatBytes(downloadedBytes)} / ${formatBytes(downloadTotalBytes)}）`
     : downloadProgress > 0
@@ -203,11 +205,27 @@ export function AboutSection() {
           </span>
         </div>
 
+        {distribution === "aur" ? (
+          <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-surface-container-high/60 p-3">
+            <div className="flex min-w-0 flex-1 items-start gap-2 text-xs text-on-surface-variant">
+              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+              <span>{t("app.update.aurManaged")}</span>
+            </div>
+            <button
+              type="button"
+              onClick={handleOpenReleaseFallback}
+              className="ui-interactive ui-focus-ring inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-on-surface"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              {t("app.update.viewAurPackage")}
+            </button>
+          </div>
+        ) : (
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <button
             type="button"
             onClick={handleCheckUpdate}
-            disabled={checking || downloading || installing}
+            disabled={!currentVersion || checking || downloading || installing}
             className="ui-interactive ui-focus-ring flex items-center gap-1.5 rounded-lg border border-border bg-surface-container-high px-3 py-1.5 text-xs font-medium text-on-surface transition-colors hover:bg-surface-container-highest disabled:cursor-not-allowed disabled:opacity-60"
             aria-label={checking ? text("检查中", "Checking") : text("检查更新", "Check for Updates")}
           >
@@ -244,8 +262,9 @@ export function AboutSection() {
             </div>
           )}
         </div>
+        )}
 
-        {updateAvailable && updateInfo && (
+        {distribution !== "aur" && updateAvailable && updateInfo && (
           <div className="mt-3 rounded-xl border border-accent/30 bg-accent/5 p-3">
             <div className="flex items-start justify-between gap-3">
               <div className="flex-1">

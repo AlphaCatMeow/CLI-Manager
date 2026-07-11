@@ -1,14 +1,18 @@
 # Changelog
 
-## [TEMP] - 2026-07-11
+## [V1.2.7] - 2026-07-11
 
 ### 历史会话
 - **列表与全文搜索索引化**：会话列表改为优先读取独立 SQLite 摘要缓存，后台仅增量解析新增或变化的 Claude/Codex JSONL；全文搜索改用 FTS5 trigram 索引并要求至少 3 个字符，首次建索引期间显示进度和部分结果，避免每次加载或搜索都全量扫描历史文件。
 
-## [V1.2.7] - 2026-07-11
 ### 设置
 - **终端会话恢复开关与环境隔离**：设置 -> 开发者新增“恢复上次终端会话”，可关闭启动恢复提示；`tauri dev` 改用独立的 `sessions.dev.json`，不再读取或覆盖安装版 `sessions.json`。
 - **Worktree开发开关**：设置 -> 开发者新增“Worktree开发”，关闭后新增/编辑项目不再显示 Worktree 配置区域；打开已有同项目终端的项目时直接普通启动，不再提示或自动创建隔离 Worktree，已有项目配置和 Worktree 数据保持不变。
+- **Linux 图形兼容模式**：设置 -> 开发者在 Linux 下新增自动、系统默认、禁用 DMABUF、禁用加速合成四级策略；自动模式仅在 Wayland + NVIDIA 专有驱动环境应用 explicit-sync workaround，并提供可复制的图形诊断信息。
+
+### Linux
+- **Wayland/NVIDIA 白屏与卡顿治理**：WebKitGTK 创建前按用户设置和环境变量分级应用图形兼容策略，Linux 主窗口改为首屏就绪后显示，慢启动会展示当前加载阶段或超时错误，不再长期停留在空白窗口；终端 WebGL context loss 后稳定回退，NVIDIA Wayland 后台终端会延迟释放隐藏的 WebGL 上下文。
+- **AUR 包装支持**：新增 `cli-manager-bin` AUR 模板和 AUR distribution 标记；AUR 安装会关闭应用内下载安装入口，后续版本统一通过 AUR helper 或 pacman 更新。正式包在 V1.2.7 Linux `.deb` 发布后生成校验和并提交。
 
 ### 同步
 - **WebDAV 密码持久化到 Windows 凭据管理器**：修复保存密码后重启应用即丢失、需反复重输的问题。密码现保存到系统凭据管理器（不落明文配置文件），启动时自动恢复，设置页"已配置密码"状态与启动自动同步恢复正常。

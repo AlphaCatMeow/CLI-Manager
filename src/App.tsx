@@ -40,7 +40,7 @@ import { useTerminalStore, type CliHookPayload } from "./stores/terminalStore";
 import { useModelPricingStore } from "./stores/modelPricingStore";
 import { useWorktreeStore } from "./stores/worktreeStore";
 import { debugConsoleWarn } from "./lib/debugConsole";
-import { createPerfMarker, logWarn } from "./lib/logger";
+import { createPerfMarker, logInfo, logWarn } from "./lib/logger";
 import { getContrastRatioFromHex, MIN_APPLY_CONTRAST_RATIO } from "./lib/contrast";
 import { translateCurrent, useI18n } from "./lib/i18n";
 import { getOsPlatform } from "./lib/shell";
@@ -89,12 +89,14 @@ const TERMINAL_PANEL_SEMANTIC_COLORS = {
 const CLOSE_SYNC_TIMEOUT_MS = 8000;
 // 退出遮罩上 conflict/error 提示的停留时长，之后继续退出流程。
 const EXIT_NOTICE_DISPLAY_MS = 1200;
+const STARTUP_STAGE_TIMEOUT_MS = 15_000;
 const IN_TAURI = isTauri();
 const CLAUDE_HOOK_TOAST_PREFIX = "claude-hook-notification";
 const SYSTEM_NOTIFICATION_ACTION_EVENT = "system-notification-action";
 const MAX_SYSTEM_NOTIFICATION_DETAIL_LENGTH = 72;
 let claudeHookToastSequence = 0;
 type HookInstallStatus = "directoryMissing" | "notInstalled" | "partialInstalled" | "installed";
+type StartupStage = "settings" | "stores" | "projects";
 
 function isLikelyMacOs() {
   return typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
@@ -455,6 +457,7 @@ function App() {
   const [terminalScope, setTerminalScope] = useState<TerminalScope>(ALL_TERMINALS_SCOPE);
   const [isMacOs, setIsMacOs] = useState(isLikelyMacOs);
   const [initError, setInitError] = useState<string | null>(null);
+  const [startupStage, setStartupStage] = useState<StartupStage>("settings");
   // 启动时若检测到上次遗留的可恢复工作区标签，弹窗询问是否恢复（Issue #123）。
   const [restorePromptOpen, setRestorePromptOpen] = useState(false);
   const terminalFullscreenMaximizedRef = useRef(false);
@@ -716,26 +719,49 @@ function App() {
       setInitError(null);
       startupBaseReady = false;
 
-      // 1. 先加载设置，再并行加载依赖设置路径的子系统
-      await loadSettings();
+      const runStartupStage = async (stage: StartupStage, action: () => Promise<void>) => {
+        if (!cancelled) setStartupStage(stage);
+        const startedAt = performance.now();
+        let timedOut = false;
+        const timeoutId = window.setTimeout(() => {
+          timedOut = true;
+          logWarn("Application startup stage timed out", { stage, timeoutMs: STARTUP_STAGE_TIMEOUT_MS });
+          if (!cancelled) setInitError(`startup_timeout:${stage}`);
+        }, STARTUP_STAGE_TIMEOUT_MS);
+        try {
+          await action();
+        } finally {
+          window.clearTimeout(timeoutId);
+          const durationMs = Math.round((performance.now() - startedAt) * 10) / 10;
+          logInfo("Application startup stage completed", { stage, durationMs, timedOut });
+          if (timedOut && !cancelled) setInitError(null);
+        }
+      };
 
-      await Promise.all([
-        useSyncStore.getState().load().catch((err) => {
-          logWarn("Failed to load sync store during startup", err);
-        }),
-        useSessionStore.getState().load().catch((err) => {
-          logWarn("Failed to load persisted sessions during startup", err);
-        }),
-      ]);
+      // 1. 先加载设置，再并行加载依赖设置路径的子系统
+      await runStartupStage("settings", loadSettings);
+
+      await runStartupStage("stores", async () => {
+        await Promise.all([
+          useSyncStore.getState().load().catch((err) => {
+            logWarn("Failed to load sync store during startup", err);
+          }),
+          useSessionStore.getState().load().catch((err) => {
+            logWarn("Failed to load persisted sessions during startup", err);
+          }),
+        ]);
+      });
 
       void useModelPricingStore.getState().load().catch((err) => {
         logWarn("Failed to preload model pricing", err);
       });
 
       // 2. 加载项目列表与 worktree 记录
-      await useProjectStore.getState().fetchAll("startup");
-      await useWorktreeStore.getState().loadWorktrees();
-      await useWorktreeStore.getState().markMissingWorktrees();
+      await runStartupStage("projects", async () => {
+        await useProjectStore.getState().fetchAll("startup");
+        await useWorktreeStore.getState().loadWorktrees();
+        await useWorktreeStore.getState().markMissingWorktrees();
+      });
 
       // 3. 恢复功能关闭时清理当前环境快照；开启时检测遗留标签并询问是否恢复。
       //    注意：此处不再无条件 clear()。原 clear 的初衷是"防止重建 PTY 并重跑 startupCmd"，
@@ -759,6 +785,7 @@ function App() {
 
       startupBaseReady = true;
       if (!cancelled) {
+        setStartupStage("projects");
         runDeferredStartupTasks(handleOpenSettings);
       }
     };
@@ -1106,7 +1133,7 @@ function App() {
   }, [isMacOs, viewMode, settingsWindowExpanded]);
 
   useEffect(() => {
-    if (firstScreenPerfReported) return;
+    if (!settingsLoaded || firstScreenPerfReported) return;
     let raf1 = 0;
     let raf2 = 0;
     const stopPerf = createPerfMarker("app.first_screen", {
@@ -1134,7 +1161,7 @@ function App() {
       window.cancelAnimationFrame(raf1);
       window.cancelAnimationFrame(raf2);
     };
-  }, [handleOpenSettings, resolvedTheme, viewMode]);
+  }, [handleOpenSettings, resolvedTheme, settingsLoaded, viewMode]);
 
   if (initError) {
     return (
@@ -1151,7 +1178,22 @@ function App() {
   }
 
   if (!settingsLoaded) {
-    return <div className="ui-workspace-shell flex h-screen flex-col" />;
+    const stageLabel = startupStage === "settings"
+      ? t("app.init.loadingSettings")
+      : startupStage === "stores"
+        ? t("app.init.loadingStores")
+        : t("app.init.loadingProjects");
+    return (
+      <div className="ui-workspace-shell flex h-screen items-center justify-center px-6" role="status" aria-live="polite">
+        <div className="flex max-w-sm items-center gap-3 text-on-surface-variant">
+          <span className="h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-border border-t-primary" aria-hidden="true" />
+          <div>
+            <div className="text-sm font-medium text-on-surface">{t("app.init.loading")}</div>
+            <div className="mt-1 text-xs text-text-muted">{stageLabel}</div>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
