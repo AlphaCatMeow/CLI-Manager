@@ -1,0 +1,30 @@
+{
+  "id": "pty-daemon-process",
+  "name": "pty-daemon-process",
+  "title": "PTY 守护进程：应用退出后任务继续执行（orca 式，Phase 2）",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "CLI-Manager",
+  "assignee": "CLI-Manager",
+  "createdAt": "2026-07-12",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "src-tauri/src/pty/manager.rs",
+    "src-tauri/src/claude_hook.rs",
+    "src/stores/terminalStore.ts"
+  ],
+  "notes": "Refs #123；依赖 Phase 1（background-task-tray-continuation）先落地并稳定；实施前需先出独立 spec 契约",
+  "meta": {}
+}

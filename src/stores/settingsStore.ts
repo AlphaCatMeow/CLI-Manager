@@ -44,6 +44,8 @@ export type TerminalThemeMode = "system" | "independent";
 export type SidebarDensity = "compact" | "comfortable";
 export type ViewMode = "standard" | "compact";
 export type CloseBehavior = "ask" | "minimize" | "exit";
+/** 退出时存在运行中任务的处理方式：询问 / 转入后台（托盘常驻）/ 直接退出（Issue #123 Phase 1）。 */
+export type ExitWithRunningTasksBehavior = "ask" | "background" | "exit";
 export const LINUX_GRAPHICS_MODES = ["auto", "system", "disable-dmabuf", "disable-compositing"] as const;
 export type LinuxGraphicsMode = (typeof LINUX_GRAPHICS_MODES)[number];
 type LastSettingsTab =
@@ -268,6 +270,7 @@ interface Settings {
   sidebarDensity: SidebarDensity;
   viewMode: ViewMode;
   closeBehavior: CloseBehavior;
+  exitWithRunningTasksBehavior: ExitWithRunningTasksBehavior;
   keyboardShortcuts: KeyboardShortcutMap;
   terminalNewlineShortcut: TerminalNewlineShortcut;
   unsplitBehavior: UnsplitBehavior;
@@ -372,6 +375,7 @@ const DEFAULTS: Settings = {
   sidebarDensity: "comfortable",
   viewMode: "standard",
   closeBehavior: "ask",
+  exitWithRunningTasksBehavior: "ask",
   keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS,
   terminalNewlineShortcut: "Shift+Enter",
   unsplitBehavior: "merge",
@@ -1037,6 +1041,12 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       entries.closeBehavior === "ask" || entries.closeBehavior === "minimize" || entries.closeBehavior === "exit"
         ? entries.closeBehavior
         : DEFAULTS.closeBehavior;
+    entries.exitWithRunningTasksBehavior =
+      entries.exitWithRunningTasksBehavior === "ask" ||
+      entries.exitWithRunningTasksBehavior === "background" ||
+      entries.exitWithRunningTasksBehavior === "exit"
+        ? entries.exitWithRunningTasksBehavior
+        : DEFAULTS.exitWithRunningTasksBehavior;
     entries.ccusageAnalyticsEnabled =
       typeof entries.ccusageAnalyticsEnabled === "boolean"
         ? entries.ccusageAnalyticsEnabled

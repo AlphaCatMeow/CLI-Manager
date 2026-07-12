@@ -213,6 +213,8 @@ interface TerminalStore {
   setSplitRatio: (splitId: string, ratio: number) => void;
   getNextSessionIdForShortcut: (delta: 1 | -1) => string | null;
   restoreSessions: (projectMap: Map<string, Project>, projectHealth: Record<string, boolean>) => Promise<void>;
+  /** 合并态（hook+shell）为 running 的真实 PTY 会话 id，供退出拦截判定任务是否在跑（Issue #123 Phase 1）。 */
+  getRunningTaskSessionIds: () => string[];
   hideBackgroundForSession: (sessionId: string) => void;
   showBackgroundForSession: (sessionId: string) => void;
   /** 收到 CLI SubagentStart：在发起 Tab 所在 pane 分屏出只读转录面板并开始 tail。 */
@@ -1932,6 +1934,18 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     } finally {
       restoreInProgress = false;
     }
+  },
+
+  getRunningTaskSessionIds: () => {
+    const state = get();
+    return state.sessions
+      .filter(
+        (session) =>
+          (!session.kind || session.kind === "pty") &&
+          state.sessionStatuses[session.id] === "running" &&
+          state.tabNotifications[session.id] === "running"
+      )
+      .map((session) => session.id);
   },
 
   hideBackgroundForSession: (sessionId) => {

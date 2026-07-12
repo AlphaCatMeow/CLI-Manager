@@ -21,6 +21,7 @@ const CcusageStatsPanel = lazy(() =>
 );
 import { WindowTitleBar } from "./components/WindowTitleBar";
 import { CloseConfirmDialog } from "./components/CloseConfirmDialog";
+import { RunningTasksExitDialog } from "./components/RunningTasksExitDialog";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ExitProgressOverlay, type ExitPhase } from "./components/ExitProgressOverlay";
 import { AppFailureState } from "./components/AppFailureState";
@@ -259,6 +260,10 @@ async function focusMainWindow(): Promise<void> {
   }
 }
 
+// 后台任务模式（Issue #123 Phase 1）：退出时选择"转入后台继续执行"后置 true，
+// 窗口重新获得焦点后清除。模块级标记，供 sendSystemNotification 切换通知策略。
+let backgroundTaskModeActive = false;
+
 async function isMainWindowFocused(): Promise<boolean> {
   if (!IN_TAURI) return false;
   try {
@@ -274,11 +279,15 @@ type HookNotificationTargetActivator = (tabId: string) => void | Promise<void>;
 async function sendSystemNotification(payload: CliHookPayload, tabId: string | null, tabTitle?: string | null): Promise<void> {
   try {
     const settings = useSettingsStore.getState();
-    if (!settings.systemNotificationsEnabled) return;
     if (!isSystemNotificationEvent(payload.event)) return;
-    if (!settings.systemNotificationEvents[payload.event]) return;
     if (!tabId) return;
-    if (settings.suppressSystemNotificationsWhenFocused && (await isMainWindowFocused())) return;
+    // 后台任务模式下通知必发：绕过总开关/事件开关/聚焦抑制，
+    // 否则用户无从得知任务已完成或卡在等待确认（Issue #123 Phase 1）。
+    if (!backgroundTaskModeActive) {
+      if (!settings.systemNotificationsEnabled) return;
+      if (!settings.systemNotificationEvents[payload.event]) return;
+      if (settings.suppressSystemNotificationsWhenFocused && (await isMainWindowFocused())) return;
+    }
 
     const projectName = getHookProjectName(payload, tabTitle);
     const title = "CLI-Manager";
@@ -438,6 +447,7 @@ function App() {
   const uiTextColor = useSettingsStore((s) => s.uiTextColor);
   const viewMode = useSettingsStore((s) => s.viewMode);
   const closeBehavior = useSettingsStore((s) => s.closeBehavior);
+  const exitWithRunningTasksBehavior = useSettingsStore((s) => s.exitWithRunningTasksBehavior);
   const ccusageAnalyticsEnabled = useSettingsStore((s) => s.ccusageAnalyticsEnabled);
   const debugMode = useSettingsStore((s) => s.debugMode);
   const projectScopedTerminalViewEnabled = useSettingsStore((s) => s.projectScopedTerminalViewEnabled);
@@ -451,6 +461,8 @@ function App() {
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("general");
   const [statsOpen, setStatsOpen] = useState(false);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
+  const [runningTasksDialogOpen, setRunningTasksDialogOpen] = useState(false);
+  const [runningTasksCount, setRunningTasksCount] = useState(0);
   const [exitPhase, setExitPhase] = useState<ExitPhase | null>(null);
   const [exitNotice, setExitNotice] = useState<string | null>(null);
   const [terminalFullscreen, setTerminalFullscreen] = useState(false);
@@ -463,6 +475,8 @@ function App() {
   const terminalFullscreenMaximizedRef = useRef(false);
   const restoreWindowWidthRef = useRef<number | null>(null);
   const closeBehaviorRef = useRef(closeBehavior);
+  const exitTasksBehaviorRef = useRef(exitWithRunningTasksBehavior);
+  const pendingExitSourceRef = useRef("window close");
 
   const handleOpenSettings = useCallback((tab?: SettingsTab) => {
     const nextTab = tab ?? lastSettingsTab;
@@ -485,6 +499,10 @@ function App() {
   useEffect(() => {
     closeBehaviorRef.current = closeBehavior;
   }, [closeBehavior]);
+
+  useEffect(() => {
+    exitTasksBehaviorRef.current = exitWithRunningTasksBehavior;
+  }, [exitWithRunningTasksBehavior]);
 
   useEffect(() => {
     if (!projectScopedTerminalViewEnabled) {
@@ -1021,16 +1039,79 @@ function App() {
     }
   }, [exitApp, runCloseAutoSync]);
 
+  // Issue #123 Phase 1：转入后台 = 仅隐藏窗口，严禁触碰退出链路
+  // （runExitCleanup / pty_close_all / flush）——PTY、hook server、快照节流全部存活。
+  const enterBackgroundTaskMode = useCallback(async () => {
+    try {
+      await getCurrentWindow().hide();
+      backgroundTaskModeActive = true;
+    } catch (err) {
+      // hide 失败时保持窗口可见即可，绝不能误走退出链路杀任务。
+      logWarn("Failed to hide window for background task mode", err);
+    }
+  }, []);
+
+  // 所有"退出应用"入口（closeBehavior=exit、关闭弹窗选退出、托盘退出）必须经此守卫：
+  // 无运行中任务 → 行为与旧版完全一致；有 → 按 exitWithRunningTasksBehavior 分流。
+  const requestExitGuardedByRunningTasks = useCallback(async (source: string) => {
+    const runningIds = useTerminalStore.getState().getRunningTaskSessionIds();
+    if (runningIds.length === 0) {
+      await runExitCleanup(source);
+      return;
+    }
+    const behavior = exitTasksBehaviorRef.current;
+    if (behavior === "background") {
+      await enterBackgroundTaskMode();
+      return;
+    }
+    if (behavior === "exit") {
+      await runExitCleanup(source);
+      return;
+    }
+    pendingExitSourceRef.current = source;
+    setRunningTasksCount(runningIds.length);
+    // 托盘退出时窗口可能处于隐藏态，弹窗前必须先恢复窗口。
+    await focusMainWindow();
+    setRunningTasksDialogOpen(true);
+  }, [enterBackgroundTaskMode, runExitCleanup]);
+
+  const handleRunningTasksDialogBackground = useCallback((remember: boolean) => {
+    setRunningTasksDialogOpen(false);
+    if (remember) {
+      void updateSetting("exitWithRunningTasksBehavior", "background");
+    }
+    void enterBackgroundTaskMode();
+  }, [enterBackgroundTaskMode, updateSetting]);
+
+  const handleRunningTasksDialogExit = useCallback((remember: boolean) => {
+    setRunningTasksDialogOpen(false);
+    if (remember) {
+      void updateSetting("exitWithRunningTasksBehavior", "exit");
+    }
+    void runExitCleanup(pendingExitSourceRef.current);
+  }, [runExitCleanup, updateSetting]);
+
+  // 窗口重新获得焦点（托盘左键 / 通知点击唤回）即退出后台任务模式。
+  useEffect(() => {
+    if (!IN_TAURI) return;
+    const unlistenPromise = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (focused) backgroundTaskModeActive = false;
+    });
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, []);
+
   useEffect(() => {
     if (!IN_TAURI) return;
     const unlistenPromise = listen("tray-quit-requested", async () => {
-      await runExitCleanup("tray quit");
+      await requestExitGuardedByRunningTasks("tray quit");
     });
 
     return () => {
       void unlistenPromise.then((unlisten) => unlisten());
     };
-  }, [runExitCleanup]);
+  }, [requestExitGuardedByRunningTasks]);
 
   // 关闭窗口拦截：根据 closeBehavior 决定最小化到托盘 / 直接退出 / 弹窗询问
   useEffect(() => {
@@ -1051,7 +1132,7 @@ function App() {
       }
       if (behavior === "exit") {
         event.preventDefault();
-        await runExitCleanup("window close");
+        await requestExitGuardedByRunningTasks("window close");
         return;
       }
       event.preventDefault();
@@ -1061,7 +1142,7 @@ function App() {
     return () => {
       unlistenPromise?.then((fn) => fn()).catch(() => {});
     };
-  }, [runExitCleanup]);
+  }, [requestExitGuardedByRunningTasks]);
 
   const handleCloseDialogMinimize = useCallback(
     (remember: boolean) => {
@@ -1087,10 +1168,10 @@ function App() {
         void updateSetting("closeBehavior", "exit");
       }
       void (async () => {
-        await runExitCleanup("close dialog");
+        await requestExitGuardedByRunningTasks("close dialog");
       })();
     },
-    [runExitCleanup, updateSetting]
+    [requestExitGuardedByRunningTasks, updateSetting]
   );
 
   useEffect(() => {
@@ -1264,6 +1345,13 @@ function App() {
         onMinimize={handleCloseDialogMinimize}
         onExit={handleCloseDialogExit}
         onClose={() => setCloseDialogOpen(false)}
+      />
+      <RunningTasksExitDialog
+        open={runningTasksDialogOpen}
+        runningCount={runningTasksCount}
+        onBackground={handleRunningTasksDialogBackground}
+        onExit={handleRunningTasksDialogExit}
+        onClose={() => setRunningTasksDialogOpen(false)}
       />
       <ConfirmDialog
         open={restorePromptOpen}

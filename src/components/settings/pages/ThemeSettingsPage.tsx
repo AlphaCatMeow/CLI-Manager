@@ -47,6 +47,7 @@ import {
   useSettingsStore,
   type BatchLaunchPaneDirection,
   type CloseBehavior,
+  type ExitWithRunningTasksBehavior,
   type TerminalSettingsSectionKey,
   type UnsplitBehavior,
 } from "../../../stores/settingsStore";
@@ -195,6 +196,7 @@ export function ThemeSettingsPage() {
   const useExternalTerminal = useSettingsStore((s) => s.useExternalTerminal);
   const unsplitBehavior = useSettingsStore((s) => s.unsplitBehavior);
   const closeBehavior = useSettingsStore((s) => s.closeBehavior);
+  const exitWithRunningTasksBehavior = useSettingsStore((s) => s.exitWithRunningTasksBehavior);
   const confirmBeforeClosingTerminalTab = useSettingsStore((s) => s.confirmBeforeClosingTerminalTab);
   const terminalTabHoverInfoEnabled = useSettingsStore((s) => s.terminalTabHoverInfoEnabled);
   const shellRuntimeMonitoringEnabled = useSettingsStore((s) => s.shellRuntimeMonitoringEnabled);
@@ -375,6 +377,11 @@ export function ThemeSettingsPage() {
     { value: "ask", label: t("settings.options.close.ask") },
     { value: "minimize", label: t("settings.options.close.minimize") },
     { value: "exit", label: t("settings.options.close.exit") },
+  ];
+  const exitWithRunningTasksOptions: { value: ExitWithRunningTasksBehavior; label: string }[] = [
+    { value: "ask", label: t("settings.options.exitTasks.ask") },
+    { value: "background", label: t("settings.options.exitTasks.background") },
+    { value: "exit", label: t("settings.options.exitTasks.exit") },
   ];
   const normalizedDefaultShell = normalizeShellKey(defaultShell);
   const shellSelectValue = normalizedDefaultShell ?? defaultShell;
@@ -787,6 +794,19 @@ export function ThemeSettingsPage() {
               size="xs"
               aria-label={t("settings.general.closeBehavior")}
               description={t("settings.general.closeBehaviorDescription")}
+            />
+
+            <Select<ExitWithRunningTasksBehavior>
+              label={t("settings.general.exitWithRunningTasks")}
+              value={exitWithRunningTasksBehavior}
+              onChange={(value) => {
+                if (value) void update("exitWithRunningTasksBehavior", value);
+              }}
+              data={exitWithRunningTasksOptions}
+              allowDeselect={false}
+              size="xs"
+              aria-label={t("settings.general.exitWithRunningTasks")}
+              description={t("settings.general.exitWithRunningTasksDescription")}
             />
 
             <Card className="border border-border bg-surface-container-lowest" p="sm" radius="lg">
