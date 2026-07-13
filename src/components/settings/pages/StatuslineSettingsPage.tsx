@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { DndContext, PointerSensor, closestCenter, useDroppable, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { DndContext, DragOverlay, PointerSensor, pointerWithin, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent, type DragStartEvent } from "@dnd-kit/core";
 import { SortableContext, horizontalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { toast } from "sonner";
 import { Accordion, ActionIcon, Badge, Box, Button, Card, Checkbox, ColorSwatch, Group, NumberInput, ScrollArea, SegmentedControl, Select, Stack, Switch, Text, TextInput } from "@mantine/core";
 import { Bot, Braces, Download, GripVertical, Plus, RefreshCw, Save, Trash2, Upload } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { normalizeTerminalFontFamily } from "@/lib/terminalFontFamily";
 import {
   STATUSLINE_PREVIEW_PAYLOAD,
   type StatuslineCatalogEntry,
@@ -38,6 +39,7 @@ const POWERLINE_THEMES = ["custom", "nord", "nord-aurora", "monokai", "solarized
 const POWERLINE_SEPARATORS = [{ value: "\ue0b0", label: " 右三角 (Right Triangle)" }, { value: "\ue0b2", label: " 左三角 (Left Triangle)" }, { value: "\ue0b4", label: " 右圆弧 (Right Round)" }, { value: "\ue0b6", label: " 左圆弧 (Left Round)" }];
 const POWERLINE_START_CAPS = [{ value: "", label: "无 (None)" }, { value: "\ue0b2", label: " 三角 (Triangle)" }, { value: "\ue0b6", label: " 圆弧 (Round)" }, { value: "\ue0ba", label: " 下三角 (Lower Triangle)" }, { value: "\ue0be", label: " 斜线 (Diagonal)" }];
 const POWERLINE_END_CAPS = [{ value: "", label: "无 (None)" }, { value: "\ue0b0", label: " 三角 (Triangle)" }, { value: "\ue0b4", label: " 圆弧 (Round)" }, { value: "\ue0b8", label: " 下三角 (Lower Triangle)" }, { value: "\ue0bc", label: " 斜线 (Diagonal)" }];
+const POWERLINE_SELECT_CLASS_NAMES = { input: "ui-statusline-powerline-select-input" } as const;
 
 interface PowerlineFontStatus { installed: boolean; checkedSymbol: string; matchedFont: string | null }
 interface PowerlineFontInstallResult { success: boolean; message: string; installedCount: number }
@@ -91,6 +93,35 @@ function SortableWidgetChip({
   );
 }
 
+function CatalogWidgetItem({
+  entry,
+  title,
+  ariaLabel,
+  onAdd,
+}: {
+  entry: StatuslineCatalogEntry;
+  title: string;
+  ariaLabel: string;
+  onAdd: () => void;
+}) {
+  const { listeners, setNodeRef, isDragging } = useDraggable({
+    id: `statusline-catalog-${entry.widgetType}`,
+    data: { source: "catalog", widgetType: entry.widgetType },
+  });
+  return (
+    <Box ref={setNodeRef} {...listeners} className="cursor-grab touch-none active:cursor-grabbing" style={{ opacity: isDragging ? 0.35 : 1 }}>
+      <SettingsListItem
+        title={title}
+        subtitle={entry.widgetType}
+        subtitleMonospace
+        rightSection={<Group gap={4} wrap="nowrap"><Plus size={14} style={{ color: "var(--text-muted)" }} /><GripVertical size={14} style={{ color: "var(--text-muted)" }} /></Group>}
+        onClick={onAdd}
+        ariaLabel={ariaLabel}
+      />
+    </Box>
+  );
+}
+
 function StatuslineLayoutLine({ lineIndex, itemIds, active, children, onClick }: { lineIndex: number; itemIds: string[]; active: boolean; children: ReactNode; onClick: () => void }) {
   const { setNodeRef, isOver } = useDroppable({ id: `statusline-line-${lineIndex}` });
   return (
@@ -118,6 +149,9 @@ function ClaudeStatuslineEditor({
   reloadToken: number;
 }) {
   const { language, t } = useI18n();
+  const terminalFontFamily = useSettingsStore((state) => state.fontFamily);
+  const ccSwitchDbPath = useSettingsStore((state) => state.ccSwitchDbPath);
+  const normalizedTerminalFontFamily = useMemo(() => normalizeTerminalFontFamily(terminalFontFamily), [terminalFontFamily]);
   const [settings, setSettings] = useState<StatuslineSettings | null>(null);
   const [status, setStatus] = useState<StatuslineStatus | null>(null);
   const [catalog, setCatalog] = useState<StatuslineCatalogEntry[]>([]);
@@ -125,6 +159,7 @@ function ClaudeStatuslineEditor({
   const [preview, setPreview] = useState("");
   const [working, setWorking] = useState(false);
   const [activeLineIndex, setActiveLineIndex] = useState(0);
+  const [draggingCatalogType, setDraggingCatalogType] = useState<string | null>(null);
   const [openedCategories, setOpenedCategories] = useState<string[]>(["core"]);
   const [savedSnapshot, setSavedSnapshot] = useState("");
   const [fontStatus, setFontStatus] = useState<PowerlineFontStatus | null>(null);
@@ -224,9 +259,17 @@ function ClaudeStatuslineEditor({
     updateSettings((current) => ({ ...current, lines: current.lines.map((line, lineIndex) => lineIndex === selected.line ? line.map((widget, index) => index === selected.index ? { ...widget, ...patch } : widget) : line) }));
   };
 
-  const addWidget = (type: string) => {
+  const addWidget = (type: string, targetLine = activeLineIndex, targetIndex?: number) => {
     const widget: StatuslineWidget = { id: nextWidgetId(), type };
-    updateSettings((current) => ({ ...current, lines: current.lines.map((line, index) => index === activeLineIndex ? [...line, widget] : line) }));
+    updateSettings((current) => ({
+      ...current,
+      lines: current.lines.map((line, index) => {
+        if (index !== targetLine) return line;
+        const insertAt = Math.min(Math.max(targetIndex ?? line.length, 0), line.length);
+        return [...line.slice(0, insertAt), widget, ...line.slice(insertAt)];
+      }),
+    }));
+    setActiveLineIndex(targetLine);
     setSelectedId(widget.id);
   };
 
@@ -255,8 +298,17 @@ function ClaudeStatuslineEditor({
     });
   };
 
+  const handleWidgetDragStart = ({ active }: DragStartEvent) => {
+    const widgetType = active.data.current?.source === "catalog" ? active.data.current.widgetType : null;
+    setDraggingCatalogType(typeof widgetType === "string" ? widgetType : null);
+  };
+
   const handleWidgetDragEnd = ({ active, over }: DragEndEvent) => {
-    if (!over || active.id === over.id || !settings) return;
+    setDraggingCatalogType(null);
+    if (!over || !settings) return;
+    const catalogType = active.data.current?.source === "catalog" && typeof active.data.current.widgetType === "string"
+      ? active.data.current.widgetType
+      : null;
     let from: { line: number; index: number } | null = null;
     let to: { line: number; index: number } | null = null;
     for (let lineIndex = 0; lineIndex < settings.lines.length; lineIndex += 1) {
@@ -266,7 +318,12 @@ function ClaudeStatuslineEditor({
       if (toIndex >= 0) to = { line: lineIndex, index: toIndex };
       if (over.id === `statusline-line-${lineIndex}`) to = { line: lineIndex, index: settings.lines[lineIndex].length };
     }
-    if (!from || !to) return;
+    if (!to) return;
+    if (catalogType) {
+      addWidget(catalogType, to.line, to.index);
+      return;
+    }
+    if (active.id === over.id || !from) return;
     moveWidget(from, to);
     setActiveLineIndex(to.line);
   };
@@ -306,10 +363,15 @@ function ClaudeStatuslineEditor({
     setWorking(true);
     try {
       const next = status?.installed
-        ? await invoke<StatuslineStatus>("statusline_uninstall")
-        : await invoke<StatuslineStatus>("statusline_install", { refreshInterval: 10 });
+        ? await invoke<StatuslineStatus>("statusline_uninstall", { ccSwitchDbPath: ccSwitchDbPath ?? undefined })
+        : await invoke<StatuslineStatus>("statusline_install", { refreshInterval: 10, ccSwitchDbPath: ccSwitchDbPath ?? undefined });
       setStatus(next);
       toast.success(t(status?.installed ? "settings.statusline.uninstalled" : "settings.statusline.installed"));
+      if (next.ccSwitch && ["invalidDb", "unavailable", "syncFailed"].includes(next.ccSwitch.state)) {
+        toast.warning(t("settings.statusline.ccSwitchSyncWarning"), {
+          description: t("settings.statusline.ccSwitchSyncWarningDescription"),
+        });
+      }
     } catch (error) {
       toast.error(t("settings.statusline.installFailed"), { description: errorMessage(error) });
     } finally { setWorking(false); }
@@ -335,6 +397,11 @@ function ClaudeStatuslineEditor({
       powerline: { ...current.powerline, enabled, theme: enabled && (!current.powerline.theme || current.powerline.theme === "custom") ? "nord-aurora" : current.powerline.theme },
     }));
   };
+
+  const draggingCatalogEntry = draggingCatalogType ? catalog.find((entry) => entry.widgetType === draggingCatalogType) : null;
+  const draggingCatalogLabel = draggingCatalogEntry
+    ? (language === "zh-CN" ? draggingCatalogEntry.zhName : draggingCatalogEntry.enName)
+    : draggingCatalogType;
 
   if (!settings) return <Text c="var(--on-surface-variant)">{t("settings.statusline.loading")}</Text>;
 
@@ -377,22 +444,14 @@ function ClaudeStatuslineEditor({
         ariaLabel={t("settings.statusline.claudePreviewAria")}
       />
 
-      <Box className="grid gap-4 2xl:grid-cols-[320px_minmax(360px,1fr)_300px] xl:grid-cols-[300px_minmax(340px,1fr)]">
-        <Card className="border border-border bg-surface-container-low" radius="lg" p="md">
+      <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragStart={handleWidgetDragStart} onDragEnd={handleWidgetDragEnd} onDragCancel={() => setDraggingCatalogType(null)}>
+        <Box className="grid gap-4 2xl:grid-cols-[320px_minmax(360px,1fr)_300px] xl:grid-cols-[300px_minmax(340px,1fr)]">
+          <Card className="border border-border bg-surface-container-low" radius="lg" p="md">
           <Group justify="space-between" mb="sm">
             <Text fw={600}>{t("settings.statusline.catalog")}</Text>
             <Badge variant="light" color="cliPrimary">{t("settings.statusline.componentCount").replace("{count}", String(catalog.length))}</Badge>
           </Group>
-          <Text size="xs" c="var(--on-surface-variant)" mb={6}>{t("settings.statusline.addToLine")}</Text>
-          <SegmentedControl
-            fullWidth
-            size="xs"
-            value={String(activeLineIndex)}
-            onChange={(value) => setActiveLineIndex(Number(value))}
-            data={settings.lines.map((_, index) => ({ value: String(index), label: t("settings.statusline.line").replace("{line}", String(index + 1)) }))}
-            mb="md"
-          />
-          <ScrollArea h={540} type="auto" offsetScrollbars scrollbarSize={8}>
+          <ScrollArea.Autosize mah={540} type="auto" offsetScrollbars scrollbarSize={8}>
             {groupedCatalog.length > 0 ? (
               <Accordion
                 multiple
@@ -412,17 +471,18 @@ function ClaudeStatuslineEditor({
                     </Accordion.Control>
                     <Accordion.Panel>
                       <Stack gap={6}>
-                        {entries.map((entry) => (
-                          <SettingsListItem
-                            key={entry.widgetType}
-                            title={language === "zh-CN" ? entry.zhName : entry.enName}
-                            subtitle={entry.widgetType}
-                            subtitleMonospace
-                            rightSection={<Plus size={14} style={{ color: "var(--text-muted)" }} className="shrink-0" />}
-                            onClick={() => addWidget(entry.widgetType)}
-                            ariaLabel={t("settings.statusline.addComponent").replace("{name}", language === "zh-CN" ? entry.zhName : entry.enName)}
-                          />
-                        ))}
+                        {entries.map((entry) => {
+                          const title = language === "zh-CN" ? entry.zhName : entry.enName;
+                          return (
+                            <CatalogWidgetItem
+                              key={entry.widgetType}
+                              entry={entry}
+                              title={title}
+                              onAdd={() => addWidget(entry.widgetType)}
+                              ariaLabel={t("settings.statusline.addComponent").replace("{name}", title)}
+                            />
+                          );
+                        })}
                       </Stack>
                     </Accordion.Panel>
                   </Accordion.Item>
@@ -431,33 +491,31 @@ function ClaudeStatuslineEditor({
             ) : (
               <Text size="sm" c="var(--on-surface-variant)">{t("settings.statusline.catalogEmpty")}</Text>
             )}
-          </ScrollArea>
-        </Card>
+          </ScrollArea.Autosize>
+          </Card>
 
-        <Stack gap="md">
-          <Card className="border border-border bg-surface-container-low" radius="lg" p="md">
+          <Stack gap="md">
+            <Card className="border border-border bg-surface-container-low" radius="lg" p="md">
             <Group justify="space-between"><Text fw={600}>{t("settings.statusline.layout")}</Text><Button leftSection={<Save size={16} />} onClick={save} loading={working} disabled={!dirty}>{t("settings.statusline.save")}</Button></Group>
-            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleWidgetDragEnd}>
               <Stack gap="sm" mt="sm">
                 {settings.lines.map((line, lineIndex) => (
-                  <StatuslineLayoutLine key={lineIndex} lineIndex={lineIndex} itemIds={line.map((item) => item.id)} active={activeLineIndex === lineIndex} onClick={() => setActiveLineIndex(lineIndex)}>
+                  <StatuslineLayoutLine key={lineIndex} lineIndex={lineIndex} itemIds={line.map((item) => item.id)} active={activeLineIndex === lineIndex} onClick={() => { setActiveLineIndex(lineIndex); setSelectedId(null); }}>
                     <Text size="xs" c="var(--on-surface-variant)" mb={6}>{t("settings.statusline.line").replace("{line}", String(lineIndex + 1))}</Text>
                     <Group gap={6} align="stretch">
                       {line.map((item) => {
                         const entry = catalog.find((candidate) => candidate.widgetType === item.type);
                         const label = entry ? (language === "zh-CN" ? entry.zhName : entry.enName) : item.type;
-                        return <SortableWidgetChip key={item.id} item={item} label={label} selected={selectedId === item.id} removeLabel={t("settings.statusline.removeComponent").replace("{name}", label)} onSelect={() => { setSelectedId(item.id); setActiveLineIndex(lineIndex); }} onRemove={() => removeWidget(item.id)} />;
+                        return <SortableWidgetChip key={item.id} item={item} label={label} selected={selectedId === item.id} removeLabel={t("settings.statusline.removeComponent").replace("{name}", label)} onSelect={() => { setSelectedId((current) => current === item.id ? null : item.id); setActiveLineIndex(lineIndex); }} onRemove={() => removeWidget(item.id)} />;
                       })}
                       {line.length === 0 && <Text size="xs" c="var(--on-surface-variant)">{t("settings.statusline.dropHere")}</Text>}
                     </Group>
                   </StatuslineLayoutLine>
                 ))}
               </Stack>
-            </DndContext>
-          </Card>
-        </Stack>
+            </Card>
+          </Stack>
 
-        <Card className="border border-border bg-surface-container-low 2xl:col-auto xl:col-span-2" radius="lg" p="md">
+          <Card className="border border-border bg-surface-container-low 2xl:col-auto xl:col-span-2" radius="lg" p="md">
           <Text fw={600} mb="sm">{t("settings.statusline.properties")}</Text>
           {selected ? <Stack gap="sm">
             <Text size="sm" fw={500}>{selected.widget.type}</Text>
@@ -485,16 +543,25 @@ function ClaudeStatuslineEditor({
             <Switch label={t("settings.statusline.powerline")} checked={settings.powerline.enabled} onChange={(event) => setPowerlineEnabled(event.currentTarget.checked)} />
             <Switch label={t("settings.statusline.powerlineAutoAlign")} checked={settings.powerline.autoAlign} disabled={!settings.powerline.enabled} onChange={(event) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, autoAlign: event.currentTarget.checked } }))} />
             <Switch label={t("settings.statusline.powerlineContinueTheme")} checked={settings.powerline.continueThemeAcrossLines} disabled={!settings.powerline.enabled} onChange={(event) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, continueThemeAcrossLines: event.currentTarget.checked } }))} />
-            <Select label={t("settings.statusline.powerlineSeparator")} data={POWERLINE_SEPARATORS} disabled={!settings.powerline.enabled} value={settings.powerline.separators[0] ?? "\ue0b0"} onChange={(value) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, separators: [value ?? "\ue0b0"], separatorInvertBackground: [false] } }))} />
-            <Select label={t("settings.statusline.powerlineStartCap")} data={POWERLINE_START_CAPS} disabled={!settings.powerline.enabled} value={settings.powerline.startCaps[0] ?? ""} onChange={(value) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, startCaps: value ? [value] : [] } }))} />
-            <Select label={t("settings.statusline.powerlineEndCap")} data={POWERLINE_END_CAPS} disabled={!settings.powerline.enabled} value={settings.powerline.endCaps[0] ?? ""} onChange={(value) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, endCaps: value ? [value] : [] } }))} />
+            <Select label={t("settings.statusline.powerlineSeparator")} data={POWERLINE_SEPARATORS} disabled={!settings.powerline.enabled} value={settings.powerline.separators[0] ?? "\ue0b0"} classNames={POWERLINE_SELECT_CLASS_NAMES} renderOption={({ option }) => <Text size="sm" ff={normalizedTerminalFontFamily}>{option.label}</Text>} onChange={(value) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, separators: [value ?? "\ue0b0"], separatorInvertBackground: [false] } }))} />
+            <Select label={t("settings.statusline.powerlineStartCap")} data={POWERLINE_START_CAPS} disabled={!settings.powerline.enabled} value={settings.powerline.startCaps[0] ?? ""} classNames={POWERLINE_SELECT_CLASS_NAMES} renderOption={({ option }) => <Text size="sm" ff={normalizedTerminalFontFamily}>{option.label}</Text>} onChange={(value) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, startCaps: value ? [value] : [] } }))} />
+            <Select label={t("settings.statusline.powerlineEndCap")} data={POWERLINE_END_CAPS} disabled={!settings.powerline.enabled} value={settings.powerline.endCaps[0] ?? ""} classNames={POWERLINE_SELECT_CLASS_NAMES} renderOption={({ option }) => <Text size="sm" ff={normalizedTerminalFontFamily}>{option.label}</Text>} onChange={(value) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, endCaps: value ? [value] : [] } }))} />
             <Select label={t("settings.statusline.powerlineTheme")} data={POWERLINE_THEMES} disabled={!settings.powerline.enabled} value={settings.powerline.theme ?? "custom"} onChange={(value) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, theme: value ?? "custom" } }))} />
             <Switch label={t("settings.statusline.minimalist")} checked={settings.minimalistMode} onChange={(event) => updateSettings((current) => ({ ...current, minimalistMode: event.currentTarget.checked }))} />
             <TextInput label={t("settings.statusline.separator")} value={settings.defaultSeparator ?? ""} onChange={(event) => updateSettings((current) => ({ ...current, defaultSeparator: event.currentTarget.value || undefined }))} />
             <NumberInput label={t("settings.statusline.compactThreshold")} min={1} max={99} value={settings.compactThreshold} onChange={(value) => updateSettings((current) => ({ ...current, compactThreshold: Number(value) || 60 }))} />
           </Stack>}
-        </Card>
-      </Box>
+          </Card>
+        </Box>
+        <DragOverlay dropAnimation={null}>
+          {draggingCatalogType && (
+            <Box className="rounded-xl border border-[var(--interactive-selected-border)] bg-surface-container px-3 py-2 shadow-lg">
+              <Text size="xs" fw={600}>{draggingCatalogLabel}</Text>
+              <Text size="xs" c="var(--on-surface-variant)" ff="var(--font-ui-mono)">{draggingCatalogType}</Text>
+            </Box>
+          )}
+        </DragOverlay>
+      </DndContext>
     </Stack>
   );
 }

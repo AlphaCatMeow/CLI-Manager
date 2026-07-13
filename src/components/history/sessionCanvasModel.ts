@@ -66,9 +66,10 @@ interface BranchDraft {
 }
 
 const MAIN_NODE_WIDTH = 248;
-const MAIN_NODE_HEIGHT = 116;
+// 固定高度必须覆盖标题、双行摘要、状态栏、间距与内边距，避免 flex 子项被纵向压缩后裁字。
+const MAIN_NODE_HEIGHT = 124;
 const BRANCH_NODE_WIDTH = 218;
-const BRANCH_NODE_HEIGHT = 92;
+const BRANCH_NODE_HEIGHT = 108;
 const MAIN_NODE_GAP = 104;
 const BRANCH_NODE_GAP = 24;
 const BRANCH_OFFSET = 56;

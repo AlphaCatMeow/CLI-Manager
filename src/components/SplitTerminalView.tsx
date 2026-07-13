@@ -3,7 +3,10 @@ import { useTerminalStore } from "../stores/terminalStore";
 import { clampSplitRatio, type TerminalPaneLeaf, type TerminalPaneNode, type TerminalPaneSplit } from "../stores/terminalPaneTree";
 
 interface Props {
+  /** Stable source tree whose leaves stay mounted for the whole terminal session. */
   node: TerminalPaneNode;
+  /** Optional presentation tree used to collapse leaves hidden by terminal scope. */
+  visibleNode?: TerminalPaneNode | null;
   renderLeaf: (leaf: TerminalPaneLeaf) => ReactNode;
   fullscreenLeafId?: string | null;
 }
@@ -80,7 +83,7 @@ function rectStyle(rect: Rect): CSSProperties {
   };
 }
 
-export function SplitTerminalView({ node, renderLeaf, fullscreenLeafId }: Props) {
+export function SplitTerminalView({ node, visibleNode = node, renderLeaf, fullscreenLeafId }: Props) {
   const setSplitRatio = useTerminalStore((s) => s.setSplitRatio);
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerRect, setContainerRect] = useState<Rect>({ left: 0, top: 0, width: 0, height: 0 });
@@ -111,8 +114,16 @@ export function SplitTerminalView({ node, renderLeaf, fullscreenLeafId }: Props)
   }, []);
 
   const layout = useMemo(() => buildSplitLayout(node, containerRect, dragPreview), [containerRect, dragPreview, node]);
+  const visibleLayout = useMemo(
+    () => visibleNode ? buildSplitLayout(visibleNode, containerRect, dragPreview) : { leaves: [], dividers: [] },
+    [containerRect, dragPreview, visibleNode]
+  );
+  const visibleLeafLayouts = useMemo(
+    () => new Map(visibleLayout.leaves.map((leafLayout) => [leafLayout.leaf.id, leafLayout])),
+    [visibleLayout.leaves]
+  );
   const fullscreenLeaf = fullscreenLeafId
-    ? layout.leaves.find(({ leaf }) => leaf.id === fullscreenLeafId)
+    ? visibleLayout.leaves.find(({ leaf }) => leaf.id === fullscreenLeafId)
     : null;
   const fullscreenRect: Rect = { left: 0, top: 0, width: containerRect.width, height: containerRect.height };
   const isDraggingDivider = dragPreview !== null;
@@ -170,25 +181,29 @@ export function SplitTerminalView({ node, renderLeaf, fullscreenLeafId }: Props)
       data-dragging={isDraggingDivider ? "true" : undefined}
       data-fullscreen={fullscreenLeaf ? "true" : undefined}
     >
-      {layout.leaves.map(({ leaf, rect }) => {
+      {layout.leaves.map(({ leaf, rect: fallbackRect }) => {
+        const visibleLeafLayout = visibleLeafLayouts.get(leaf.id);
+        const rect = visibleLeafLayout?.rect ?? fallbackRect;
         const isFullscreenLeaf = fullscreenLeaf?.leaf.id === leaf.id;
+        const isHiddenByScope = !visibleLeafLayout;
         const isHiddenByFullscreen = Boolean(fullscreenLeaf) && !isFullscreenLeaf;
         return (
           <div
             key={leaf.id}
             className="ui-terminal-split-child absolute min-h-0 min-w-0 overflow-hidden"
             data-fullscreen={isFullscreenLeaf ? "true" : undefined}
-            data-hidden={isHiddenByFullscreen ? "true" : undefined}
+            data-hidden={isHiddenByScope || isHiddenByFullscreen ? "true" : undefined}
             style={{
               ...rectStyle(isFullscreenLeaf ? fullscreenRect : rect),
               zIndex: isFullscreenLeaf ? 20 : undefined,
+              transition: visibleNode === node ? undefined : "none",
             }}
           >
             {renderLeaf(leaf)}
           </div>
         );
       })}
-      {!fullscreenLeaf && layout.dividers.map(({ split, rect, splitRect }) => {
+      {!fullscreenLeaf && visibleLayout.dividers.map(({ split, rect, splitRect }) => {
         const isHorizontal = split.direction === "horizontal";
         const isDragging = dragPreview?.splitId === split.id;
         return (

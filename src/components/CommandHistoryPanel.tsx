@@ -92,7 +92,7 @@ export function CommandHistoryPanel({
         <button
           className={`${triggerClassName} ${toneClassName}`.trim()}
           data-active={open ? "true" : "false"}
-          title={t("commandHistory.title")}
+          title={popoverSide === "left" ? undefined : t("commandHistory.title")}
           aria-label={open ? t("commandHistory.closePanel") : t("commandHistory.openPanel")}
         >
           <Clock size={14} strokeWidth={1.5} />

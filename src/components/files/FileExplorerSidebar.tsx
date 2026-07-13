@@ -319,9 +319,9 @@ function AutoCollapsedGroupRow({
   return (
     <button
       type="button"
-      className="ui-file-tree-row flex w-full items-center gap-1.5 rounded px-1 py-1 text-left text-[12px] text-text-muted"
+      className="ui-file-tooltip ui-file-tree-row flex w-full items-center gap-1.5 rounded px-1 py-1 text-left text-[12px] text-text-muted"
       style={{ paddingLeft: 8 + depth * 14 }}
-      title={isOpen ? t("files.autoCollapse.collapse") : t("files.autoCollapse.expand")}
+      data-tooltip={isOpen ? t("files.autoCollapse.collapse") : t("files.autoCollapse.expand")}
       onClick={onToggle}
     >
       <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
@@ -466,10 +466,10 @@ function FileNode({
     return (
       <div>
         <div
-          className="ui-file-tree-row flex w-full items-center gap-1.5 rounded px-1 py-1 text-left text-[12px]"
+          className="ui-file-tooltip ui-file-tree-row flex w-full items-center gap-1.5 rounded px-1 py-1 text-left text-[12px]"
           data-selected={activePath === displayEntry.path ? "true" : "false"}
           style={{ paddingLeft }}
-          title={displayEntry.path}
+          data-tooltip={displayEntry.path}
         >
           <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-text-muted">
             {isDir ? (
@@ -495,12 +495,12 @@ function FileNode({
           <div
             role="button"
             tabIndex={0}
-            className="ui-file-tree-row flex w-full items-center gap-1.5 rounded px-1 py-1 text-left text-[12px]"
+            className="ui-file-tooltip ui-file-tree-row flex w-full items-center gap-1.5 rounded px-1 py-1 text-left text-[12px]"
             data-selected={activePath === displayEntry.path ? "true" : "false"}
             data-file-drop-target-path={displayEntry.kind === "directory" ? displayEntry.path : parentPath(displayEntry.path)}
             draggable={false}
             style={{ paddingLeft }}
-            title={displayStatus ? `${displayEntry.path} · ${displayStatus.label}` : displayEntry.path}
+            data-tooltip={displayStatus ? `${displayEntry.path} · ${displayStatus.label}` : displayEntry.path}
             onContextMenu={(event) => event.stopPropagation()}
             onKeyDown={(event) => {
               onFileKeyDown(event, displayEntry);
@@ -546,7 +546,6 @@ function FileNode({
               <span
                 className="ui-file-tree-status-badge"
                 style={statusBadgeStyle(displayStatus)}
-                title={displayStatus.label}
                 aria-label={displayStatus.label}
               >
                 {displayStatus.symbol}
@@ -1315,14 +1314,14 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
         <ContextMenuTrigger asChild>
           <button
             type="button"
-            className="ui-file-tree-row flex w-full items-start gap-2 rounded px-2 py-1.5 text-left text-[12px]"
+            className="ui-file-tooltip ui-file-tree-row flex w-full items-start gap-2 rounded px-2 py-1.5 text-left text-[12px]"
             data-selected={activeFile?.path === match.path ? "true" : "false"}
             onContextMenu={(event) => event.stopPropagation()}
             onClick={() => {
               void openFileAtSearchMatch(match);
               openFileEditorPane(project);
             }}
-            title={`${match.path}:${match.lineNumber}`}
+            data-tooltip={`${match.path}:${match.lineNumber}`}
           >
             <FileCode size={15} className="mt-0.5 shrink-0 text-text-muted" />
             <span className="min-w-0 flex-1">
@@ -1369,9 +1368,9 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
       return (
         <div
           key={entry.path}
-          className="ui-file-tree-row flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[12px]"
+          className="ui-file-tooltip ui-file-tree-row flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[12px]"
           data-selected={activeFile?.path === entry.path ? "true" : "false"}
-          title={entry.path}
+          data-tooltip={entry.path}
         >
           <img src={entry.kind === "directory" ? getMaterialFolderIcon(entry.name, false) : getMaterialFileIcon(entry.name)} alt="" width={16} height={16} />
           <InlineRenameInput
@@ -1388,7 +1387,7 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
           <div
             role="button"
             tabIndex={0}
-            className="ui-file-tree-row flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[12px]"
+            className="ui-file-tooltip ui-file-tree-row flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[12px]"
             data-selected={activeFile?.path === entry.path ? "true" : "false"}
             data-file-drop-target-path={getDropTargetPath(entry)}
             draggable={false}
@@ -1413,7 +1412,7 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
             onPointerMove={handleFilePointerMove}
             onPointerUp={handleFilePointerUp}
             onPointerCancel={handleFilePointerCancel}
-            title={displayStatus ? `${entry.path} · ${displayStatus.label}` : entry.path}
+            data-tooltip={displayStatus ? `${entry.path} · ${displayStatus.label}` : entry.path}
           >
             <img src={entry.kind === "directory" ? getMaterialFolderIcon(entry.name, false) : getMaterialFileIcon(entry.name)} alt="" width={16} height={16} draggable={false} />
             <span
@@ -1426,7 +1425,6 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
               <span
                 className="ui-file-tree-status-badge"
                 style={statusBadgeStyle(displayStatus)}
-                title={displayStatus.label}
                 aria-label={displayStatus.label}
               >
                 {displayStatus.symbol}
@@ -1587,26 +1585,26 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
       )}
       <div className="shrink-0 border-b border-border px-2 py-2">
         <div className="mb-2 flex items-center gap-2">
-          <span className="flex shrink-0 cursor-pointer" title={project.path} onDoubleClick={openProjectRootFolder}>
+          <span className="flex shrink-0 cursor-pointer" onDoubleClick={openProjectRootFolder}>
             <Folder size={15} className="ui-file-explorer-root-icon" />
           </span>
-          <div className="min-w-0 flex-1 cursor-pointer" title={project.path} onDoubleClick={openProjectRootFolder}>
+          <div className="ui-file-tooltip min-w-0 flex-1 cursor-pointer" data-tooltip={project.path} onDoubleClick={openProjectRootFolder}>
             <div className="ui-file-explorer-title truncate text-xs font-semibold">{project.name}</div>
-            <div className="ui-file-explorer-subtitle truncate text-[10px]" title={project.path}>{displayPathName}</div>
+            <div className="ui-file-explorer-subtitle truncate text-[10px]">{displayPathName}</div>
           </div>
           <button
-            className="ui-icon-action"
-            title={searchToggleLabel}
+            className="ui-file-tooltip ui-icon-action"
+            data-tooltip={searchToggleLabel}
             aria-label={searchToggleLabel}
             aria-pressed={searchControlsVisible}
             onClick={toggleSearchControls}
           >
             {searchControlsVisible ? <EyeOff size={13} /> : <Search size={13} />}
           </button>
-          <button className="ui-icon-action" title={t("common.refresh")} aria-label={t("files.refreshList")} onClick={() => void refresh()}>
+          <button className="ui-file-tooltip ui-icon-action" data-tooltip={t("common.refresh")} aria-label={t("files.refreshList")} onClick={() => void refresh()}>
             <RefreshCw size={13} />
           </button>
-          <button className="ui-icon-action" title={closeLabel} aria-label={closeLabel} onClick={handleClose}>
+          <button className="ui-file-tooltip ui-icon-action" data-tooltip={closeLabel} aria-label={closeLabel} onClick={handleClose}>
             <X size={14} />
           </button>
         </div>

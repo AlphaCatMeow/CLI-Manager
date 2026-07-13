@@ -378,7 +378,7 @@ export function CommandTemplatePanel({
       <PopoverTrigger asChild>
         <button
           className={`ui-focus-ring ui-icon-action ${toneClassName}`.trim()}
-          title={t("commandTemplate.title")}
+          title={popoverSide === "left" ? undefined : t("commandTemplate.title")}
           aria-label={t("commandTemplate.openPanel")}
         >
           <TerminalSquare size={14} strokeWidth={1.5} />

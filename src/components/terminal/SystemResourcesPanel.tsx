@@ -46,6 +46,7 @@ const NETWORK_DOWNLOAD_COLOR = `color-mix(in srgb, ${TERM_PANEL.blue} 82%, ${TER
 const DISK_READ_COLOR = `color-mix(in srgb, ${TERM_PANEL.green} 84%, ${TERM_PANEL.fg})`;
 const DISK_WRITE_COLOR = `color-mix(in srgb, ${TERM_PANEL.blue} 82%, ${TERM_PANEL.cyan})`;
 const MODULE_TITLE_COLOR = TERM_PANEL.green;
+const SYSTEM_RESOURCES_RUNTIME_CACHE_KEY = "system-resources-panel";
 
 const PANEL_SCROLLBAR_STYLE = {
   "--ui-scrollbar-thumb": TERM_PANEL.border,
@@ -224,6 +225,7 @@ interface TrendSeries {
   points: number[];
   color: string;
   mode?: "full" | "up" | "down";
+  max?: number;
 }
 
 interface DiskTotals {
@@ -271,6 +273,11 @@ function TrendChart({
     ...line,
     points: line.points.length >= 2 ? line.points : [line.points[0] ?? 0, line.points[0] ?? 0],
   }));
+  const splitGapPx = 20;
+  const splitBaselineOffset = (splitGapPx / 2 / Math.max(1, height - 2)) * 100;
+  const splitUpBaseY = 50 - splitBaselineOffset;
+  const splitDownBaseY = 50 + splitBaselineOffset;
+  const splitAmplitude = 42 - splitBaselineOffset;
   const guideLines = split
     ? [
         { y: 8, dashed: false, strong: false },
@@ -285,10 +292,14 @@ function TrendChart({
         { y: 75, dashed: false, strong: false },
       ];
 
-  const toCoords = (points: number[], mode: TrendSeries["mode"] = "full") => points.map((point, index) => {
+  const toCoords = (points: number[], mode: TrendSeries["mode"] = "full", seriesMax?: number) => points.map((point, index) => {
     const x = points.length === 1 ? 0 : (index / (points.length - 1)) * 100;
-    const normalized = clampRatio(point / scaleMax);
-    const y = mode === "up" ? 50 - normalized * 38 : mode === "down" ? 50 + normalized * 38 : 90 - normalized * 72;
+    const normalized = clampRatio(point / Math.max(1, seriesMax ?? scaleMax));
+    const y = mode === "up"
+      ? splitUpBaseY - normalized * splitAmplitude
+      : mode === "down"
+        ? splitDownBaseY + normalized * splitAmplitude
+        : 90 - normalized * 72;
     return [x, y] as const;
   });
 
@@ -314,7 +325,7 @@ function TrendChart({
   };
 
   const areaPath = (coords: ReadonlyArray<readonly [number, number]>, mode: TrendSeries["mode"] = "full") => {
-    const baseY = mode === "up" || mode === "down" ? 50 : 96;
+    const baseY = mode === "up" ? splitUpBaseY : mode === "down" ? splitDownBaseY : 96;
     const first = coords[0];
     const last = coords[coords.length - 1];
     return `${linePath(coords)} L${last[0].toFixed(2)},${baseY} L${first[0].toFixed(2)},${baseY} Z`;
@@ -348,7 +359,7 @@ function TrendChart({
           />
         ))}
         {safeSeries.map((line, index) => {
-          const coords = toCoords(line.points, line.mode);
+          const coords = toCoords(line.points, line.mode, line.max);
           return (
             <g key={`${line.color}-${index}`}>
               <path d={areaPath(coords, line.mode)} fill={line.color} mask={`url(#${gradientId}-mask)`} opacity={areaOpacity} />
@@ -390,7 +401,10 @@ function SystemCard({ snapshot }: { snapshot: SystemResourceSnapshot }) {
     >
       <div className="grid grid-cols-2 gap-2">
         <StatusPill>{snapshot.osName || "-"}</StatusPill>
-        <StatusPill>{t("systemResources.coreUnit", { count: snapshot.cpu.coreCount })}</StatusPill>
+        <StatusPill>{t("systemResources.cpuTopology", {
+          cores: snapshot.cpu.physicalCoreCount,
+          threads: snapshot.cpu.logicalProcessorCount,
+        })}</StatusPill>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1">
         <MetricLine label={t("systemResources.host")} value={snapshot.hostName ?? "-"} />
@@ -430,9 +444,9 @@ function CpuCard({ snapshot, history }: { snapshot: SystemResourceSnapshot; hist
         style={{ borderColor: TERM_PANEL.border, backgroundColor: TERM_PANEL.cardInner, color: PANEL_SOFT_FG }}
         aria-expanded={coresExpanded}
         aria-controls={corePanelId}
-        aria-label={coresExpanded ? t("systemResources.hideCores") : t("systemResources.showCores")}
+        aria-label={coresExpanded ? t("systemResources.hideThreads") : t("systemResources.showThreads")}
       >
-        <span>{t("systemResources.coreUnit", { count: snapshot.cpu.coreCount })}</span>
+        <span>{t("systemResources.threadUnit", { count: snapshot.cpu.logicalProcessorCount })}</span>
         <ChevronDown
           size={13}
           className={`transition-transform ${coresExpanded ? "rotate-180" : ""}`}
@@ -536,7 +550,8 @@ function NetworkCard({ snapshot, history }: { snapshot: SystemResourceSnapshot; 
   const { t } = useI18n();
   const uploadPoints = history.length > 0 ? history.map((item) => item.network.uploadBytesPerSec) : [snapshot.network.uploadBytesPerSec];
   const downloadPoints = history.length > 0 ? history.map((item) => item.network.downloadBytesPerSec) : [snapshot.network.downloadBytesPerSec];
-  const maxRate = Math.max(1, ...uploadPoints, ...downloadPoints);
+  const uploadMax = Math.max(1, ...uploadPoints);
+  const downloadMax = Math.max(1, ...downloadPoints);
   const todayLabel = t("systemResources.todayTotal");
 
   return (
@@ -557,17 +572,16 @@ function NetworkCard({ snapshot, history }: { snapshot: SystemResourceSnapshot; 
         </span>
       )}
     >
-      <div className="grid grid-cols-[minmax(140px,184px)_minmax(0,1fr)] items-stretch gap-3">
+      <div className="grid grid-cols-[minmax(0,1fr)_80px] items-stretch gap-3">
         <TrendChart
-          height={62}
-          max={maxRate}
+          height={80}
           split
           areaOpacity={0.98}
           fadeStartOpacity={0.72}
           fadeEndOpacity={0.08}
           series={[
-            { points: uploadPoints, color: NETWORK_UPLOAD_COLOR, mode: "up" },
-            { points: downloadPoints, color: NETWORK_DOWNLOAD_COLOR, mode: "down" },
+            { points: uploadPoints, color: NETWORK_UPLOAD_COLOR, mode: "up", max: uploadMax },
+            { points: downloadPoints, color: NETWORK_DOWNLOAD_COLOR, mode: "down", max: downloadMax },
           ]}
         />
         <div
@@ -855,7 +869,12 @@ export function SystemResourcesPanel({ open, visible = true, embedded = false }:
     processes: cardVisibility.processes,
   }), [cardVisibility]);
 
-  const { snapshot, history, loading, error, refresh } = useSystemResources(panelActive && orderedCards.length > 0, samplingOptions, 2500);
+  const { snapshot, history, loading, error, refresh } = useSystemResources(
+    panelActive && orderedCards.length > 0,
+    samplingOptions,
+    2500,
+    SYSTEM_RESOURCES_RUNTIME_CACHE_KEY
+  );
 
   const sampleTime = useMemo(() => {
     if (!snapshot?.sampledAt) return null;

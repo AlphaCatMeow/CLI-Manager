@@ -9,7 +9,8 @@ export interface SystemResourceSnapshot {
   sampledAt: number;
   cpu: {
     usagePercent: number;
-    coreCount: number;
+    physicalCoreCount: number;
+    logicalProcessorCount: number;
   };
   cpuCores: Array<{
     index: number;
@@ -70,16 +71,36 @@ function defaultIntervalMs(options: boolean | SystemResourceSnapshotOptions): nu
   return typeof options === "boolean" && !options ? 3000 : 2500;
 }
 
+interface SystemResourceRuntimeCacheEntry {
+  snapshot: SystemResourceSnapshot | null;
+  history: SystemResourceSnapshot[];
+}
+
+const SYSTEM_RESOURCE_HISTORY_LIMIT = 48;
+const systemResourceRuntimeCache = new Map<string, SystemResourceRuntimeCacheEntry>();
+
+function appendHistory(
+  history: SystemResourceSnapshot[],
+  snapshot: SystemResourceSnapshot
+): SystemResourceSnapshot[] {
+  const next = [...history, snapshot];
+  if (next.length <= SYSTEM_RESOURCE_HISTORY_LIMIT) return next;
+  return next.slice(next.length - SYSTEM_RESOURCE_HISTORY_LIMIT);
+}
+
 export function useSystemResources(
   enabled: boolean,
   options: boolean | SystemResourceSnapshotOptions,
-  intervalMs = defaultIntervalMs(options)
+  intervalMs = defaultIntervalMs(options),
+  runtimeCacheKey?: string
 ) {
-  const [snapshot, setSnapshot] = useState<SystemResourceSnapshot | null>(null);
-  const [history, setHistory] = useState<SystemResourceSnapshot[]>([]);
+  const cached = runtimeCacheKey ? systemResourceRuntimeCache.get(runtimeCacheKey) : undefined;
+  const [snapshot, setSnapshot] = useState<SystemResourceSnapshot | null>(() => cached?.snapshot ?? null);
+  const [history, setHistory] = useState<SystemResourceSnapshot[]>(() => cached?.history ?? []);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inFlightRef = useRef(false);
+  const historyRef = useRef(history);
 
   const refresh = useCallback(async (showLoading = false) => {
     if (!enabled || inFlightRef.current) return;
@@ -88,12 +109,13 @@ export function useSystemResources(
     try {
       const payload = typeof options === "boolean" ? { fullDetail: options } : { options };
       const result = await invoke<SystemResourceSnapshot>("system_resources_get_snapshot", payload);
+      const nextHistory = appendHistory(historyRef.current, result);
+      historyRef.current = nextHistory;
+      if (runtimeCacheKey) {
+        systemResourceRuntimeCache.set(runtimeCacheKey, { snapshot: result, history: nextHistory });
+      }
       setSnapshot(result);
-      setHistory((prev) => {
-        const next = [...prev, result];
-        if (next.length > 48) return next.slice(next.length - 48);
-        return next;
-      });
+      setHistory(nextHistory);
       setError(null);
     } catch (err) {
       setError(String(err));
@@ -101,7 +123,7 @@ export function useSystemResources(
       inFlightRef.current = false;
       if (showLoading) setLoading(false);
     }
-  }, [enabled, options]);
+  }, [enabled, options, runtimeCacheKey]);
 
   useEffect(() => {
     if (!enabled) {

@@ -1,10 +1,12 @@
 import {
+  addSessionToPaneTree,
   collectPaneLeaves,
   createPaneLeaf,
   findPaneLeaf,
   findPaneLeafBySession,
   normalizePaneTree,
   removeSessionFromPaneTree,
+  setPaneActiveSession,
   type TerminalPaneDropEdge,
   type TerminalPaneNode,
 } from "./terminalPaneTree";
@@ -106,6 +108,50 @@ export function createTerminalWorkspan(id: string, paneId: string, sessionId: st
 
 export function collectWorkspanSessionIds(workspan: TerminalWorkspan): string[] {
   return collectPaneLeaves(workspan.paneTree).flatMap((pane) => pane.sessionIds);
+}
+
+export function collapseTerminalWorkspansToLegacy(
+  workspans: TerminalWorkspan[],
+  requestedActiveWorkspanId: string | null,
+  createId: IdFactory
+): TerminalWorkspan[] {
+  const activeWorkspan = workspans.find((workspan) => workspan.id === requestedActiveWorkspanId && workspan.paneTree)
+    ?? workspans.find((workspan) => workspan.paneTree)
+    ?? null;
+  if (!activeWorkspan?.paneTree) return [];
+
+  const activePane = activeWorkspan.activePaneId
+    ? findPaneLeaf(activeWorkspan.paneTree, activeWorkspan.activePaneId)
+    : null;
+  const requestedActiveSessionId = activeWorkspan.activeSessionId
+    ?? activePane?.activeSessionId
+    ?? collectWorkspanSessionIds(activeWorkspan)[0]
+    ?? null;
+  const targetPaneId = requestedActiveSessionId
+    ? findPaneLeafBySession(activeWorkspan.paneTree, requestedActiveSessionId)?.id ?? activeWorkspan.activePaneId
+    : activeWorkspan.activePaneId;
+  let paneTree = activeWorkspan.paneTree;
+  const assignedSessionIds = new Set(collectWorkspanSessionIds(activeWorkspan));
+
+  for (const workspan of workspans) {
+    if (workspan.id === activeWorkspan.id) continue;
+    for (const sessionId of collectWorkspanSessionIds(workspan)) {
+      if (assignedSessionIds.has(sessionId)) continue;
+      paneTree = addSessionToPaneTree(paneTree, targetPaneId, sessionId, createId).tree;
+      assignedSessionIds.add(sessionId);
+    }
+  }
+
+  const activeResult = requestedActiveSessionId
+    ? setPaneActiveSession(paneTree, requestedActiveSessionId)
+    : { tree: paneTree, activePaneId: targetPaneId ?? null };
+  const resolvedPaneTree = activeResult.tree ?? paneTree;
+  return [resolveWorkspanLayout({
+    ...activeWorkspan,
+    paneTree: resolvedPaneTree,
+    activePaneId: activeResult.activePaneId,
+    activeSessionId: requestedActiveSessionId,
+  }, resolvedPaneTree)];
 }
 
 export function findWorkspanBySession(workspans: TerminalWorkspan[], sessionId: string): TerminalWorkspan | null {

@@ -4,6 +4,7 @@ import { Activity } from "lucide-react";
 import { TERMINAL_THEME_PRESETS, getTerminalTheme } from "@/lib/terminalThemes";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useI18n } from "@/lib/i18n";
+import { normalizeTerminalFontFamily } from "@/lib/terminalFontFamily";
 
 export interface StatuslinePreviewState {
   themeId: string;
@@ -27,14 +28,6 @@ interface PreviewSpan {
   dim?: boolean;
 }
 
-function normalizePreviewGlyphs(text: string) {
-  return text
-    .replace(/\ue0b0/g, " ▶ ")
-    .replace(/\ue0b1/g, " › ")
-    .replace(/\ue0b2/g, " ◀ ")
-    .replace(/\ue0b3/g, " ‹ ");
-}
-
 function ansiColor(code: number, theme: ReturnType<typeof getTerminalTheme>) {
   const colors: Record<number, string | undefined> = {
     30: theme.black, 31: theme.red, 32: theme.green, 33: theme.yellow,
@@ -46,13 +39,35 @@ function ansiColor(code: number, theme: ReturnType<typeof getTerminalTheme>) {
   return colors[code];
 }
 
+function ansi256Color(code: number, theme: ReturnType<typeof getTerminalTheme>) {
+  const baseColors = [
+    theme.black, theme.red, theme.green, theme.yellow, theme.blue, theme.magenta, theme.cyan, theme.white,
+    theme.brightBlack, theme.brightRed, theme.brightGreen, theme.brightYellow,
+    theme.brightBlue, theme.brightMagenta, theme.brightCyan, theme.brightWhite,
+  ];
+  if (code >= 0 && code < baseColors.length) return baseColors[code];
+  if (code >= 16 && code <= 231) {
+    const value = code - 16;
+    const levels = [0, 95, 135, 175, 215, 255];
+    const red = levels[Math.floor(value / 36)];
+    const green = levels[Math.floor(value / 6) % 6];
+    const blue = levels[value % 6];
+    return `rgb(${red}, ${green}, ${blue})`;
+  }
+  if (code >= 232 && code <= 255) {
+    const gray = 8 + (code - 232) * 10;
+    return `rgb(${gray}, ${gray}, ${gray})`;
+  }
+  return undefined;
+}
+
 function parseAnsi(text: string, theme: ReturnType<typeof getTerminalTheme>): PreviewSpan[] {
   const spans: PreviewSpan[] = [];
   const pattern = /\x1b\[([0-9;]*)m/g;
   let cursor = 0;
   let style: Omit<PreviewSpan, "text"> = {};
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
-    if (match.index > cursor) spans.push({ text: normalizePreviewGlyphs(text.slice(cursor, match.index)), ...style });
+    if (match.index > cursor) spans.push({ text: text.slice(cursor, match.index), ...style });
     const codes = (match[1] || "0").split(";").map(Number);
     if (codes.includes(0)) style = {};
     for (let index = 0; index < codes.length; index += 1) {
@@ -62,7 +77,12 @@ function parseAnsi(text: string, theme: ReturnType<typeof getTerminalTheme>): Pr
       else if (code >= 30 && code <= 37 || code >= 90 && code <= 97) style.color = ansiColor(code, theme);
       else if (code >= 40 && code <= 47) style.background = ansiColor(code - 10, theme);
       else if (code >= 100 && code <= 107) style.background = ansiColor(code - 10, theme);
-      else if ((code === 38 || code === 48) && codes[index + 1] === 2 && codes.length > index + 4) {
+      else if ((code === 38 || code === 48) && codes[index + 1] === 5 && codes.length > index + 2) {
+        const color = ansi256Color(codes[index + 2], theme);
+        if (code === 38) style.color = color;
+        else style.background = color;
+        index += 2;
+      } else if ((code === 38 || code === 48) && codes[index + 1] === 2 && codes.length > index + 4) {
         const color = `rgb(${codes[index + 2]}, ${codes[index + 3]}, ${codes[index + 4]})`;
         if (code === 38) style.color = color;
         else style.background = color;
@@ -71,7 +91,7 @@ function parseAnsi(text: string, theme: ReturnType<typeof getTerminalTheme>): Pr
     }
     cursor = pattern.lastIndex;
   }
-  if (cursor < text.length) spans.push({ text: normalizePreviewGlyphs(text.slice(cursor)), ...style });
+  if (cursor < text.length) spans.push({ text: text.slice(cursor), ...style });
   return spans;
 }
 
@@ -81,6 +101,8 @@ export function StatuslinePreview({ text, state, onChange, emptyText, ariaLabel,
   const lightPalette = useSettingsStore((value) => value.lightThemePalette);
   const darkPalette = useSettingsStore((value) => value.darkThemePalette);
   const terminalThemeName = useSettingsStore((value) => value.terminalThemeName);
+  const terminalFontFamily = useSettingsStore((value) => value.fontFamily);
+  const normalizedTerminalFontFamily = useMemo(() => normalizeTerminalFontFamily(terminalFontFamily), [terminalFontFamily]);
   const effectiveThemeId = state.themeId || terminalThemeName;
   const terminalTheme = getTerminalTheme(effectiveThemeId, resolvedTheme, lightPalette, darkPalette);
   const lines = useMemo(() => text.replace(/\r\n?/g, "\n").split("\n").map((line) => parseAnsi(line, terminalTheme)), [text, terminalTheme]);
@@ -137,7 +159,7 @@ export function StatuslinePreview({ text, state, onChange, emptyText, ariaLabel,
         m={0}
         p={variant === "codex-footer" ? 10 : compact ? 8 : 12}
         mih={variant === "codex-footer" ? 42 : compact ? 36 : 52}
-        ff="var(--font-ui-mono)"
+        ff={normalizedTerminalFontFamily}
         fz={compact ? 12.5 : 13}
         className="overflow-x-auto"
         style={{
@@ -146,6 +168,7 @@ export function StatuslinePreview({ text, state, onChange, emptyText, ariaLabel,
           caretColor: terminalTheme.cursor,
           background: terminalTheme.background,
           lineHeight: compact ? 1.35 : 1.5,
+          letterSpacing: 0,
         }}
       >
         {hasContent ? lines.map((line, lineIndex) => (

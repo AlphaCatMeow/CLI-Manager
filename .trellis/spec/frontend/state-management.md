@@ -309,14 +309,18 @@ splitSessionToPaneEdge(sessionId: string, targetPaneId: string, edge: TerminalPa
 **Contracts**:
 
 - Every live session belongs to exactly one Workspan; merging Workspans moves existing session IDs and never calls `pty_create`.
+- `settingsStore.workspanEnabled` defaults to `true`. When disabled, keep one internal Workspan as the persistence container for the legacy global `paneTree`; do not introduce a second layout schema.
+- Disabling Workspan preserves the active Workspan's complete Pane tree, appends sessions from other Workspans to the active Pane as tabs, and must not call `pty_create` or `pty_close`. Re-enabling keeps that complete tree as one Workspan; only later ordinary terminal creation starts new Workspans.
 - Switching Workspans replaces the active mirror without unmounting or closing sessions in inactive Workspans.
+- Every active Workspan change must scroll its top-level tab into the visible tab-strip viewport after render. This is presentation-only: keep Workspan order, tab widths, and manual horizontal scrolling unchanged.
+- The Workspan overflow dropdown is presentation state only. Render the dropdown trigger only when the complete tab contents exceed the full tab bar width, and list only tabs outside the current scroll viewport or partially clipped by it. Do not persist hidden-tab state or duplicate tab ordering in the store.
 - Background events such as subagent transcript creation locate the parent session's Workspan and mutate that Workspan even when it is inactive; they must not steal focus.
 - Closing the last session removes its Workspan and selects an adjacent Workspan. Closing a session in an inactive Workspan must keep the current Workspan active.
 - Persist only Workspans containing persistable sessions. Filter transient file editor, synced history, and subagent transcript sessions before writing.
 - PTY restoration creates new session IDs. Restore Workspan trees through the old-to-new session ID map before selecting the active Workspan.
 - Workspan edge-drop inserts the complete source pane tree beside the hovered target pane; it must preserve the full session ID set without duplicates.
 - Inactive Workspans stay mounted but hidden so xterm scrollback and live output survive switching.
-- A pane with one visible session hides its local tab bar; panes with multiple stacked transient views keep a compact switcher.
+- With Workspan enabled, a pane with one visible session hides its local tab bar; panes with multiple stacked transient views keep a compact switcher. With Workspan disabled, every visible Pane keeps its local terminal Tab bar.
 - Async PTY creation must re-resolve the source session's current Workspan and pane after every await. If the source session was closed, unsubscribe the new listener, close the abandoned PTY, and do not add an unowned session.
 - Project/group/worktree scoped views may show a filtered Workspan layout, but bulk close actions must use only session IDs from that filtered tree; hidden sessions remain untouched.
 - Multi-session close operations must be serialized so older persistence writes cannot overwrite the final Workspan/session snapshot.
@@ -325,8 +329,10 @@ splitSessionToPaneEdge(sessionId: string, targetPaneId: string, edge: TerminalPa
 
 - Run `npx tsc --noEmit`.
 - Assert Workspan merge preserves the complete session ID set with no duplicates.
+- Assert legacy collapse preserves the active Pane tree, appends other Workspan sessions in deterministic order, and keeps every session ID exactly once.
 - Assert sanitization keeps a session ID in only one pane even when persisted layout data contains duplicates.
 - Manual desktop verification: switch Workspans, change split ratios, restart, and verify each layout restores with the correct active session.
+- Manual desktop verification: with enough Workspans to overflow the tab strip, verify the dropdown trigger appears only while overflowing, the dropdown lists only hidden or partially clipped tabs, and activating the last Workspan through the dropdown, keyboard, or another navigation entry makes its tab visible without reordering tabs; mouse horizontal scrolling must still work.
 - Manual desktop verification: close focused and inactive sessions, and verify Workspan selection remains correct.
 - Manual desktop verification: start a split, then move/close its source Workspan before PTY creation completes; no orphan tab or stale layout may appear.
 - Manual desktop verification: in a scoped view, closing a Workspan tab closes only visible sessions and preserves hidden project sessions.
@@ -403,6 +409,7 @@ const visiblePanes = collectPaneLeaves(visiblePaneTree);
 **Contracts**:
 
 - `sessions` and the persisted `paneTree` remain unchanged when toggling project scope.
+- The filtered tree controls presentation geometry only. Render every original Workspan/Pane leaf under its stable parent and key so scoped switches update `isVisible` without disposing or recreating `XTermTerminal`.
 - Filtering must use resolved ownership for derived sessions such as subagent transcript tabs, not only `session.projectId`.
 - Pane/tab bulk actions in scoped mode must operate on the filtered leaves, so hidden tabs from other projects are untouched.
 - Disabling scoped mode must immediately restore the original all-project layout without rebuilding pane state.
@@ -412,11 +419,14 @@ const visiblePanes = collectPaneLeaves(visiblePaneTree);
 - Good: project A scope shows only A tabs, and `close others` leaves hidden project B tabs intact in the store.
 - Base: selecting "All Terminals" bypasses filtering and renders the original pane tree.
 - Bad: removing non-matching sessions from `terminalStore.sessions` or rewriting `paneTree` during filtering.
+- Bad: moving hidden PTY sessions into a separate offscreen render branch with a different parent or key; this serializes and replays full scrollback on every scope switch.
 
 **Tests Required**:
 
 - Type-check that scoped rendering paths consume `visiblePaneTree` / `visibleSessions` instead of raw `paneTree` / `sessions`.
+- Regression-test that filtering collapses the visible tree without mutating the original mounted tree or its leaf identities.
 - Manual desktop verification: scoped mode on/off restores the same tab layout; project empty state appears when the chosen project has no open terminals; hidden-project tabs survive scoped close operations.
+- Manual desktop verification: repeatedly switch projects with long terminal scrollback and confirm the terminal does not progressively replay, flash black, or require a window resize to repaint.
 
 ---
 

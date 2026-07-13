@@ -115,6 +115,14 @@ function GitChangesPanel() {
 }
 ```
 
+### Reserve complete line boxes in fixed-size canvas cards
+
+**What**: Fixed-size canvas or diagram nodes that use a vertical flex layout must reserve enough height for every visible line, gap, and padding at the supported font metrics. Do not rely on flex shrinking to make text fit.
+
+**Why**: `overflow: hidden` combined with a fixed node height lets flex items shrink below their line box. Titles then appear vertically sliced even though horizontal truncation is correct. Layout constants and rendered typography must be reviewed together whenever node content or scaling changes.
+
+**Required check**: Verify the header, title, maximum summary line count, metadata row, gaps, and vertical padding fit without flex shrink at every supported canvas zoom level.
+
 ---
 
 ## Testing Requirements

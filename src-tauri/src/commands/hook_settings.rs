@@ -84,15 +84,15 @@ enum HookInstallStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CcSwitchHookProtectionStatus {
-    state: CcSwitchHookProtectionState,
-    db_path: Option<String>,
-    message: Option<String>,
-    wsl_mismatch: bool,
+    pub state: CcSwitchHookProtectionState,
+    pub db_path: Option<String>,
+    pub message: Option<String>,
+    pub wsl_mismatch: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-enum CcSwitchHookProtectionState {
+pub enum CcSwitchHookProtectionState {
     NotDetected,
     NotSynced,
     Synced,
@@ -846,6 +846,53 @@ fn strip_common_config_hooks(
     Ok(Some(text))
 }
 
+fn merge_common_config_statusline(
+    existing: Option<&str>,
+    status_line: Value,
+) -> Result<String, String> {
+    let mut settings: Value = match existing {
+        Some(raw) if !raw.trim().is_empty() => {
+            serde_json::from_str(raw).map_err(|_| "common_config_parse_failed".to_string())?
+        }
+        _ => Value::Object(Map::new()),
+    };
+    ensure_root_object(&settings, CCSWITCH_COMMON_CONFIG_CLAUDE_KEY)?;
+    settings
+        .as_object_mut()
+        .expect("validated object")
+        .insert("statusLine".to_string(), status_line);
+    let mut text = serde_json::to_string_pretty(&settings)
+        .map_err(|err| format!("common_config_serialize_failed: {err}"))?;
+    text.push('\n');
+    Ok(text)
+}
+
+fn strip_common_config_statusline(existing: Option<&str>) -> Result<Option<String>, String> {
+    let Some(raw) = existing.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let mut settings: Value =
+        serde_json::from_str(raw).map_err(|_| "common_config_parse_failed".to_string())?;
+    ensure_root_object(&settings, CCSWITCH_COMMON_CONFIG_CLAUDE_KEY)?;
+    let owned = settings
+        .get("statusLine")
+        .and_then(Value::as_object)
+        .and_then(|value| value.get("command"))
+        .and_then(Value::as_str)
+        .is_some_and(|command| command.contains("__statusline"));
+    if !owned {
+        return Ok(None);
+    }
+    settings
+        .as_object_mut()
+        .expect("validated object")
+        .remove("statusLine");
+    let mut text = serde_json::to_string_pretty(&settings)
+        .map_err(|err| format!("common_config_serialize_failed: {err}"))?;
+    text.push('\n');
+    Ok(Some(text))
+}
+
 #[cfg(test)]
 fn strip_claude_common_config_hooks(existing: Option<&str>) -> Result<Option<String>, String> {
     strip_common_config_hooks(existing, CommonConfigTool::Claude)
@@ -1027,6 +1074,79 @@ async fn sync_common_config_at_path(
             let _ = sqlx::query("ROLLBACK").execute(&mut conn).await;
             Err(err)
         }
+    }
+}
+
+pub(crate) async fn sync_ccswitch_claude_statusline(
+    app: &AppHandle,
+    db_path: Option<String>,
+    claude_dir: &Path,
+    status_line: Option<Value>,
+) -> CcSwitchHookProtectionStatus {
+    let path = match resolve_ccswitch_db_path_for_hook(app, db_path, claude_dir) {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
+    let result = async {
+        let mut conn = open_db_readwrite(&path).await?;
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut conn)
+            .await
+            .map_err(|err| format!("db_write_failed: {err}"))?;
+        let update = async {
+            if !settings_table_exists(&mut conn).await? {
+                return Ok(CcSwitchHookProtectionState::Unavailable);
+            }
+            let existing =
+                read_common_config_value(&mut conn, CCSWITCH_COMMON_CONFIG_CLAUDE_KEY).await?;
+            if let Some(status_line) = status_line {
+                let next = merge_common_config_statusline(existing.as_deref(), status_line)?;
+                sqlx::query(
+                    "INSERT INTO settings (key, value) VALUES (?1, ?2) \
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                )
+                .bind(CCSWITCH_COMMON_CONFIG_CLAUDE_KEY)
+                .bind(next)
+                .execute(&mut conn)
+                .await
+                .map_err(|err| format!("db_write_failed: {err}"))?;
+                Ok(CcSwitchHookProtectionState::Synced)
+            } else {
+                if let Some(next) = strip_common_config_statusline(existing.as_deref())? {
+                    sqlx::query("UPDATE settings SET value = ?1 WHERE key = ?2")
+                        .bind(next)
+                        .bind(CCSWITCH_COMMON_CONFIG_CLAUDE_KEY)
+                        .execute(&mut conn)
+                        .await
+                        .map_err(|err| format!("db_write_failed: {err}"))?;
+                }
+                Ok(CcSwitchHookProtectionState::NotSynced)
+            }
+        }
+        .await;
+        match update {
+            Ok(state) => {
+                sqlx::query("COMMIT")
+                    .execute(&mut conn)
+                    .await
+                    .map_err(|err| format!("db_write_failed: {err}"))?;
+                Ok(state)
+            }
+            Err(err) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut conn).await;
+                Err(err)
+            }
+        }
+    }
+    .await;
+    match result {
+        Ok(state) => cc_switch_status(state, Some(&path), None, claude_dir),
+        Err(err) => cc_switch_status(
+            CcSwitchHookProtectionState::SyncFailed,
+            Some(&path),
+            Some(err),
+            claude_dir,
+        ),
     }
 }
 
@@ -2624,6 +2744,52 @@ mod tests {
         assert!(!serde_json::to_string(&value)
             .unwrap()
             .contains(HOOK_COMMAND_MARKER));
+    }
+
+    #[test]
+    fn merge_common_config_statusline_preserves_existing_fields_and_hooks() {
+        let existing = serde_json::to_string(&json!({
+            "env": { "FOO": "bar" },
+            "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "echo keep" }] }] },
+            "statusLine": { "type": "command", "command": "third-party" }
+        }))
+        .unwrap();
+        let merged = merge_common_config_statusline(
+            Some(&existing),
+            json!({ "type": "command", "command": "cli-manager __statusline", "padding": 0 }),
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&merged).unwrap();
+
+        assert_eq!(value["env"]["FOO"].as_str(), Some("bar"));
+        assert_eq!(
+            value["hooks"]["Stop"][0]["hooks"][0]["command"].as_str(),
+            Some("echo keep")
+        );
+        assert_eq!(
+            value["statusLine"]["command"].as_str(),
+            Some("cli-manager __statusline")
+        );
+    }
+
+    #[test]
+    fn strip_common_config_statusline_only_removes_cli_manager_statusline() {
+        let managed = serde_json::to_string(&json!({
+            "env": { "FOO": "bar" },
+            "statusLine": { "type": "command", "command": "cli-manager __statusline" }
+        }))
+        .unwrap();
+        let stripped = strip_common_config_statusline(Some(&managed))
+            .unwrap()
+            .unwrap();
+        let value: Value = serde_json::from_str(&stripped).unwrap();
+        assert_eq!(value["env"]["FOO"].as_str(), Some("bar"));
+        assert!(value.get("statusLine").is_none());
+
+        let third_party = r#"{"statusLine":{"type":"command","command":"third-party"}}"#;
+        assert!(strip_common_config_statusline(Some(third_party))
+            .unwrap()
+            .is_none());
     }
 
     #[test]

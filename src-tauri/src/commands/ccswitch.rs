@@ -146,6 +146,44 @@ fn parse_settings_config(raw: &str) -> Option<ParsedConfig> {
     Some(parsed)
 }
 
+fn deep_merge_json(base: &mut Value, overlay: Value) {
+    match (base, overlay) {
+        (Value::Object(base), Value::Object(overlay)) => {
+            for (key, value) in overlay {
+                if let Some(existing) = base.get_mut(&key) {
+                    deep_merge_json(existing, value);
+                } else {
+                    base.insert(key, value);
+                }
+            }
+        }
+        (base, overlay) => *base = overlay,
+    }
+}
+
+fn merge_provider_settings_config(
+    common_config: Option<&str>,
+    provider_config: &str,
+) -> Result<Value, String> {
+    let mut merged = match common_config {
+        Some(raw) => {
+            serde_json::from_str(raw).map_err(|_| "provider_config_invalid".to_string())?
+        }
+        None => Value::Object(Map::new()),
+    };
+    if !merged.is_object() {
+        return Err("provider_config_invalid".to_string());
+    }
+
+    let provider: Value =
+        serde_json::from_str(provider_config).map_err(|_| "provider_config_invalid".to_string())?;
+    if !provider.is_object() {
+        return Err("provider_config_invalid".to_string());
+    }
+    deep_merge_json(&mut merged, provider);
+    Ok(merged)
+}
+
 fn parse_api_format(meta: &str) -> Option<String> {
     let value: Value = serde_json::from_str(meta).ok()?;
     value
@@ -813,20 +851,30 @@ pub(crate) fn merge_settings_text(
     Ok(text)
 }
 
-async fn load_claude_provider_env(
+async fn load_merged_provider_settings(
     app: &tauri::AppHandle,
     provider_id: &str,
+    app_type: &str,
     db_path: Option<String>,
-) -> Result<(String, Map<String, Value>), String> {
+) -> Result<(String, Value), String> {
     let path = resolve_db_path(app, db_path)?;
     let mut conn = open_db_readonly(&path).await?;
-    let row = sqlx::query(
-        "SELECT name, settings_config FROM providers WHERE id = ?1 AND app_type = 'claude'",
-    )
-    .bind(provider_id.trim())
-    .fetch_optional(&mut conn)
-    .await
-    .map_err(|err| format!("db_query_failed: {err}"))?;
+    let row =
+        sqlx::query("SELECT name, settings_config FROM providers WHERE id = ?1 AND app_type = ?2")
+            .bind(provider_id.trim())
+            .bind(app_type)
+            .fetch_optional(&mut conn)
+            .await
+            .map_err(|err| format!("db_query_failed: {err}"))?;
+    let common_key = format!("common_config_{app_type}");
+    let common_config = sqlx::query("SELECT value FROM settings WHERE key = ?1")
+        .bind(common_key)
+        .fetch_optional(&mut conn)
+        .await
+        .map_err(|err| format!("db_query_failed: {err}"))?
+        .map(|row| row.try_get::<String, _>("value"))
+        .transpose()
+        .map_err(|err| format!("db_query_failed: {err}"))?;
     let _ = conn.close().await;
 
     let row = row.ok_or_else(|| "provider_not_found".to_string())?;
@@ -836,13 +884,8 @@ async fn load_claude_provider_env(
     let settings_config: String = row
         .try_get("settings_config")
         .map_err(|err| format!("db_query_failed: {err}"))?;
-    let parsed: Option<Value> = serde_json::from_str(&settings_config).ok();
-    let provider_env = parsed
-        .as_ref()
-        .and_then(env_object)
-        .cloned()
-        .ok_or_else(|| "provider_config_invalid".to_string())?;
-    Ok((name, provider_env))
+    let settings = merge_provider_settings_config(common_config.as_deref(), &settings_config)?;
+    Ok((name, settings))
 }
 
 fn claude_settings_file_name(project_id: &str, provider_id: &str) -> String {
@@ -856,12 +899,17 @@ fn claude_settings_file_name(project_id: &str, provider_id: &str) -> String {
 fn write_claude_provider_settings(
     project_id: &str,
     provider_id: &str,
-    provider_env: &Map<String, Value>,
+    provider_settings: &Value,
 ) -> Result<PathBuf, String> {
+    if !provider_settings.is_object() || env_object(provider_settings).is_none() {
+        return Err("provider_config_invalid".to_string());
+    }
     let dir = app_paths::claude_providers_dir()?;
     fs::create_dir_all(&dir).map_err(|err| format!("settings_write_failed: {err}"))?;
     let settings_path = dir.join(claude_settings_file_name(project_id, provider_id));
-    let text = merge_settings_text(None, provider_env)?;
+    let mut text = serde_json::to_string_pretty(provider_settings)
+        .map_err(|err| format!("settings_write_failed: {err}"))?;
+    text.push('\n');
     let tmp_path = settings_path.with_extension("json.tmp");
     fs::write(&tmp_path, text).map_err(|err| format!("settings_write_failed: {err}"))?;
     replace_file_with_tmp(&tmp_path, &settings_path, "settings_write_failed")?;
@@ -997,9 +1045,10 @@ pub async fn ccswitch_prepare_claude_provider(
         return Err("project_not_found".to_string());
     }
     let provider_id = provider_id.trim();
-    let (provider_name, provider_env) =
-        load_claude_provider_env(&app, provider_id, db_path).await?;
-    let settings_path = write_claude_provider_settings(project_id, provider_id, &provider_env)?;
+    let (provider_name, provider_settings) =
+        load_merged_provider_settings(&app, provider_id, "claude", db_path).await?;
+    let settings_path =
+        write_claude_provider_settings(project_id, provider_id, &provider_settings)?;
     Ok(CcSwitchClaudeProviderSettings {
         provider_id: provider_id.to_string(),
         provider_name,
@@ -1369,6 +1418,65 @@ fn build_codex_profile_text(
     text
 }
 
+fn build_codex_profile_from_config(
+    provider_id: &str,
+    raw: &str,
+    generated_env_key: &str,
+    secret_value: &str,
+) -> Option<(String, String)> {
+    if raw.trim().is_empty() || raw.contains(secret_value) {
+        return None;
+    }
+    let selected_provider = find_toml_value_by_key_patterns(raw, &["model_provider"], &[])?;
+    let target_table = format!("model_providers.{selected_provider}");
+    let mut current_table: Option<String> = None;
+    let mut found_target = false;
+    let mut effective_env_key = None;
+    let mut lines = Vec::new();
+
+    for line in raw.lines() {
+        if let Some(table) = toml_table_name(line) {
+            if current_table.as_deref() == Some(target_table.as_str())
+                && effective_env_key.is_none()
+            {
+                lines.push(format!(
+                    "env_key = {}",
+                    toml_basic_string(generated_env_key)
+                ));
+            }
+            found_target |= table == target_table;
+            current_table = Some(table);
+        }
+        if current_table.as_deref() == Some(target_table.as_str()) {
+            if let Some((key, value)) = toml_assignment(line) {
+                if normalize_config_key(&key) == "ENV_KEY" {
+                    effective_env_key = parse_toml_scalar(&value);
+                }
+            }
+        }
+        lines.push(line.to_string());
+    }
+
+    if !found_target {
+        return None;
+    }
+    if current_table.as_deref() == Some(target_table.as_str()) && effective_env_key.is_none() {
+        lines.push(format!(
+            "env_key = {}",
+            toml_basic_string(generated_env_key)
+        ));
+    }
+
+    let env_key = effective_env_key.unwrap_or_else(|| generated_env_key.to_string());
+    let mut text = format!(
+        "# {CLI_MANAGER_CODEX_PROFILE_MARKER}. Do not put secrets in this file.\n# cc-switch provider id: {}\n\n",
+        toml_basic_string(provider_id)
+    );
+    text.push_str(&lines.join("\n"));
+    text.push('\n');
+    Some((env_key, text))
+}
+
 fn codex_runtime_from_provider(
     provider_id: String,
     provider_name: String,
@@ -1444,14 +1552,21 @@ fn codex_runtime_from_provider(
         .or_else(|| find_codex_secret_value_in_value(&parsed))
         .ok_or_else(|| "provider_config_invalid: missing_codex_api_key".to_string())?;
     let profile_name = codex_profile_name(&provider_id);
-    let env_key = codex_secret_env_key(&provider_id);
-    let profile_text = build_codex_profile_text(
-        &provider_name,
-        &provider_id,
-        &base_url,
-        model.as_deref(),
-        &env_key,
-    );
+    let generated_env_key = codex_secret_env_key(&provider_id);
+    let (env_key, profile_text) = config_text
+        .and_then(|config| {
+            build_codex_profile_from_config(&provider_id, config, &generated_env_key, &secret_value)
+        })
+        .unwrap_or_else(|| {
+            let profile_text = build_codex_profile_text(
+                &provider_name,
+                &provider_id,
+                &base_url,
+                model.as_deref(),
+                &generated_env_key,
+            );
+            (generated_env_key, profile_text)
+        });
     Ok(CodexProviderRuntimeConfig {
         provider_id,
         provider_name,
@@ -1470,23 +1585,10 @@ async fn load_codex_runtime_config(
     provider_id: &str,
     db_path: Option<String>,
 ) -> Result<CodexProviderRuntimeConfig, String> {
-    let path = resolve_db_path(app, db_path)?;
-    let mut conn = open_db_readonly(&path).await?;
-    let row = sqlx::query(
-        "SELECT name, settings_config FROM providers WHERE id = ?1 AND app_type = 'codex'",
-    )
-    .bind(provider_id.trim())
-    .fetch_optional(&mut conn)
-    .await
-    .map_err(|err| format!("db_query_failed: {err}"))?;
-    let _ = conn.close().await;
-    let row = row.ok_or_else(|| "provider_not_found".to_string())?;
-    let name: String = row
-        .try_get("name")
-        .map_err(|err| format!("db_query_failed: {err}"))?;
-    let settings_config: String = row
-        .try_get("settings_config")
-        .map_err(|err| format!("db_query_failed: {err}"))?;
+    let (name, settings) =
+        load_merged_provider_settings(app, provider_id, "codex", db_path).await?;
+    let settings_config = serde_json::to_string(&settings)
+        .map_err(|err| format!("provider_config_invalid: {err}"))?;
     codex_runtime_from_provider(provider_id.trim().to_string(), name, settings_config)
 }
 
@@ -1675,9 +1777,9 @@ pub(crate) async fn refresh_claude_provider_launch_settings(
         return Err("project_not_found".to_string());
     }
     let provider_id = launch_config.provider_id.trim();
-    let (_provider_name, provider_env) =
-        load_claude_provider_env(app, provider_id, launch_config.db_path).await?;
-    write_claude_provider_settings(project_id, provider_id, &provider_env)?;
+    let (_provider_name, provider_settings) =
+        load_merged_provider_settings(app, provider_id, "claude", launch_config.db_path).await?;
+    write_claude_provider_settings(project_id, provider_id, &provider_settings)?;
     Ok(())
 }
 
@@ -1899,6 +2001,50 @@ mod tests {
     #[test]
     fn parse_settings_config_rejects_invalid_json() {
         assert!(parse_settings_config("not json").is_none());
+    }
+
+    #[test]
+    fn merge_provider_settings_preserves_common_config_and_provider_overrides() {
+        let merged = merge_provider_settings_config(
+            Some(
+                r#"{
+                    "permissions": {"defaultMode": "acceptEdits"},
+                    "env": {
+                        "ANTHROPIC_BASE_URL": "https://common.example.com",
+                        "HTTP_PROXY": "http://proxy.example.com"
+                    }
+                }"#,
+            ),
+            r#"{
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://provider.example.com",
+                    "ANTHROPIC_AUTH_TOKEN": "sk-provider"
+                },
+                "model": "claude-provider-model"
+            }"#,
+        )
+        .expect("configs should merge");
+
+        assert_eq!(
+            merged
+                .pointer("/permissions/defaultMode")
+                .and_then(Value::as_str),
+            Some("acceptEdits")
+        );
+        assert_eq!(
+            merged
+                .pointer("/env/ANTHROPIC_BASE_URL")
+                .and_then(Value::as_str),
+            Some("https://provider.example.com")
+        );
+        assert_eq!(
+            merged.pointer("/env/HTTP_PROXY").and_then(Value::as_str),
+            Some("http://proxy.example.com")
+        );
+        assert_eq!(
+            merged.pointer("/model").and_then(Value::as_str),
+            Some("claude-provider-model")
+        );
     }
 
     #[test]
@@ -2284,7 +2430,7 @@ mod tests {
             "Codex Proxy".to_string(),
             serde_json::json!({
                 "auth": { "OPENAI_API_KEY": "sk-auth-secret" },
-                "config": "model_provider = \"custom\"\nmodel = \"gpt-5.5\"\n\n[model_providers.custom]\nname = \"custom\"\nbase_url = \"https://toml-proxy.example.com/v1\"\nwire_api = \"responses\"\n"
+                "config": "model_provider = \"custom\"\nmodel = \"gpt-5.5\"\nmodel_verbosity = \"high\"\n\n[model_providers.custom]\nname = \"custom\"\nbase_url = \"https://toml-proxy.example.com/v1\"\nwire_api = \"responses\"\nenv_key = \"OPENAI_API_KEY\"\n"
             })
             .to_string(),
         )
@@ -2294,8 +2440,31 @@ mod tests {
             .profile_text
             .contains("base_url = \"https://toml-proxy.example.com/v1\""));
         assert!(runtime.profile_text.contains("model = \"gpt-5.5\""));
+        assert!(runtime.profile_text.contains("model_verbosity = \"high\""));
+        assert!(runtime.profile_text.contains("wire_api = \"responses\""));
+        assert_eq!(runtime.env_key, "OPENAI_API_KEY");
         assert!(!runtime.profile_text.contains("sk-auth-secret"));
         assert_eq!(runtime.secret_value, "sk-auth-secret");
+    }
+
+    #[test]
+    fn codex_full_config_injects_generated_env_key_when_missing() {
+        let runtime = codex_runtime_from_provider(
+            "codex-provider".to_string(),
+            "Codex Proxy".to_string(),
+            serde_json::json!({
+                "auth": { "OPENAI_API_KEY": "sk-auth-secret" },
+                "config": "model_provider = \"custom\"\nmodel = \"gpt-5.5\"\n\n[model_providers.custom]\nbase_url = \"https://toml-proxy.example.com/v1\"\nwire_api = \"responses\"\n"
+            })
+            .to_string(),
+        )
+        .expect("complete Codex config should parse");
+
+        assert!(runtime.profile_text.contains("wire_api = \"responses\""));
+        assert!(runtime
+            .profile_text
+            .contains(&format!("env_key = \"{}\"", runtime.env_key)));
+        assert!(!runtime.profile_text.contains("sk-auth-secret"));
     }
 
     #[test]
