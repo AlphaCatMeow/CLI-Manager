@@ -264,3 +264,36 @@ Claude 启动阶段提前订阅子任务 transcript，Codex rollout 增加有界
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: 完善 Workspan Tab 导航交互
+
+**Date**: 2026-07-13
+**Task**: 完善 Workspan Tab 导航交互
+**Branch**: `master`
+
+### Summary
+
+补齐 Workspan Tab 右键菜单、隐藏滚动条、IDEA 风格下拉列表，并确保激活 Tab 自动滚入可视区域。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `cb3d998` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
