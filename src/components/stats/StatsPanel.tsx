@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, BarChart3, ChevronDown, ChevronRight, Coins, Database, Folder, Layers, LineChart, RefreshCw, Search, Terminal, X } from "lucide-react";
+import { Activity, BarChart3, ChevronDown, ChevronRight, Coins, Database, Folder, Layers, LineChart, RefreshCw, ScrollText, Search, Terminal, X } from "lucide-react";
 import {
   Bar,
   BarChart,
@@ -55,6 +55,7 @@ import {
 } from "./statsPalette";
 import { useI18n, type AppLanguage, type TranslationKey } from "../../lib/i18n";
 import { VendorIcon, inferVendor } from "../VendorIcon";
+import { RequestLogsView } from "./RequestLogsView";
 
 interface StatsPanelProps {
   open: boolean;
@@ -80,6 +81,7 @@ interface DateRangeInput {
 
 type StatsTimeWindowMode = "day" | "week" | "month" | "year" | "custom";
 type StatsBucketGranularity = "day" | "hour";
+type StatsPanelTab = "overview" | "requests";
 
 interface StatsTimeWindowState {
   mode: StatsTimeWindowMode;
@@ -1173,6 +1175,7 @@ export function StatsPanel({ open, onClose, onOpenSession }: StatsPanelProps) {
 
   const [projectKey, setProjectKey] = useState("");
   const [projectPath, setProjectPath] = useState("");
+  const [activeTab, setActiveTab] = useState<StatsPanelTab>("overview");
   const [timeWindow, setTimeWindow] = useState<StatsTimeWindowState>(() => getDefaultStatsTimeWindow());
   const [manualRefresh, setManualRefresh] = useState<{ key: string; nonce: number } | null>(null);
   const [selectedDayStart, setSelectedDayStart] = useState<number | null>(null);
@@ -1211,7 +1214,7 @@ export function StatsPanel({ open, onClose, onOpenSession }: StatsPanelProps) {
         force: effectiveRefreshNonce > 0,
       });
     },
-    enabled: open && dateBounds.error === null && dateBounds.startAt !== null && dateBounds.endAt !== null,
+    enabled: open && activeTab === "overview" && dateBounds.error === null && dateBounds.startAt !== null && dateBounds.endAt !== null,
   });
   const stats = statsQuery.data ?? null;
   const loadingStats = statsQuery.isFetching;
@@ -1226,8 +1229,18 @@ export function StatsPanel({ open, onClose, onOpenSession }: StatsPanelProps) {
     if (!open) return;
     setProjectKey("");
     setProjectPath("");
+    setActiveTab("overview");
     setTimeWindow(getDefaultStatsTimeWindow());
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose, open]);
 
   useEffect(() => {
     if (!open || projectsLoaded) return;
@@ -1306,206 +1319,141 @@ export function StatsPanel({ open, onClose, onOpenSession }: StatsPanelProps) {
 
   return (
     <Portal>
-      <div
-        className="fixed inset-0 flex items-center justify-center p-4"
-        style={{ zIndex: 57, backgroundColor: "rgba(0, 0, 0, 0.45)" }}
-        onClick={(e) => {
-          if (e.target === e.currentTarget) onClose();
-        }}
-      >
-        <Card className="ui-stats-panel flex h-[min(90vh,900px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-bg-primary">
-          <div className="ui-stats-panel-header flex items-center justify-between border-b border-border px-4 py-3">
-            <div>
-              <div className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-text-primary">
-                <span className="ui-stats-panel-badge">
-                  <BarChart3 size={15} />
-                </span>
-                {t("stats.title")}
-              </div>
-              <div className="ui-dev-label mt-1 text-[11px] text-text-muted">{t("stats.subtitle")}</div>
+      <Card className="ui-stats-panel fixed inset-0 flex flex-col overflow-hidden rounded-none border-0 bg-bg-primary" style={{ zIndex: 57 }}>
+        <div className="ui-stats-panel-header flex items-center justify-between border-b border-border px-5 py-3">
+          <div>
+            <div className="inline-flex items-center gap-1.5 text-[16px] font-semibold text-text-primary">
+              <span className="ui-stats-panel-badge"><BarChart3 size={15} /></span>
+              {t("stats.title")}
             </div>
-            <Button onClick={onClose} aria-label={t("stats.closeDashboard")} size="icon" variant="ghost" title={t("common.close")}>
-              <X size={14} />
-            </Button>
+            <div className="ui-dev-label mt-1 text-[11px] text-text-muted">{t("stats.subtitle")}</div>
           </div>
+          <Button onClick={onClose} aria-label={t("stats.closeDashboard")} size="icon" variant="ghost" title={t("common.close")}>
+            <X size={15} />
+          </Button>
+        </div>
 
-          <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2">
+        <div className="flex items-center gap-1 border-b border-border px-5 py-2" role="tablist" aria-label={t("stats.title")}>
+          {([
+            { value: "overview" as const, label: t("stats.tab.overview"), icon: BarChart3 },
+            { value: "requests" as const, label: t("stats.tab.requestLogs"), icon: ScrollText },
+          ]).map((tab) => {
+            const Icon = tab.icon;
+            const selected = activeTab === tab.value;
+            return (
+              <button
+                key={tab.value}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                onClick={() => setActiveTab(tab.value)}
+                className="ui-tab-trigger ui-focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-[12px] font-medium transition-colors"
+                data-selected={selected ? "true" : "false"}
+              >
+                <Icon size={13} />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {activeTab === "overview" && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-2">
             <StatsProjectFilterDropdown
               projects={projects}
               groups={groups}
               selectedProjectPath={projectPath}
               rawProjectKey={projectKey}
-              onSelectProjectPath={(path) => {
-                setProjectPath(path);
-                setProjectKey("");
-              }}
-              onClear={() => {
-                setProjectPath("");
-                setProjectKey("");
-              }}
+              onSelectProjectPath={(path) => { setProjectPath(path); setProjectKey(""); }}
+              onClear={() => { setProjectPath(""); setProjectKey(""); }}
             />
-
             <Select
               value={timeWindow.mode}
               onChange={(e) => setTimeWindow((prev) => nextStatsTimeWindowForMode(e.target.value as StatsTimeWindowMode, prev))}
               className={`${controlClass} w-auto min-w-[92px] shrink-0`}
               aria-label={t("stats.timeWindow")}
             >
-              {STATS_TIME_WINDOW_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {t(option.labelKey)}
-                </option>
-              ))}
+              {STATS_TIME_WINDOW_OPTIONS.map((option) => <option key={option.value} value={option.value}>{t(option.labelKey)}</option>)}
             </Select>
-
-            {timeWindow.mode === "day" && (
-              <StatsDatePicker
-                mode="date"
-                value={resolvedTimeWindow.day}
-                onChange={(value) => setTimeWindow((prev) => ({ ...prev, day: value }))}
-                className={timeInputClass}
-                ariaLabel={t("stats.date")}
-              />
-            )}
-
-            {timeWindow.mode === "week" && (
-              <span className={`${controlClass} inline-flex items-center`}>{t("stats.weekLabel")}</span>
-            )}
-
-            {timeWindow.mode === "month" && (
-              <StatsDatePicker
-                mode="month"
-                value={resolvedTimeWindow.month}
-                onChange={(value) => setTimeWindow((prev) => ({ ...prev, month: value }))}
-                className={timeInputClass}
-                ariaLabel={t("stats.month")}
-              />
-            )}
-
-            {timeWindow.mode === "year" && (
-              <input
-                type="number"
-                min="2000"
-                max="9999"
-                value={resolvedTimeWindow.year}
-                onChange={(e) => setTimeWindow((prev) => ({ ...prev, year: e.target.value }))}
-                className={`${controlClass} w-[92px]`}
-                aria-label={t("stats.year")}
-              />
-            )}
-
+            {timeWindow.mode === "day" && <StatsDatePicker mode="date" value={resolvedTimeWindow.day} onChange={(value) => setTimeWindow((prev) => ({ ...prev, day: value }))} className={timeInputClass} ariaLabel={t("stats.date")} />}
+            {timeWindow.mode === "week" && <span className={`${controlClass} inline-flex items-center`}>{t("stats.weekLabel")}</span>}
+            {timeWindow.mode === "month" && <StatsDatePicker mode="month" value={resolvedTimeWindow.month} onChange={(value) => setTimeWindow((prev) => ({ ...prev, month: value }))} className={timeInputClass} ariaLabel={t("stats.month")} />}
+            {timeWindow.mode === "year" && <input type="number" min="2000" max="9999" value={resolvedTimeWindow.year} onChange={(e) => setTimeWindow((prev) => ({ ...prev, year: e.target.value }))} className={`${controlClass} w-[92px]`} aria-label={t("stats.year")} />}
             {timeWindow.mode === "custom" && (
               <>
-                <StatsDatePicker
-                  mode="date"
-                  value={resolvedTimeWindow.customStart}
-                  onChange={(value) => setTimeWindow((prev) => ({ ...prev, customStart: value }))}
-                  className={timeInputClass}
-                  ariaLabel={t("stats.customStart")}
-                />
+                <StatsDatePicker mode="date" value={resolvedTimeWindow.customStart} onChange={(value) => setTimeWindow((prev) => ({ ...prev, customStart: value }))} className={timeInputClass} ariaLabel={t("stats.customStart")} />
                 <span className="text-[11px] text-text-muted">{t("common.to")}</span>
-                <StatsDatePicker
-                  mode="date"
-                  value={resolvedTimeWindow.customEnd}
-                  onChange={(value) => setTimeWindow((prev) => ({ ...prev, customEnd: value }))}
-                  className={timeInputClass}
-                  ariaLabel={t("stats.customEnd")}
-                />
+                <StatsDatePicker mode="date" value={resolvedTimeWindow.customEnd} onChange={(value) => setTimeWindow((prev) => ({ ...prev, customEnd: value }))} className={timeInputClass} ariaLabel={t("stats.customEnd")} />
               </>
             )}
-
             <Button onClick={refreshStats} disabled={dateBounds.error !== null || waitingForStatsQuery} aria-label={t("common.refresh")} size="sm">
-              <RefreshCw size={12} className={loadingStats ? "animate-spin" : ""} />
-              {t("common.refresh")}
+              <RefreshCw size={12} className={loadingStats ? "animate-spin" : ""} />{t("common.refresh")}
             </Button>
-            <div className="ml-auto text-[12px] font-medium text-text-secondary">
-              {t("stats.lastRefresh", { value: waitingForStatsQuery ? "-" : formatDateTime(statsUpdatedAt, language) })}
-            </div>
+            <div className="ml-auto text-[12px] font-medium text-text-secondary">{t("stats.lastRefresh", { value: waitingForStatsQuery ? "-" : formatDateTime(statsUpdatedAt, language) })}</div>
             <div className="w-full text-[12px] font-medium text-text-secondary">{t("stats.currentRange", { value: dateRangeLabel })}</div>
             {dateBounds.error && <div className="w-full text-[12px] font-medium text-danger">{dateBounds.error}</div>}
           </div>
+        )}
 
-          <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-3">
-            {(waitingForStatsQuery || (loadingStats && !stats)) && <StatsSkeleton />}
-
-            {!waitingForStatsQuery && !loadingStats && statsError && (
-              <section className="rounded-2xl border border-border/60 bg-bg-secondary p-4 text-[12px] text-danger space-y-2">
-                <div>{t("stats.loadFailed", { error: statsError })}</div>
-                <Button onClick={refreshStats} disabled={dateBounds.error !== null} size="sm">
-                  <RefreshCw size={12} />
-                  {t("common.retry")}
-                </Button>
-              </section>
-            )}
-
-            {!waitingForStatsQuery && stats && (
-              <>
-                {loadingStats && <div className="text-[12px] font-medium text-text-muted">{t("stats.updating")}</div>}
-                <KpiStrip stats={stats} />
-                <TokenCompositionStrip stats={stats} />
-                <ContextNote sourceLabel={sourceLabel} projectLabel={projectLabel} dateRangeLabel={dateRangeLabel} stats={stats} />
-                <DailyUsageTrendChart items={trendItems} granularity={statsGranularity} />
-
-                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                  <ProjectRanking
-                    items={stats.project_ranking}
-                    selectedProjectKey={projectKey}
-                    onSelectProject={(nextProjectKey) => {
-                      setProjectPath("");
-                      setProjectKey((prev) => (prev === nextProjectKey ? "" : nextProjectKey));
-                    }}
-                    onClearProject={() => {
-                      setProjectPath("");
-                      setProjectKey("");
-                    }}
-                  />
-                  <ModelRankingChart items={stats.model_distribution} />
-                </div>
-
-                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                  <SourceBreakdown items={stats.source_distribution} />
-                  <StatsHourlyActivityChart items={stats.hourly_activity} />
-                </div>
-
-                <section className="rounded-2xl border border-border/60 bg-bg-secondary p-4">
-                  <SectionHeading icon={Activity} title={heatmapTitle} />
-                  <TimelineHeatmap
-                    days={heatmapItems}
-                    selectedDayStart={selectedDayStart}
-                    onSelectDay={(day) => setSelectedDayStart(day.day_start_utc)}
-                    granularity={statsGranularity}
-                  />
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 xl:p-5">
+          {activeTab === "requests" ? (
+            <RequestLogsView onOpenSession={async (key) => { await onOpenSession(key); onClose(); }} />
+          ) : (
+            <div className="mx-auto w-full max-w-[1800px] space-y-3">
+              {(waitingForStatsQuery || (loadingStats && !stats)) && <StatsSkeleton />}
+              {!waitingForStatsQuery && !loadingStats && statsError && (
+                <section className="space-y-2 rounded-2xl border border-border/60 bg-bg-secondary p-4 text-[12px] text-danger">
+                  <div>{t("stats.loadFailed", { error: statsError })}</div>
+                  <Button onClick={refreshStats} disabled={dateBounds.error !== null} size="sm"><RefreshCw size={12} />{t("common.retry")}</Button>
                 </section>
+              )}
+              {!waitingForStatsQuery && stats && (
+                <>
+                  {loadingStats && <div className="text-[12px] font-medium text-text-muted">{t("stats.updating")}</div>}
+                  <KpiStrip stats={stats} />
+                  <ContextNote sourceLabel={sourceLabel} projectLabel={projectLabel} dateRangeLabel={dateRangeLabel} stats={stats} />
+                  <DailyUsageTrendChart items={trendItems} granularity={statsGranularity} />
 
-                <section className="rounded-2xl border border-border/60 bg-bg-secondary p-4">
-                  <SectionHeading icon={Layers} title={selectedBucketTitle} />
-                  {!selectedBucket && <div className="text-[12px] font-medium text-text-muted">{selectHintText}</div>}
-                  {selectedBucket && selectedBucket.session_refs.length === 0 && <div className="text-[12px] font-medium text-text-muted">{emptyBucketText}</div>}
-                  {visibleBucketSessions.map((session) => (
-                    <button
-                      key={makeSessionKey(session)}
-                      onClick={() => {
-                        void onOpenSession(makeSessionKey(session)).then(() => onClose());
-                      }}
-                      className="ui-list-row w-full border-b border-border py-2 text-left last:border-b-0"
-                    >
-                      <div className="truncate text-[13px] font-semibold text-text-primary">{session.title}</div>
-                      <div className="ui-dev-label mt-0.5 text-[11px] text-text-muted">
-                        {session.source} · {session.project_key} · {t("stats.session.messageCount", { count: session.message_count })}
-                      </div>
-                    </button>
-                  ))}
-                  {selectedBucket && dayVisibleCount < selectedBucket.session_refs.length && (
-                    <Button onClick={() => setDayVisibleCount((prev) => prev + DAY_SESSION_PAGE_SIZE)} className="mt-2 w-full" size="sm">
-                      {t("stats.session.loadMore", { shown: dayVisibleCount, total: selectedBucket.session_refs.length })}
-                    </Button>
-                  )}
-                </section>
-              </>
-            )}
-          </div>
-        </Card>
-      </div>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-4">
+                    <ProjectRanking
+                      items={stats.project_ranking}
+                      selectedProjectKey={projectKey}
+                      onSelectProject={(nextProjectKey) => { setProjectPath(""); setProjectKey((prev) => (prev === nextProjectKey ? "" : nextProjectKey)); }}
+                      onClearProject={() => { setProjectPath(""); setProjectKey(""); }}
+                    />
+                    <ModelRankingChart items={stats.model_distribution} />
+                    <StatsHourlyActivityChart items={stats.hourly_activity} />
+                    <TokenCompositionStrip stats={stats} />
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                    <SourceBreakdown items={stats.source_distribution} />
+                    <section className="rounded-2xl border border-border/60 bg-bg-secondary p-4">
+                      <SectionHeading icon={Activity} title={heatmapTitle} />
+                      <TimelineHeatmap days={heatmapItems} selectedDayStart={selectedDayStart} onSelectDay={(day) => setSelectedDayStart(day.day_start_utc)} granularity={statsGranularity} />
+                    </section>
+                  </div>
+
+                  <section className="rounded-2xl border border-border/60 bg-bg-secondary p-4">
+                    <SectionHeading icon={Layers} title={selectedBucketTitle} />
+                    {!selectedBucket && <div className="text-[12px] font-medium text-text-muted">{selectHintText}</div>}
+                    {selectedBucket && selectedBucket.session_refs.length === 0 && <div className="text-[12px] font-medium text-text-muted">{emptyBucketText}</div>}
+                    {visibleBucketSessions.map((session) => (
+                      <button key={makeSessionKey(session)} onClick={() => { void onOpenSession(makeSessionKey(session)).then(() => onClose()); }} className="ui-list-row w-full border-b border-border py-2 text-left last:border-b-0">
+                        <div className="truncate text-[13px] font-semibold text-text-primary">{session.title}</div>
+                        <div className="ui-dev-label mt-0.5 text-[11px] text-text-muted">{session.source} · {session.project_key} · {t("stats.session.messageCount", { count: session.message_count })}</div>
+                      </button>
+                    ))}
+                    {selectedBucket && dayVisibleCount < selectedBucket.session_refs.length && (
+                      <Button onClick={() => setDayVisibleCount((prev) => prev + DAY_SESSION_PAGE_SIZE)} className="mt-2 w-full" size="sm">{t("stats.session.loadMore", { shown: dayVisibleCount, total: selectedBucket.session_refs.length })}</Button>
+                    )}
+                  </section>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </Card>
     </Portal>
   );
 }

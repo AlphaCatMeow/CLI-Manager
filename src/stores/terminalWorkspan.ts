@@ -195,6 +195,21 @@ export function reorderTerminalWorkspans(
   return next;
 }
 
+export function getAdjacentWorkspanSessionId(
+  workspans: TerminalWorkspan[],
+  activeWorkspanId: string | null,
+  delta: 1 | -1
+): string | null {
+  const navigable = workspans.flatMap((workspan) => {
+    const sessionId = workspan.activeSessionId ?? collectWorkspanSessionIds(workspan)[0] ?? null;
+    return sessionId ? [{ workspanId: workspan.id, sessionId }] : [];
+  });
+  if (navigable.length === 0) return null;
+  const activeIndex = navigable.findIndex((item) => item.workspanId === activeWorkspanId);
+  if (activeIndex < 0) return delta === 1 ? navigable[0].sessionId : navigable[navigable.length - 1].sessionId;
+  return navigable[(activeIndex + delta + navigable.length) % navigable.length].sessionId;
+}
+
 export function removeSessionFromTerminalWorkspans(
   workspans: TerminalWorkspan[],
   sessionId: string

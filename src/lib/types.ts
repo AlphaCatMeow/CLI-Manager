@@ -545,6 +545,59 @@ export interface HistoryStatsPayload {
   hourly_activity: HistoryStatsHourlyActivityItem[];
 }
 
+export interface RequestLogFilters {
+  source?: "claude" | "codex" | null;
+  project_key?: string | null;
+  model?: string | null;
+  session_query?: string | null;
+  start_at?: number | null;
+  end_at?: number | null;
+}
+
+export interface RequestLogSyncResult {
+  scanned_files: number;
+  changed_files: number;
+  removed_files: number;
+  written_rows: number;
+  failed_files: number;
+  synced_at_ms: number;
+}
+
+export interface RequestLogItem {
+  request_id: string;
+  source: "claude" | "codex";
+  project_key: string;
+  session_id: string;
+  file_path: string;
+  event_index: number;
+  timestamp_ms: number;
+  model?: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  total_tokens: number;
+  total_cost_usd: number;
+  unpriced_tokens: number;
+  status: "recorded";
+  session_available: boolean;
+}
+
+export interface RequestLogSummary {
+  total: number;
+  total_tokens: number;
+  total_cost_usd: number;
+  unpriced_tokens: number;
+}
+
+export interface RequestLogPage {
+  data: RequestLogItem[];
+  summary: RequestLogSummary;
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export const SHELL_OPTIONS_WINDOWS = [
   { value: "powershell", label: "PowerShell" },
   { value: "cmd", label: "CMD" },

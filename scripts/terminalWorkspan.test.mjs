@@ -38,6 +38,7 @@ const {
   collapseTerminalWorkspansToLegacy,
   collectWorkspanSessionIds,
   createTerminalWorkspan,
+  getAdjacentWorkspanSessionId,
   mergeTerminalWorkspansAtPaneEdge,
   migrateTerminalWorkspans,
   removeSessionFromTerminalWorkspans,
@@ -309,4 +310,19 @@ test("remove and reorder keep top-level workspan behavior deterministic", () => 
   const reordered = reorderTerminalWorkspans([first, second], "second", "first");
   assert.deepEqual(reordered.map((workspan) => workspan.id), ["second", "first"]);
   assert.deepEqual(removeSessionFromTerminalWorkspans(reordered, "second-session").map((workspan) => workspan.id), ["first"]);
+});
+
+test("side-button navigation falls back to adjacent workspans", () => {
+  const workspans = [
+    createTerminalWorkspan("first", "first-pane", "first-session"),
+    createTerminalWorkspan("second", "second-pane", "second-session"),
+    createTerminalWorkspan("third", "third-pane", "third-session"),
+  ];
+
+  assert.equal(getAdjacentWorkspanSessionId(workspans, "second", 1), "third-session");
+  assert.equal(getAdjacentWorkspanSessionId(workspans, "second", -1), "first-session");
+  assert.equal(getAdjacentWorkspanSessionId(workspans, "first", -1), "third-session");
+  assert.equal(getAdjacentWorkspanSessionId(workspans, "third", 1), "first-session");
+  assert.equal(getAdjacentWorkspanSessionId(workspans, "missing", 1), "first-session");
+  assert.equal(getAdjacentWorkspanSessionId(workspans, "missing", -1), "third-session");
 });

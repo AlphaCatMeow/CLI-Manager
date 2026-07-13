@@ -313,6 +313,7 @@ splitSessionToPaneEdge(sessionId: string, targetPaneId: string, edge: TerminalPa
 - Disabling Workspan preserves the active Workspan's complete Pane tree, appends sessions from other Workspans to the active Pane as tabs, and must not call `pty_create` or `pty_close`. Re-enabling keeps that complete tree as one Workspan; only later ordinary terminal creation starts new Workspans.
 - Switching Workspans replaces the active mirror without unmounting or closing sessions in inactive Workspans.
 - Every active Workspan change must scroll its top-level tab into the visible tab-strip viewport after render. This is presentation-only: keep Workspan order, tab widths, and manual horizontal scrolling unchanged.
+- Keyboard and mouse side-button Tab navigation must prefer the existing active Pane resolver. If that resolver returns the current session because the active Workspan has no other navigable Pane/Tab, fall back to the adjacent Workspan's active session in top-level order; `setActive(sessionId)` then switches the Workspan mirror.
 - The Workspan overflow dropdown is presentation state only. Render the dropdown trigger only when the complete tab contents exceed the full tab bar width, and list only tabs outside the current scroll viewport or partially clipped by it. Do not persist hidden-tab state or duplicate tab ordering in the store.
 - Background events such as subagent transcript creation locate the parent session's Workspan and mutate that Workspan even when it is inactive; they must not steal focus.
 - Closing the last session removes its Workspan and selects an adjacent Workspan. Closing a session in an inactive Workspan must keep the current Workspan active.
@@ -331,6 +332,7 @@ splitSessionToPaneEdge(sessionId: string, targetPaneId: string, edge: TerminalPa
 - Assert Workspan merge preserves the complete session ID set with no duplicates.
 - Assert legacy collapse preserves the active Pane tree, appends other Workspan sessions in deterministic order, and keeps every session ID exactly once.
 - Assert sanitization keeps a session ID in only one pane even when persisted layout data contains duplicates.
+- Assert adjacent Workspan navigation supports forward/backward movement and wraps at both ends without changing the existing multi-Tab or multi-Pane priority.
 - Manual desktop verification: switch Workspans, change split ratios, restart, and verify each layout restores with the correct active session.
 - Manual desktop verification: with enough Workspans to overflow the tab strip, verify the dropdown trigger appears only while overflowing, the dropdown lists only hidden or partially clipped tabs, and activating the last Workspan through the dropdown, keyboard, or another navigation entry makes its tab visible without reordering tabs; mouse horizontal scrolling must still work.
 - Manual desktop verification: close focused and inactive sessions, and verify Workspan selection remains correct.

@@ -4,6 +4,10 @@
 
 Allow mouse side buttons to switch terminal tabs in CLI-Manager: backward button goes to the previous tab, forward button goes to the next tab.
 
+## Changelog Target
+
+`[TEMP]`
+
 ## Requirements
 
 * Mouse button 3 (`button === 3`, usually Back) switches to the previous terminal tab.

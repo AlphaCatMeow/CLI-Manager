@@ -43,6 +43,7 @@ import { useWorktreeStore } from "./stores/worktreeStore";
 import { debugConsoleWarn } from "./lib/debugConsole";
 import { createPerfMarker, logInfo, logWarn } from "./lib/logger";
 import { getContrastRatioFromHex, MIN_APPLY_CONTRAST_RATIO } from "./lib/contrast";
+import { getDb } from "./lib/db";
 import { translateCurrent, useI18n } from "./lib/i18n";
 import { getOsPlatform } from "./lib/shell";
 import { normalizeFontFamilyStack } from "./lib/systemFonts";
@@ -97,6 +98,7 @@ const CLOSE_SYNC_TIMEOUT_MS = 8000;
 // 退出遮罩上 conflict/error 提示的停留时长，之后继续退出流程。
 const EXIT_NOTICE_DISPLAY_MS = 1200;
 const STARTUP_STAGE_TIMEOUT_MS = 15_000;
+const REQUEST_LOG_SYNC_INTERVAL_MS = 60_000;
 const IN_TAURI = isTauri();
 const CLAUDE_HOOK_TOAST_PREFIX = "claude-hook-notification";
 const SYSTEM_NOTIFICATION_ACTION_EVENT = "system-notification-action";
@@ -455,6 +457,8 @@ function App() {
   const closeBehavior = useSettingsStore((s) => s.closeBehavior);
   const exitWithRunningTasksBehavior = useSettingsStore((s) => s.exitWithRunningTasksBehavior);
   const ccusageAnalyticsEnabled = useSettingsStore((s) => s.ccusageAnalyticsEnabled);
+  const claudeHookConfigDir = useSettingsStore((s) => s.claudeHookConfigDir);
+  const codexHookConfigDir = useSettingsStore((s) => s.codexHookConfigDir);
   const debugMode = useSettingsStore((s) => s.debugMode);
   const projectScopedTerminalViewEnabled = useSettingsStore((s) => s.projectScopedTerminalViewEnabled);
   const lastSettingsTab = useSettingsStore((s) => s.lastSettingsTab);
@@ -505,6 +509,37 @@ function App() {
   useEffect(() => {
     closeBehaviorRef.current = closeBehavior;
   }, [closeBehavior]);
+
+  useEffect(() => {
+    if (!IN_TAURI || !settingsLoaded) return;
+    let disposed = false;
+    let syncing = false;
+
+    const syncRequestLogs = async () => {
+      if (disposed || syncing) return;
+      syncing = true;
+      try {
+        await getDb();
+        if (disposed) return;
+        await invoke("history_sync_request_logs", {
+          claudeConfigDir: claudeHookConfigDir?.trim() || null,
+          codexConfigDir: codexHookConfigDir?.trim() || null,
+          force: false,
+        });
+      } catch (err) {
+        logWarn("Failed to sync local request logs", err);
+      } finally {
+        syncing = false;
+      }
+    };
+
+    void syncRequestLogs();
+    const timer = window.setInterval(() => void syncRequestLogs(), REQUEST_LOG_SYNC_INTERVAL_MS);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [claudeHookConfigDir, codexHookConfigDir, settingsLoaded]);
 
   useEffect(() => {
     exitTasksBehaviorRef.current = exitWithRunningTasksBehavior;

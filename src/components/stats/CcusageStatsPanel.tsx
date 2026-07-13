@@ -1660,15 +1660,8 @@ export function CcusageStatsPanel({ open, onClose }: CcusageStatsPanelProps) {
 
   return (
     <Portal>
-      <div
-        className="fixed inset-0 flex items-center justify-center p-4"
-        style={{ zIndex: 57, backgroundColor: "rgba(0, 0, 0, 0.45)" }}
-        onClick={(e) => {
-          if (e.target === e.currentTarget) onClose();
-        }}
-      >
-        <Card className="ui-stats-panel flex h-[min(86vh,860px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-bg-primary">
-          <div className="ui-stats-panel-header flex items-center justify-between border-b border-border px-3 py-2">
+      <Card className="ui-stats-panel fixed inset-0 flex flex-col overflow-hidden rounded-none border-0 bg-bg-primary" style={{ zIndex: 57 }}>
+          <div className="ui-stats-panel-header flex items-center justify-between border-b border-border px-5 py-3">
             <div>
               <div className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-text-primary">
                 <span className="ui-stats-panel-badge">
@@ -1683,7 +1676,7 @@ export function CcusageStatsPanel({ open, onClose }: CcusageStatsPanelProps) {
             </Button>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+          <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-2">
             <Select
               value={source}
               onChange={(e) => setSource(e.target.value as CcusageSource)}
@@ -1736,7 +1729,8 @@ export function CcusageStatsPanel({ open, onClose }: CcusageStatsPanelProps) {
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+          <div className="min-h-0 flex-1 overflow-y-auto p-4 xl:p-5">
+            <div className="mx-auto w-full max-w-[1800px] space-y-3">
             {(checkingStatus || loadingCache) && !report && (
               <Card className="bg-bg-secondary p-3 text-[12px] text-text-secondary">{t("ccusage.loadingStatus")}</Card>
             )}
@@ -1794,12 +1788,11 @@ export function CcusageStatsPanel({ open, onClose }: CcusageStatsPanelProps) {
                 )}
                 <KpiStrip summary={summary} />
                 <ReportContextNote reportKind={report.reportKind} sourceLabel={sourceLabel} schemaLabel={summary.schemaLabel} />
-                <PeakDaySummaryCard summary={summary} />
-                <TokenCompositionStrip summary={summary} />
-
                 <DailyUsageTrendChart items={chartItems} granularity={chartGranularity} />
 
-                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-4">
+                  <PeakDaySummaryCard summary={summary} />
+                  <TokenCompositionStrip summary={summary} />
                   <DailyUsageHeatmap items={chartItems} granularity={chartGranularity} />
                   <ModelRankingChart summary={summary} />
                 </div>
@@ -1807,9 +1800,9 @@ export function CcusageStatsPanel({ open, onClose }: CcusageStatsPanelProps) {
                 <PayloadOverviewFooter summary={summary} />
               </>
             )}
+            </div>
           </div>
         </Card>
-      </div>
 
       <ConfirmDialog
         open={hostInstallConfirmOpen}

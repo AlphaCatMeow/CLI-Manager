@@ -18,6 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 mod catalog;
+pub(crate) mod request_logs;
 
 /// BufReader 容量；默认 8KB 对几 MB 的 jsonl 文件 syscall 次数偏多。
 const READ_BUF_CAPACITY: usize = 64 * 1024;
@@ -227,6 +228,10 @@ struct SessionStatsScan {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct SessionUsageEventScan {
+    #[serde(default)]
+    event_key: String,
+    #[serde(default)]
+    event_index: usize,
     timestamp_ms: Option<i64>,
     model: Option<String>,
     usage: UsageStatsScan,
@@ -2112,6 +2117,8 @@ fn stats_usage_events_or_fallback(
     }
 
     vec![SessionUsageEventScan {
+        event_key: format!("fallback:{}:{}", summary.session_id, summary.updated_at),
+        event_index: 0,
         timestamp_ms: Some(summary.updated_at),
         model: stats.dominant_model.clone(),
         usage,
@@ -2286,7 +2293,7 @@ pub(crate) fn invalidate_history_stats_caches() {
 // 内存索引（HISTORY_SESSION_INDEX）每次 App 启动后为空，首个 history_get_stats 必须
 // 全量解析所有 JSONL（可能上千个），冷启动耗时不可接受。这里把 per-file 解析结果落盘，
 // 重启后载入作为 build_history_index 的 previous，按 fingerprint 仅重解析变更文件。
-const HISTORY_INDEX_CACHE_VERSION: u32 = 6;
+const HISTORY_INDEX_CACHE_VERSION: u32 = 7;
 const HISTORY_INDEX_CACHE_FILE: &str = "history-index-cache.json";
 
 static HISTORY_INDEX_CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -4690,7 +4697,8 @@ fn scan_session_inner(
         }
 
         let mut codex_message_usage = None;
-        let usage = if let Some(current) = extract_codex_token_count(&value) {
+        let codex_cumulative = extract_codex_token_count(&value);
+        let usage = if let Some(current) = codex_cumulative {
             let (window, last_context) = extract_codex_context_info(&value);
             if window.is_some() {
                 context_window = window;
@@ -4742,7 +4750,16 @@ fn scan_session_inner(
         let cost = calculate_usage_cost(attributed_model.as_deref(), usage);
         total_cost_usd += cost.total_cost_usd;
         unpriced_tokens = unpriced_tokens.saturating_add(cost.unpriced_tokens);
+        let event_index = usage_events.len();
         usage_events.push(SessionUsageEventScan {
+            event_key: build_usage_event_key(
+                &value,
+                physical_line_index,
+                event_index,
+                usage,
+                codex_cumulative,
+            ),
+            event_index,
             timestamp_ms: extract_timestamp_millis(&value),
             model: attributed_model.clone(),
             usage: cost,
@@ -6051,6 +6068,36 @@ fn extract_usage_dedup_key(value: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .unwrap_or("");
     Some(format!("{message_id}|{request_id}"))
+}
+
+fn build_usage_event_key(
+    value: &Value,
+    physical_line_index: usize,
+    event_index: usize,
+    usage: UsageTokenScan,
+    codex_cumulative: Option<CodexCumulativeUsage>,
+) -> String {
+    if let Some(key) = extract_usage_dedup_key(value) {
+        return format!("message:{key}");
+    }
+
+    if let Some(total) = codex_cumulative {
+        let timestamp = extract_timestamp_millis(value)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| format!("index-{event_index}"));
+        return format!(
+            "codex:{timestamp}:{}:{}:{}:{}",
+            total.input_tokens, total.cached_input_tokens, total.output_tokens, total.total_tokens
+        );
+    }
+
+    format!(
+        "line:{physical_line_index}:{}:{}:{}:{}",
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_tokens,
+        usage.cache_creation_tokens
+    )
 }
 
 fn is_synthetic_model(model: &str) -> bool {
@@ -7835,6 +7882,8 @@ mod tests {
                         Some("priced-model".to_string()),
                     )],
                     usage_events: vec![SessionUsageEventScan {
+                        event_key: "test:event".to_string(),
+                        event_index: 0,
                         timestamp_ms: Some(DAY_MS),
                         model: Some("priced-model".to_string()),
                         usage,

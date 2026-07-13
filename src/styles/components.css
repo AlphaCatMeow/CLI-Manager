@@ -616,7 +616,7 @@
 }
 
 .ui-stats-panel {
-  position: relative;
+  position: fixed;
   isolation: isolate;
 }
 

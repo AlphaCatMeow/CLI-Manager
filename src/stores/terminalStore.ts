@@ -39,6 +39,7 @@ import {
   createTerminalWorkspan,
   findWorkspanByPane,
   findWorkspanBySession,
+  getAdjacentWorkspanSessionId,
   mergeTerminalWorkspansAtPaneEdge,
   removeSessionFromTerminalWorkspans,
   reorderTerminalWorkspans,
@@ -1844,7 +1845,15 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   },
 
   getNextSessionIdForShortcut: (delta) => {
-    return resolveNextSessionIdForShortcut(get().paneTree, get().activePaneId, get().activeSessionId, delta);
+    const state = get();
+    const nextSessionId = resolveNextSessionIdForShortcut(
+      state.paneTree,
+      state.activePaneId,
+      state.activeSessionId,
+      delta
+    );
+    if (nextSessionId && nextSessionId !== state.activeSessionId) return nextSessionId;
+    return getAdjacentWorkspanSessionId(state.workspans, state.activeWorkspanId, delta);
   },
 
   restoreSessions: async (projectMap, projectHealth) => {

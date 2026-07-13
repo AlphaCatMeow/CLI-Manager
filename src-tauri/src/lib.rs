@@ -217,6 +217,47 @@ const MIGRATION_CREATE_HISTORY_EDIT_AUDIT_SQL: &str = "
                 CREATE INDEX IF NOT EXISTS idx_history_edit_audit_session ON history_edit_audit(session_key, created_at DESC);
             ";
 
+pub(crate) const MIGRATION_CREATE_REQUEST_LOGS_VERSION: i64 = 19;
+pub(crate) const MIGRATION_CREATE_REQUEST_LOGS_DESCRIPTION: &str = "create_request_logs_tables";
+pub(crate) const MIGRATION_CREATE_REQUEST_LOGS_SQL: &str = "
+                CREATE TABLE IF NOT EXISTS request_logs (
+                    request_id             TEXT PRIMARY KEY,
+                    source                 TEXT NOT NULL,
+                    project_key            TEXT NOT NULL DEFAULT '',
+                    session_id             TEXT NOT NULL,
+                    file_path              TEXT NOT NULL,
+                    event_key              TEXT NOT NULL,
+                    event_index            INTEGER NOT NULL,
+                    timestamp_ms           INTEGER NOT NULL,
+                    model                  TEXT,
+                    input_tokens           INTEGER NOT NULL DEFAULT 0,
+                    output_tokens          INTEGER NOT NULL DEFAULT 0,
+                    cache_read_tokens      INTEGER NOT NULL DEFAULT 0,
+                    cache_creation_tokens  INTEGER NOT NULL DEFAULT 0,
+                    created_at_ms          INTEGER NOT NULL,
+                    updated_at_ms          INTEGER NOT NULL,
+                    UNIQUE(file_path, event_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_request_logs_time
+                    ON request_logs(timestamp_ms DESC);
+                CREATE INDEX IF NOT EXISTS idx_request_logs_source_project
+                    ON request_logs(source, project_key, timestamp_ms DESC);
+                CREATE INDEX IF NOT EXISTS idx_request_logs_session
+                    ON request_logs(source, session_id);
+                CREATE INDEX IF NOT EXISTS idx_request_logs_model
+                    ON request_logs(model, timestamp_ms DESC);
+
+                CREATE TABLE IF NOT EXISTS request_log_sync (
+                    file_path          TEXT PRIMARY KEY,
+                    source             TEXT NOT NULL,
+                    file_created_at    INTEGER NOT NULL,
+                    file_updated_at    INTEGER NOT NULL,
+                    file_size          INTEGER NOT NULL,
+                    parser_version     INTEGER NOT NULL,
+                    last_synced_at_ms  INTEGER NOT NULL
+                );
+            ";
+
 fn migrations() -> Vec<Migration> {
     vec![
         Migration {
@@ -429,6 +470,12 @@ fn migrations() -> Vec<Migration> {
             version: MIGRATION_CREATE_HISTORY_EDIT_AUDIT_VERSION,
             description: MIGRATION_CREATE_HISTORY_EDIT_AUDIT_DESCRIPTION,
             sql: MIGRATION_CREATE_HISTORY_EDIT_AUDIT_SQL,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: MIGRATION_CREATE_REQUEST_LOGS_VERSION,
+            description: MIGRATION_CREATE_REQUEST_LOGS_DESCRIPTION,
+            sql: MIGRATION_CREATE_REQUEST_LOGS_SQL,
             kind: MigrationKind::Up,
         },
     ]
@@ -702,6 +749,8 @@ pub fn run() {
             commands::history::history_list_prompts,
             commands::history::history_list_stats_projects,
             commands::history::history_get_stats,
+            commands::history::request_logs::history_sync_request_logs,
+            commands::history::request_logs::history_list_request_logs,
             commands::sync::sync_get_default_device_name,
             commands::sync::sync_list_device_snapshots,
             commands::sync::sync_test_connection,
