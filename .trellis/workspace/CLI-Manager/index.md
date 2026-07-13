@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 9
+- **Total Sessions**: 10
 - **Last Active**: 2026-07-13
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~332 | Active |
+| `journal-1.md` | ~365 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 10 | 2026-07-13 | 添加 Workspan 开发开关 | `3629d5e` | `master` |
 | 9 | 2026-07-13 | 修复 Claude 状态栏编辑器与 Powerline 预览 | `08e632b` | `master` |
 | 8 | 2026-07-13 | 完善 Workspan Tab 导航交互 | `cb3d998` | `master` |
 | 7 | 2026-07-12 | 终端文件路径快捷打开 | `180bd87` | `master` |

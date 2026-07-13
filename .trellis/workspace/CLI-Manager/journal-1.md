@@ -330,3 +330,36 @@ Claude 启动阶段提前订阅子任务 transcript，Codex rollout 增加有界
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: 添加 Workspan 开发开关
+
+**Date**: 2026-07-13
+**Task**: 添加 Workspan 开发开关
+**Branch**: `master`
+
+### Summary
+
+新增默认开启的 Workspan 开发开关；关闭时恢复 Pane 内 Tab 分屏逻辑，并保留现有 PTY 与布局。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3629d5e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
