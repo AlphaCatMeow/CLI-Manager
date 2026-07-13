@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { Accordion, ActionIcon, Badge, Box, Button, Card, Checkbox, ColorSwatch, Group, NumberInput, ScrollArea, SegmentedControl, Select, Stack, Switch, Text, TextInput } from "@mantine/core";
 import { Bot, Braces, Download, GripVertical, Plus, RefreshCw, Save, Trash2, Upload } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { normalizeTerminalFontFamily } from "@/lib/terminalFontFamily";
 import {
   STATUSLINE_PREVIEW_PAYLOAD,
   type StatuslineCatalogEntry,
@@ -118,6 +119,8 @@ function ClaudeStatuslineEditor({
   reloadToken: number;
 }) {
   const { language, t } = useI18n();
+  const terminalFontFamily = useSettingsStore((state) => state.fontFamily);
+  const normalizedTerminalFontFamily = useMemo(() => normalizeTerminalFontFamily(terminalFontFamily), [terminalFontFamily]);
   const [settings, setSettings] = useState<StatuslineSettings | null>(null);
   const [status, setStatus] = useState<StatuslineStatus | null>(null);
   const [catalog, setCatalog] = useState<StatuslineCatalogEntry[]>([]);
@@ -392,7 +395,7 @@ function ClaudeStatuslineEditor({
             data={settings.lines.map((_, index) => ({ value: String(index), label: t("settings.statusline.line").replace("{line}", String(index + 1)) }))}
             mb="md"
           />
-          <ScrollArea h={540} type="auto" offsetScrollbars scrollbarSize={8}>
+          <ScrollArea.Autosize mah={540} type="auto" offsetScrollbars scrollbarSize={8}>
             {groupedCatalog.length > 0 ? (
               <Accordion
                 multiple
@@ -431,7 +434,7 @@ function ClaudeStatuslineEditor({
             ) : (
               <Text size="sm" c="var(--on-surface-variant)">{t("settings.statusline.catalogEmpty")}</Text>
             )}
-          </ScrollArea>
+          </ScrollArea.Autosize>
         </Card>
 
         <Stack gap="md">
@@ -440,13 +443,13 @@ function ClaudeStatuslineEditor({
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleWidgetDragEnd}>
               <Stack gap="sm" mt="sm">
                 {settings.lines.map((line, lineIndex) => (
-                  <StatuslineLayoutLine key={lineIndex} lineIndex={lineIndex} itemIds={line.map((item) => item.id)} active={activeLineIndex === lineIndex} onClick={() => setActiveLineIndex(lineIndex)}>
+                  <StatuslineLayoutLine key={lineIndex} lineIndex={lineIndex} itemIds={line.map((item) => item.id)} active={activeLineIndex === lineIndex} onClick={() => { setActiveLineIndex(lineIndex); setSelectedId(null); }}>
                     <Text size="xs" c="var(--on-surface-variant)" mb={6}>{t("settings.statusline.line").replace("{line}", String(lineIndex + 1))}</Text>
                     <Group gap={6} align="stretch">
                       {line.map((item) => {
                         const entry = catalog.find((candidate) => candidate.widgetType === item.type);
                         const label = entry ? (language === "zh-CN" ? entry.zhName : entry.enName) : item.type;
-                        return <SortableWidgetChip key={item.id} item={item} label={label} selected={selectedId === item.id} removeLabel={t("settings.statusline.removeComponent").replace("{name}", label)} onSelect={() => { setSelectedId(item.id); setActiveLineIndex(lineIndex); }} onRemove={() => removeWidget(item.id)} />;
+                        return <SortableWidgetChip key={item.id} item={item} label={label} selected={selectedId === item.id} removeLabel={t("settings.statusline.removeComponent").replace("{name}", label)} onSelect={() => { setSelectedId((current) => current === item.id ? null : item.id); setActiveLineIndex(lineIndex); }} onRemove={() => removeWidget(item.id)} />;
                       })}
                       {line.length === 0 && <Text size="xs" c="var(--on-surface-variant)">{t("settings.statusline.dropHere")}</Text>}
                     </Group>
@@ -485,9 +488,9 @@ function ClaudeStatuslineEditor({
             <Switch label={t("settings.statusline.powerline")} checked={settings.powerline.enabled} onChange={(event) => setPowerlineEnabled(event.currentTarget.checked)} />
             <Switch label={t("settings.statusline.powerlineAutoAlign")} checked={settings.powerline.autoAlign} disabled={!settings.powerline.enabled} onChange={(event) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, autoAlign: event.currentTarget.checked } }))} />
             <Switch label={t("settings.statusline.powerlineContinueTheme")} checked={settings.powerline.continueThemeAcrossLines} disabled={!settings.powerline.enabled} onChange={(event) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, continueThemeAcrossLines: event.currentTarget.checked } }))} />
-            <Select label={t("settings.statusline.powerlineSeparator")} data={POWERLINE_SEPARATORS} disabled={!settings.powerline.enabled} value={settings.powerline.separators[0] ?? "\ue0b0"} onChange={(value) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, separators: [value ?? "\ue0b0"], separatorInvertBackground: [false] } }))} />
-            <Select label={t("settings.statusline.powerlineStartCap")} data={POWERLINE_START_CAPS} disabled={!settings.powerline.enabled} value={settings.powerline.startCaps[0] ?? ""} onChange={(value) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, startCaps: value ? [value] : [] } }))} />
-            <Select label={t("settings.statusline.powerlineEndCap")} data={POWERLINE_END_CAPS} disabled={!settings.powerline.enabled} value={settings.powerline.endCaps[0] ?? ""} onChange={(value) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, endCaps: value ? [value] : [] } }))} />
+            <Select label={t("settings.statusline.powerlineSeparator")} data={POWERLINE_SEPARATORS} disabled={!settings.powerline.enabled} value={settings.powerline.separators[0] ?? "\ue0b0"} styles={{ input: { fontFamily: normalizedTerminalFontFamily } }} renderOption={({ option }) => <Text size="sm" ff={normalizedTerminalFontFamily}>{option.label}</Text>} onChange={(value) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, separators: [value ?? "\ue0b0"], separatorInvertBackground: [false] } }))} />
+            <Select label={t("settings.statusline.powerlineStartCap")} data={POWERLINE_START_CAPS} disabled={!settings.powerline.enabled} value={settings.powerline.startCaps[0] ?? ""} styles={{ input: { fontFamily: normalizedTerminalFontFamily } }} renderOption={({ option }) => <Text size="sm" ff={normalizedTerminalFontFamily}>{option.label}</Text>} onChange={(value) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, startCaps: value ? [value] : [] } }))} />
+            <Select label={t("settings.statusline.powerlineEndCap")} data={POWERLINE_END_CAPS} disabled={!settings.powerline.enabled} value={settings.powerline.endCaps[0] ?? ""} styles={{ input: { fontFamily: normalizedTerminalFontFamily } }} renderOption={({ option }) => <Text size="sm" ff={normalizedTerminalFontFamily}>{option.label}</Text>} onChange={(value) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, endCaps: value ? [value] : [] } }))} />
             <Select label={t("settings.statusline.powerlineTheme")} data={POWERLINE_THEMES} disabled={!settings.powerline.enabled} value={settings.powerline.theme ?? "custom"} onChange={(value) => updateSettings((current) => ({ ...current, powerline: { ...current.powerline, theme: value ?? "custom" } }))} />
             <Switch label={t("settings.statusline.minimalist")} checked={settings.minimalistMode} onChange={(event) => updateSettings((current) => ({ ...current, minimalistMode: event.currentTarget.checked }))} />
             <TextInput label={t("settings.statusline.separator")} value={settings.defaultSeparator ?? ""} onChange={(event) => updateSettings((current) => ({ ...current, defaultSeparator: event.currentTarget.value || undefined }))} />

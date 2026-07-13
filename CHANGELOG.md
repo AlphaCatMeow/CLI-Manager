@@ -9,7 +9,7 @@
 - **Codex 预览还原度修正**：Codex 实时预览按原生 footer 的语义分组使用终端主题色渲染项目，分隔符使用弱化色，并将内容区收敛为单行底栏高度；示例模型、会话 ID、路径、运行状态和 Fast 状态同步贴近实际 Codex TUI。
 - **Claude Code 组件库补全展示**：组件库按核心、Git、Jujutsu、Token/缓存、上下文、会话/额度、环境/Worktree、自定义和布局分类展示 ccstatusline-zh v2.2.23 的全部 85 个组件，补充组件 ID、分类数量、总数和搜索空状态，避免长扁平列表造成组件缺失的错觉。
 - **Claude 状态栏布局交互优化**：Claude 与 Codex 状态栏排序改用项目现有的 `@dnd-kit` Pointer Events 方案，绕过 Tauri Windows 文件拖放对 HTML5 `draggable` 的接管；Claude 组件支持同行排序、跨行移动和空行落点，不再出现禁止拖放图标。
-- **Claude 状态栏预览与组件库修正**：抽取供应商与状态栏共用的 `SettingsListItem`，组件库使用与 cc-switch 供应商列表一致的边框、悬浮和信息层级，并按分类折叠展示（仅核心默认展开，搜索时自动展开命中分类）；布局选中行改为加深边框而非深色填充。实时预览移动到内置状态栏运行时下方，使用完整横向空间并为 Powerline 私有字形提供安全三角符号回退，避免字体缺少 `/` 时乱码或长状态栏显示不完整。
+- **Claude 状态栏预览与组件库修正**：抽取供应商与状态栏共用的 `SettingsListItem`，组件库使用与 cc-switch 供应商列表一致的边框、悬浮和信息层级，并按分类折叠展示（仅核心默认展开，搜索时自动展开命中分类）；布局选中行改为加深边框而非深色填充。组件库高度按内容自适应，组件属性可切回全局设置；实时预览使用当前终端字体保留真实 Powerline 字形，补齐 ANSI256/TrueColor 解析并按 `colorLevel` 对齐 ccstatusline-zh v2.2.23 主题色板。
 - **状态栏多配置与整库迁移**：Claude Code 与 Codex 分别支持保存多份命名状态栏配置、保存即应用、复制、重命名、切换和非当前配置删除；首次启用会读取用户现有配置，外部修改可另存为新配置。支持将两端配置库整体导出为版本化 JSON，并在导入时逐项处理同名冲突，配置内容不包含供应商密钥或其他 CLI 设置。
 - **状态栏预览与 Powerline 完整配置**：Codex 实时预览移动到“Codex 原生状态栏”标题下方；Claude/Codex 预览增加本地化状态名称。颜色属性升级为颜色块与中英双语名称；Claude 补齐 Powerline 字体检测/确认安装、组件对齐、跨行主题延续、分隔符、起止端帽，以及 Nord、Nord Aurora、Monokai、Solarized、Minimal、Dracula、Catppuccin、Gruvbox、One Dark、Tokyo Night 和 Custom 主题。
 

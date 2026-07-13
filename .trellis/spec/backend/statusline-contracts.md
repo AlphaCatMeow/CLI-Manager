@@ -42,6 +42,7 @@ Claude invokes the runtime as:
 - Preview and live execution must both call the same Rust `render` function.
 - Preview may add localized `name: value` labels through the shared render pipeline; live `__statusline` output must remain unlabeled.
 - Powerline rendering owns theme palettes, separators, start/end caps, optional inverted separator backgrounds, widget auto-alignment and cross-line theme continuation.
+- Built-in Powerline themes select the ccstatusline-zh v2.2.23 ANSI16, ANSI256 or TrueColor palette from `colorLevel`; live output and preview must receive the same escape sequences.
 - Font installation is user-triggered only, writes to the current user's font directory, hides helper windows, has a bounded timeout, and cleans its temporary clone.
 - Legacy import reads `<home>/.config/ccstatusline/settings.json`, upgrades `git-pr` to `git-review`, writes only the CLI-Manager copy, and never modifies the legacy file.
 - Claude config path uses `CLAUDE_CONFIG_DIR` when non-empty, otherwise `<home>/.claude/settings.json`.

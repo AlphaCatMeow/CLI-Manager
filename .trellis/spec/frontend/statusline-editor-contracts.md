@@ -15,6 +15,7 @@
 
 - Claude and Codex drafts, selected items and preview state are independent.
 - Claude catalog additions target the explicitly active line; every placed widget has a direct remove action, and selected widgets can move across lines without requiring drag-and-drop.
+- Clicking the selected Claude widget again or clicking empty layout space clears the selection and restores global properties.
 - Claude/Codex statusline sorting must use the project's `@dnd-kit` PointerSensor pattern, not HTML5 `draggable`; Tauri `dragDropEnabled` intercepts native WebView drag/drop on Windows. Claude dragging must accept empty line containers and show the current target line before drop.
 - Tool switching must not copy or normalize one tool's configuration into the other.
 - Claude and Codex keep independent named profile lists. Switching one tool's active profile must not affect the other tool.
@@ -22,6 +23,7 @@
 - On first adoption, the editor displays the parsed actual configuration instead of replacing it with defaults. Valid external drift is offered as a new profile and never silently overwrites the active snapshot.
 - Whole-library import/export is shared at page level. Import conflicts are resolved per profile before a single commit, and import never auto-switches the active profile.
 - Claude preview consumes backend ANSI output; Codex preview consumes ordered official placeholder values.
+- Preview preserves Powerline private-use glyphs, uses the normalized terminal font family, and parses ANSI16, ANSI256 and TrueColor sequences without substituting plain triangle characters.
 - Preview values include localized status names for explanation only; this must not imply that Codex native labels are configurable or change live output.
 - Codex preview is rendered directly below the Codex native statusline title/path header and before the selected/available item editors.
 - Color selectors show a swatch plus persistent Chinese and English names. Powerline settings expose font status/install, enablement, alignment, theme continuation, separator, caps and theme selection.
