@@ -451,6 +451,12 @@ async function ensureProjectsForExternalSessionGroups(
   shell?: string
 ): Promise<number> {
   if (groups.length === 0) return 0;
+  // 项目列表未加载完成时禁止物化：此时 findContainingProject 会把已有项目误判为
+  // 孤儿会话，导致重复创建分组/项目（如崩溃重启后 SQLite 尚未就绪的场景）。
+  if (!useProjectStore.getState().loaded) {
+    logWarn("Skip materializing external sessions: project store not loaded yet");
+    return 0;
+  }
 
   const projectStore = useProjectStore.getState();
   let projects = projectStore.projects;
@@ -644,7 +650,12 @@ export const useExternalSessionSyncStore = create<ExternalSessionSyncStore>((set
       ignoredKeys,
       syncedSessions,
     });
-    void ensureProjectsForSyncedSessions(syncedSessions).catch((err) => {
+    void (async () => {
+      // 先确保项目列表加载完成，再把已同步的外部会话物化为分组/项目，
+      // 否则空项目列表会让所有会话被当作孤儿而重复建组。
+      await ensureProjectStoreLoaded("startup");
+      await ensureProjectsForSyncedSessions(syncedSessions);
+    })().catch((err) => {
       logWarn("Failed to materialize synced external sessions as projects", err);
     });
   },
