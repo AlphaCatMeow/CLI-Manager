@@ -868,7 +868,9 @@ export function HookSettingsPage() {
             </Group>
           </Group>
 
-          <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="md">
+          {claudeHookBridgeEnabled && (
+            <>
+              <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="md">
             <HookCard
               icon={<Play />}
               label={claudeSessionStartLabel}
@@ -1042,7 +1044,9 @@ export function HookSettingsPage() {
             <Button variant="default" color="gray" size="xs" onClick={() => void refreshStatus()} disabled={loading || claudeWorking || codexWorking}>
               {loading ? text("刷新中...", "Refreshing...") : text("刷新状态", "Refresh Status")}
             </Button>
-          </Group>
+              </Group>
+            </>
+          )}
         </Stack>
       </section>
 
@@ -1069,7 +1073,9 @@ export function HookSettingsPage() {
             </Group>
           </Group>
 
-          <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="md">
+          {codexHookBridgeEnabled && (
+            <>
+              <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="md">
             <HookCard
               icon={<Play />}
               label={codexSessionStartLabel}
@@ -1246,7 +1252,9 @@ export function HookSettingsPage() {
             <Button variant="default" color="gray" size="xs" onClick={() => void refreshStatus()} disabled={loading || claudeWorking || codexWorking}>
               {loading ? text("刷新中...", "Refreshing...") : text("刷新状态", "Refresh Status")}
             </Button>
-          </Group>
+              </Group>
+            </>
+          )}
         </Stack>
       </section>
     </Stack>

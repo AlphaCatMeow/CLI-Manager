@@ -24,6 +24,7 @@ interface Settings {
 ### 3. Contracts
 
 - Disabled tools are excluded from the sidebar Hook health aggregation and one-click reinstall target list.
+- A disabled tool keeps only its settings-section header, enable switch, and status pill visible; module cards, paths, install notes, and install/remove actions are not rendered until the bridge is enabled again.
 - When both tools are disabled, the sidebar light is neutral/gray and clicking it only opens Hook settings.
 - Claude auto-repair may be requested only when `claudeHookBridgeEnabled && claudeHookAutoRepairKnownInstalled`.
 - Stats availability is true only when at least one enabled tool reports `status === "installed"`.
@@ -43,6 +44,7 @@ interface Settings {
 ### 5. Good/Base/Bad Cases
 
 - Good: a Claude-only user disables Codex and gets a green health light when Claude is fully installed.
+- Good: disabling Codex immediately collapses its detail content; enabling it again restores the detail content from the existing status and local UI state.
 - Base: an existing user upgrades with no stored enable settings; both bridges remain enabled.
 - Bad: a disabled Codex bridge remains part of the shared health aggregation and keeps the light yellow.
 - Bad: disabling Claude still sends `autoRepair: true` and rewrites Claude settings.
@@ -51,6 +53,7 @@ interface Settings {
 
 - TypeScript type-check after settings fields, migration, or status filtering changes.
 - Manual settings persistence check across restart for both switches.
+- Manual settings UI check: disabling either bridge collapses only that bridge's detail content and enabling it restores the content.
 - Manual health matrix: Claude-only, Codex-only, both enabled, both disabled, and partial enabled installation.
 - Manual terminal check: both disabled must not inject the Hook bridge environment into new PTY sessions.
 
