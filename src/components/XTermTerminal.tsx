@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Terminal, type IBufferCell, type IBufferLine, type ILink, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ImageAddon } from "@xterm/addon-image";
-import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
+import { SearchAddon } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -31,6 +31,7 @@ import { normalizeTerminalFontFamily } from "../lib/terminalFontFamily";
 import { decodeOscPathValue, parseOsc7Cwd } from "../lib/terminalOscPath";
 import { findTerminalFileLinks, resolveTerminalFileSystemPath } from "../lib/terminalFileLinks";
 import { findProjectByPath, findWorktreeByPath } from "../lib/terminalProject";
+import { useTerminalSearch } from "../hooks/useTerminalSearch";
 import { getTerminalCellWidth, resolveCursorIndexFromCellOffset } from "../lib/terminalCellWidth";
 import {
   clampTextCursorIndex,
@@ -218,11 +219,6 @@ type XtermBufferLineApiView = IBufferLine & {
   _line?: MutableXtermLine;
 };
 
-interface SearchResultState {
-  resultIndex: number;
-  resultCount: number;
-}
-
 interface TerminalSuggestionGhostState {
   suffix: string;
   left: number;
@@ -243,8 +239,6 @@ interface CodexImeDebugState {
   lastNearCompositionFingerprint: string | null;
   lastNearCompositionAt: number;
 }
-
-const EMPTY_SEARCH_RESULT: SearchResultState = { resultIndex: 0, resultCount: 0 };
 
 const summarizeTextForDiagnostics = (value: string): TextDiagnosticSummary => {
   let hash = 0;
@@ -477,7 +471,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const { t } = useI18n();
   const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
@@ -537,10 +530,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const hiddenForThisSession = useTerminalStore((s) => s.hiddenBackgroundSessionIds.has(sessionId));
 
   const [assetUrl, setAssetUrl] = useState<string | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [searchMatched, setSearchMatched] = useState<boolean | null>(null);
-  const [searchResult, setSearchResult] = useState<SearchResultState>(EMPTY_SEARCH_RESULT);
   const [menuState, setMenuState] = useState<{ x: number; y: number; hasSelection: boolean } | null>(null);
   const [inactiveReplayPending, setInactiveReplayPending] = useState(false);
   const [visibilityRestorePending, setVisibilityRestorePending] = useState(false);
@@ -614,15 +603,36 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     };
   }, [background.imagePath]);
 
-  useEffect(() => {
-    if (!searchOpen) return;
-    const rafId = window.requestAnimationFrame(() => {
-      searchInputRef.current?.focus();
-      searchInputRef.current?.select();
-    });
-    return () => window.cancelAnimationFrame(rafId);
-  }, [searchOpen]);
+  const isTransparent = background.enabled && background.imagePath !== null && !hiddenForThisSession;
+  const isTransparentRef = useRef(isTransparent);
+  isTransparentRef.current = isTransparent;
+  const terminalTheme = getTerminalTheme(terminalThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
+  const isLightTerminalRef = useRef(isLightTerminalTheme(terminalTheme));
+  isLightTerminalRef.current = isLightTerminalTheme(terminalTheme);
+  const effectiveFontFamily = normalizeTerminalFontFamily(fontFamily);
 
+  // Derive search decoration colors before calling useTerminalSearch
+  const backgroundColor = getTerminalBackground(terminalThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
+  const searchDecorationColors = {
+    matchBackground: normalizeHexColor(terminalTheme.yellow, "#e0af68"),
+    activeMatchBackground: normalizeHexColor(terminalTheme.blue, "#7aa2f7"),
+    accent: normalizeHexColor(terminalTheme.cursor, normalizeHexColor(terminalTheme.foreground, "#d8dee9")),
+  };
+
+  const {
+    searchOpen,
+    searchTerm,
+    searchMatched,
+    searchResult,
+    searchInputRef,
+    handleSearchResults,
+    runTerminalSearch,
+    handleSearchTermChange,
+    openSearch,
+    closeTerminalSearch,
+  } = useTerminalSearch(terminalRef, searchAddonRef, searchDecorationColors);
+
+  // Clear suggestions when search opens (must come after hook call to read searchOpen)
   useEffect(() => {
     if (terminalInputSuggestionsEnabled && !searchOpen) return;
     suggestionRef.current = null;
@@ -633,14 +643,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     suggestionRef.current = null;
     setSuggestionGhost(null);
   }, [terminalInputSuggestionProvider]);
-
-  const isTransparent = background.enabled && background.imagePath !== null && !hiddenForThisSession;
-  const isTransparentRef = useRef(isTransparent);
-  isTransparentRef.current = isTransparent;
-  const terminalTheme = getTerminalTheme(terminalThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
-  const isLightTerminalRef = useRef(isLightTerminalTheme(terminalTheme));
-  isLightTerminalRef.current = isLightTerminalTheme(terminalTheme);
-  const effectiveFontFamily = normalizeTerminalFontFamily(fontFamily);
 
   const clearHiddenWebglDisposeTimer = () => {
     if (webglDisposeTimerRef.current === null) return;
@@ -1627,9 +1629,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     terminal.open(containerRef.current);
     // 注册定时节流落盘的快照来源：让崩溃/强杀也能恢复到最近一次落盘的画面。
     const unregisterSnapshotSource = registerTerminalSnapshotSource(sessionId, () => serializeAddon.serialize());
-    const searchResultDisposable = searchAddon.onDidChangeResults((event) => {
-      setSearchResult({ resultIndex: event.resultIndex, resultCount: event.resultCount });
-    });
+    const searchResultDisposable = searchAddon.onDidChangeResults(handleSearchResults);
 
     let webglAddon: WebglAddon | null = null;
     if (!(lowMemoryMode && !isVisibleRef.current) && canUseWebglRenderer(baseTheme)) {
@@ -2437,11 +2437,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       const key = e.key.toLowerCase();
       if (key === "f") {
         e.preventDefault();
-        setSearchOpen(true);
-        window.requestAnimationFrame(() => {
-          searchInputRef.current?.focus();
-          searchInputRef.current?.select();
-        });
+        openSearch();
         return false;
       }
       if (key === "v") {
@@ -3508,7 +3504,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     };
   }, [sessionId]);
 
-  const backgroundColor = getTerminalBackground(terminalThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
   const backgroundOverlayColor = getTerminalBackgroundOverlayColor(terminalTheme);
   const showBackgroundImage = isTransparent && assetUrl !== null;
   terminalColorRepliesRef.current = {
@@ -3518,8 +3513,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const searchForeground = normalizeHexColor(terminalTheme.foreground, "#d8dee9");
   const searchBackground = normalizeHexColor(terminalTheme.background, backgroundColor);
   const searchAccent = normalizeHexColor(terminalTheme.cursor, searchForeground);
-  const searchMatchBackground = normalizeHexColor(terminalTheme.yellow, "#e0af68");
-  const searchActiveBackground = normalizeHexColor(terminalTheme.blue, "#7aa2f7");
   const searchResultLabel = !searchTerm
     ? ""
     : searchResult.resultCount > 0 && searchResult.resultIndex >= 0
@@ -3548,48 +3541,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     backgroundColor: hexToRgba(searchForeground, 0.08, "rgba(255, 255, 255, 0.08)"),
     borderColor: hexToRgba(searchForeground, 0.16, "rgba(255, 255, 255, 0.16)"),
     color: searchForeground,
-  };
-
-  const createSearchOptions = (incremental = false): ISearchOptions => ({
-    incremental,
-    decorations: {
-      matchBackground: searchMatchBackground,
-      matchBorder: searchMatchBackground,
-      matchOverviewRuler: searchMatchBackground,
-      activeMatchBackground: searchActiveBackground,
-      activeMatchBorder: searchAccent,
-      activeMatchColorOverviewRuler: searchAccent,
-    },
-  });
-
-  const clearTerminalSearch = () => {
-    searchAddonRef.current?.clearDecorations();
-    setSearchMatched(null);
-    setSearchResult(EMPTY_SEARCH_RESULT);
-  };
-
-  const runTerminalSearch = (term: string, direction: "next" | "previous", incremental = false) => {
-    const searchAddon = searchAddonRef.current;
-    if (!term || !searchAddon) {
-      clearTerminalSearch();
-      return;
-    }
-    const matched = direction === "previous"
-      ? searchAddon.findPrevious(term, createSearchOptions(false))
-      : searchAddon.findNext(term, createSearchOptions(incremental));
-    setSearchMatched(matched);
-  };
-
-  const handleSearchTermChange = (value: string) => {
-    setSearchTerm(value);
-    runTerminalSearch(value, "next", true);
-  };
-
-  const closeTerminalSearch = () => {
-    setSearchOpen(false);
-    setSearchTerm("");
-    clearTerminalSearch();
-    window.requestAnimationFrame(() => terminalRef.current?.focus());
   };
 
   const closeContextMenu = () => setMenuState(null);
