@@ -682,6 +682,17 @@ fn format_number(value: f64) -> String {
     }
 }
 
+fn format_context_number(value: f64) -> String {
+    let formatted = format_number(value);
+    if let Some(value) = formatted.strip_suffix(".0k") {
+        format!("{value}k")
+    } else if let Some(value) = formatted.strip_suffix(".0m") {
+        format!("{value}m")
+    } else {
+        formatted
+    }
+}
+
 fn current_usage(payload: &Value, key: &str) -> f64 {
     value_at(payload, &["context_window", "current_usage"])
         .and_then(Value::as_object)
@@ -848,12 +859,19 @@ fn render_widget_raw(item: &WidgetItem, payload: &Value) -> Option<String> {
             }
         }
         "context-bar" => {
-            let pct = if context_size > 0.0 {
-                (used * 10.0 / context_size).clamp(0.0, 10.0) as usize
+            let percentage = if context_size > 0.0 {
+                (used * 100.0 / context_size).clamp(0.0, 100.0)
             } else {
-                0
+                0.0
             };
-            format!("{}{}", "█".repeat(pct), "░".repeat(10 - pct))
+            let filled = (percentage * 16.0 / 100.0).floor() as usize;
+            format!(
+                "[{}{}] {}/{} ({percentage:.0}%)",
+                "█".repeat(filled),
+                "░".repeat(16 - filled),
+                format_context_number(used),
+                format_context_number(context_size),
+            )
         }
         "session-cost" => format!("${:.2}", number_at(payload, &["cost", "total_cost_usd"])),
         "session-clock" => {
@@ -884,7 +902,9 @@ fn render_widget_raw(item: &WidgetItem, payload: &Value) -> Option<String> {
                 String::new()
             }
         }
-        "git-branch" => git_branch(payload).unwrap_or_default(),
+        "git-branch" => git_branch(payload)
+            .map(|branch| format!("⎇ {branch}"))
+            .unwrap_or_default(),
         "git-status" => format!("+{staged} *{unstaged} ?{untracked} !{conflicts}"),
         "git-changes" => format!("{}", staged + unstaged + untracked),
         "git-staged-files" => staged.to_string(),
@@ -1157,12 +1177,32 @@ fn apply_style(text: &str, item: &WidgetItem) -> String {
 }
 
 fn preview_label(widget_type: &str, language: &str) -> Option<&'static str> {
-    if matches!(widget_type, "custom-text" | "custom-symbol" | "separator" | "flex-separator") {
+    if matches!(
+        widget_type,
+        "custom-text" | "custom-symbol" | "separator" | "flex-separator" | "git-branch"
+    ) {
         return None;
     }
-    catalog().into_iter().find(|entry| entry.widget_type == widget_type).map(|entry| {
-        if language == "zh-CN" { entry.zh_name } else { entry.en_name }
-    })
+    if language == "zh-CN" {
+        match widget_type {
+            "output-style" => return Some("风格"),
+            "thinking-effort" => return Some("思考"),
+            "tokens-total" => return Some("合计"),
+            "context-bar" => return Some("上下文"),
+            "session-cost" => return Some("费用"),
+            _ => {}
+        }
+    }
+    catalog()
+        .into_iter()
+        .find(|entry| entry.widget_type == widget_type)
+        .map(|entry| {
+            if language == "zh-CN" {
+                entry.zh_name
+            } else {
+                entry.en_name
+            }
+        })
 }
 
 fn render_internal(settings: &StatuslineSettings, payload: &Value, preview_language: Option<&str>) -> Result<String, String> {
@@ -1205,7 +1245,13 @@ fn render_internal(settings: &StatuslineSettings, payload: &Value, preview_langu
                     let rendered_separator = if invert { styled_segment(separator, bg, previous_bg.as_deref(), false) } else { styled_segment(separator, previous_bg.as_deref(), bg, false) };
                     text.push_str(&rendered_separator);
                 }
-                text.push_str(&styled_segment(&format!(" {value} "), fg, bg, item.bold.unwrap_or(false)));
+                let left_padding = if index == 0 { "   " } else { " " };
+                text.push_str(&styled_segment(
+                    &format!("{left_padding}{value} "),
+                    fg,
+                    bg,
+                    item.bold.unwrap_or(false),
+                ));
                 previous_bg = bg.map(str::to_string);
                 global_index += 1;
             }
@@ -1257,7 +1303,7 @@ fn render_internal(settings: &StatuslineSettings, payload: &Value, preview_langu
 }
 
 pub fn render(settings: &StatuslineSettings, payload: &Value) -> Result<String, String> {
-    render_internal(settings, payload, None)
+    render_internal(settings, payload, Some("zh-CN"))
 }
 
 pub fn render_preview(settings: &StatuslineSettings, payload: &Value, language: &str) -> Result<String, String> {
@@ -1603,11 +1649,47 @@ mod tests {
         assert!(lines[1].contains("+2 *4 ?1 !0"));
     }
     #[test]
-    fn preview_adds_labels_without_changing_live_output() {
-        let settings = StatuslineSettings { lines: vec![vec![widget("1", "model", None)]], ..Default::default() };
+    fn live_and_preview_outputs_include_localized_labels() {
+        let settings = StatuslineSettings {
+            lines: vec![vec![widget("1", "model", None)]],
+            ..Default::default()
+        };
         let payload = json!({"model":{"display_name":"Opus"}});
-        assert_eq!(render(&settings, &payload).unwrap(), "Opus");
-        assert!(render_preview(&settings, &payload, "zh-CN").unwrap().contains("模型: Opus"));
+        assert!(render(&settings, &payload).unwrap().contains("模型: Opus"));
+        assert!(render_preview(&settings, &payload, "en-US")
+            .unwrap()
+            .contains("Model: Opus"));
+    }
+    #[test]
+    fn context_bar_includes_usage_limit_and_percentage() {
+        let settings = StatuslineSettings {
+            lines: vec![vec![widget("1", "context-bar", None)]],
+            ..Default::default()
+        };
+        let payload = json!({
+            "context_window": {
+                "context_window_size": 200000,
+                "current_usage": {
+                    "input_tokens": 25000,
+                    "output_tokens": 5000,
+                    "cache_read_input_tokens": 10000,
+                    "cache_creation_input_tokens": 0
+                }
+            }
+        });
+        assert_eq!(
+            render(&settings, &payload).unwrap(),
+            "上下文: [███░░░░░░░░░░░░░] 40k/200k (20%)"
+        );
+    }
+    #[test]
+    fn git_branch_uses_branch_symbol_without_extra_label() {
+        let settings = StatuslineSettings {
+            lines: vec![vec![widget("1", "git-branch", None)]],
+            ..Default::default()
+        };
+        let payload = json!({"preview_git":{"branch":"master"}});
+        assert_eq!(render(&settings, &payload).unwrap(), "⎇ master");
     }
     #[test]
     fn ansi_color_supports_extended_formats() {
@@ -1625,7 +1707,7 @@ mod tests {
         let output = render(&settings, &json!({"model":{"display_name":"Opus"},"effort":{"level":"high"}})).unwrap();
         assert!(output.contains('['));
         assert!(output.contains(']'));
-        assert!(output.contains("Opus"));
+        assert!(output.contains("   模型: Opus "));
         assert!(output.contains("high"));
     }
     #[test]

@@ -289,7 +289,9 @@ Frontend project override shape:
   - lowercase and hyphenated variants by normalizing key names before matching.
 - **Common config merge**: read TOML text from `settings.common_config_codex` and merge it
   into the selected provider JSON's `config` TOML string before parsing. Matching tables
-  are combined without duplicate headers, and provider assignments override common values.
+  are combined without duplicate headers, including semantically equivalent quoted table
+  keys written with TOML basic strings or literal strings; provider assignments override
+  common values.
 - **Profile content**: when merged `settings_config.config` contains a valid selected
   `model_provider` table, preserve the complete non-secret TOML (including fields such as
   `wire_api`, verbosity, feature flags, and future Codex settings). Reuse its `env_key`; if

@@ -25,7 +25,7 @@
 - Claude preview consumes backend ANSI output; Codex preview consumes ordered official placeholder values.
 - Claude install/uninstall calls pass `ccSwitchDbPath: settings.ccSwitchDbPath ?? undefined`. A returned `invalidDb`, `unavailable` or `syncFailed` state shows a localized warning while keeping the successful local install/uninstall result.
 - Preview preserves Powerline private-use glyphs, uses the normalized terminal font family, and parses ANSI16, ANSI256 and TrueColor sequences without substituting plain triangle characters. Powerline Select dropdown options and selected input values must both use a compatible symbol font; selected inputs need a targeted `!important` override because the global UI font rule also targets `input` elements.
-- Preview values include localized status names for explanation only; this must not imply that Codex native labels are configurable or change live output.
+- Preview values include localized status names. Claude live output uses Chinese short labels from the shared Rust renderer; Codex native labels remain non-configurable and are not changed by the preview.
 - Codex preview is rendered directly below the Codex native statusline title/path header and before the selected/available item editors.
 - Color selectors show a swatch plus persistent Chinese and English names. Powerline settings expose font status/install, enablement, alignment, theme continuation, separator, caps and theme selection.
 - Successful Powerline font installation shows a localized restart-CLI-Manager notice so the system and WebView font caches can fully refresh.

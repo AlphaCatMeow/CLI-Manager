@@ -40,8 +40,10 @@ Claude invokes the runtime as:
 - `__statusline` must branch before Tauri/WebView initialization, consume one JSON payload from stdin, print rendered text to stdout, and exit.
 - Built-in configuration lives at `<home>/.cli-manager/statusline/settings.json` and keeps ccstatusline v3 field names for import compatibility.
 - Preview and live execution must both call the same Rust `render` function.
-- Preview may add localized `name: value` labels through the shared render pipeline; live `__statusline` output must remain unlabeled.
+- Preview adds localized `name: value` labels through the shared render pipeline; live `__statusline` output uses Chinese short labels for data widgets. Git branch output uses `⎇ <branch>` without an additional text label.
+- The `context-bar` widget renders a 16-cell bar followed by compact used/limit values and the used percentage: `[bar] used/limit (percentage)`.
 - Powerline rendering owns theme palettes, separators, start/end caps, optional inverted separator backgrounds, widget auto-alignment and cross-line theme continuation.
+- The first Powerline segment has three leading spaces and one trailing space; later segments keep one space on both sides. This preserves a clear left inset without widening every separator gap.
 - Built-in Powerline themes select the ccstatusline-zh v2.2.23 ANSI16, ANSI256 or TrueColor palette from `colorLevel`; live output and preview must receive the same escape sequences.
 - Font installation is user-triggered only and writes the bundled `Symbols Nerd Font Mono` resource to the current user's font directory. It must not require Git or network access.
 - Powerline font status must reflect a font family discoverable by the operating system, not merely a font file present on disk. Windows installation registers and activates the selected font and broadcasts `WM_FONTCHANGE`; Linux refreshes the user font cache with `fc-cache`; macOS installs into `~/Library/Fonts`. The terminal font stack must include the installed Powerline family as a glyph fallback.
@@ -101,6 +103,8 @@ Claude invokes the runtime as:
 - Default configuration validates.
 - Legacy aliases migrate without deleting unknown widget fields.
 - Fixed payload assertions cover model, token and layout output.
+- Fixed payload assertions cover live Chinese labels, Git branch symbol output and the combined context bar format.
+- Powerline tests assert the first segment's three-space left inset and the compact single-space padding elsewhere.
 - Invalid JSON/root/line count never overwrites the source file.
 - Install/uninstall tests assert unrelated Claude fields survive and third-party commands are preserved.
 - Common-config tests assert install preserves existing fields/Hooks, uninstall removes only `__statusline`, and malformed/third-party values are never overwritten.

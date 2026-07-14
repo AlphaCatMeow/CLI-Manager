@@ -174,6 +174,43 @@ fn split_toml_sections(raw: &str) -> Vec<(Option<String>, Vec<String>)> {
     sections
 }
 
+fn toml_table_identity(header: &str) -> Option<Vec<String>> {
+    let inner = header.strip_prefix('[')?.strip_suffix(']')?.trim();
+    if inner.starts_with('[') || inner.is_empty() {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for ch in inner.chars() {
+        if let Some(active_quote) = quote {
+            current.push(ch);
+            if active_quote == '"' && escaped {
+                escaped = false;
+            } else if active_quote == '"' && ch == '\\' {
+                escaped = true;
+            } else if ch == active_quote {
+                quote = None;
+            }
+        } else if ch == '"' || ch == '\'' {
+            quote = Some(ch);
+            current.push(ch);
+        } else if ch == '.' {
+            parts.push(parse_toml_scalar(current.trim())?);
+            current.clear();
+        } else {
+            current.push(ch);
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    parts.push(parse_toml_scalar(current.trim())?);
+    Some(parts)
+}
+
 fn toml_assignment_keys(lines: &[String]) -> HashSet<String> {
     lines
         .iter()
@@ -189,9 +226,14 @@ fn merge_codex_common_config_toml(common: &str, provider: &str) -> String {
             .as_deref()
             .filter(|header| !header.starts_with("[["))
             .and_then(|header| {
-                provider_sections
-                    .iter()
-                    .position(|(provider_header, _)| provider_header.as_deref() == Some(header))
+                let common_identity = toml_table_identity(header)?;
+                provider_sections.iter().position(|(provider_header, _)| {
+                    provider_header
+                        .as_deref()
+                        .and_then(toml_table_identity)
+                        .as_ref()
+                        == Some(&common_identity)
+                })
             })
             .or_else(|| common_header.is_none().then_some(0));
 
@@ -2173,6 +2215,30 @@ alternate_screen = "always""#,
                 .and_then(Value::as_str),
             Some("sk-provider")
         );
+    }
+
+    #[test]
+    fn merge_provider_settings_matches_equivalent_quoted_toml_tables() {
+        let merged = merge_provider_settings_config(
+            "codex",
+            Some(
+                r#"[hooks.state."C:\\Users\\Administrator\\.codex\\hooks.json:stop:0:0"]
+enabled = true"#,
+            ),
+            r#"{
+                "auth": {"OPENAI_API_KEY": "sk-provider"},
+                "config": "model_provider = \"custom\"\n\n[model_providers.custom]\nbase_url = \"https://provider.example.com/v1\"\n\n[hooks.state.'C:\\Users\\Administrator\\.codex\\hooks.json:stop:0:0']\nenabled = false\n"
+            }"#,
+        )
+        .expect("equivalent TOML table names should merge");
+
+        let config = merged
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("merged config should remain TOML text");
+        assert_eq!(config.matches("hooks.json:stop:0:0").count(), 1);
+        assert!(config.contains("enabled = false"));
+        assert!(!config.contains("enabled = true"));
     }
 
     #[test]

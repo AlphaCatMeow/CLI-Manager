@@ -7,11 +7,16 @@
 - **本地请求日志**：历史用量分析新增“请求日志”页签，直接增量同步本机 Claude/Codex 会话日志中的 usage 事件到 CLI-Manager 自身数据库，支持来源、项目、模型、会话、日期筛选、分页、手动刷新和历史会话跳转；不调用、不读取、不依赖 cc-switch。
 - **ccusage 全屏看板**：ccusage 看板改为应用窗口内全屏布局，重排现有趋势、峰值摘要、Token 构成、热点图和模型排行，不增加数据源、指标或交互功能。
 
+### 设置
+- **Claude Code 状态栏中文标签与上下文组件**：实际状态栏为数据组件增加中文短标签，Git 分支显示 `⎇ <branch>`；上下文进度条升级为 16 格，并在同一组件内显示已用量、上下文上限和百分比；Powerline 首组件左侧保留三个空格，其他间距保持紧凑。
+
 ### 终端
 - **Workspan 自定义名称**：顶层 Workspan 右键菜单新增“重命名工作区”，通过应用内弹窗设置并持久化自定义名称；提交空白名称后恢复单会话终端标题或多会话 `Workspan · N` 默认标题。
 
 ### 修复
+- **Tauri 开发启动修复**：移除仓库根目录误放的 Rust 与 Tauri 配置副本，恢复 CLI 对 `src-tauri` 项目的正确识别，修复 `npm run tauri dev` 在 `cargo metadata` 阶段启动失败。
 - **Codex 供应商通用配置解析修复**：切换 Codex 供应商时按 TOML 合并 `common_config_codex` 与供应商 `config`，不再把 Codex 通用配置误当 JSON 解析，修复 AnyRouter 等供应商提示“配置解析失败、无法应用”。
+- **Codex 供应商重复配置修复**：合并通用配置与供应商配置时按 TOML 键语义识别单双引号等价表头，避免 Hook 状态表被重复写入 profile 并触发 `duplicate key`。
 - **Mantine 全局上下文修复**：在应用根节点挂载 Mantine 主题 Provider 并全局加载组件样式，修复终端工作区渲染应用内输入弹窗时因缺少 `MantineProvider` 导致的“界面渲染失败”。
 - **应用内输入与确认框统一**：状态栏配置命名、导入冲突、未保存内容切换、配置删除、Powerline 字体安装和终端背景移除统一使用应用内主题弹窗，移除 WebView `window.prompt` 与 `window.confirm` 系统式对话框。
 - **Worktree 今日项目用量统计修复**：实时统计按当前 Worktree 实际路径聚合当天用量，不再因只使用历史会话的 `project_key` 而遗漏 Worktree 中产生的 Token 与费用。
@@ -33,11 +38,11 @@
 - **状态栏预览与 Powerline 完整配置**：Codex 实时预览移动到“Codex 原生状态栏”标题下方；Claude/Codex 预览增加本地化状态名称。颜色属性升级为颜色块与中英双语名称；Claude 补齐 Powerline 字体检测/确认安装、组件对齐、跨行主题延续、分隔符、起止端帽，以及 Nord、Nord Aurora、Monokai、Solarized、Minimal、Dracula、Catppuccin、Gruvbox、One Dark、Tokyo Night 和 Custom 主题。
 
 ### 终端
+- **Worktree Tab 标题简化**：Worktree 终端 Tab 仅显示任务名，不再重复显示主项目名称；新建、分屏、历史恢复和范围内新开终端保持一致。
 - **文件路径快捷打开**：终端输出中的 Windows、UNC/WSL UNC 及可转换的 Linux 绝对文件路径支持点击；项目或 Worktree 内文件使用内置编辑器打开，其他文件回退到系统默认应用。
 - **暂时停用鼠标点击输入定位**：由于通用 PTY 无法直接设置 PowerShell、Bash、Claude Code、Codex 等行编辑器的内部光标，长文本定位仍会产生可感知延迟；现取消点击事件注册，保留最短路径定位实现与测试，后续可在具备可靠直接定位方案时重新启用。
 - **Workspan 开发开关**：设置 -> 终端 -> 终端行为新增默认开启的“Workspan开发”。关闭后隐藏顶层 Workspan Tab 栏，恢复单一 Pane 树和 Pane 内终端 Tab；切换时保留活动分屏与全部 PTY，会将其他 Workspan 会话追加到活动 Pane，重新开启后当前布局整体作为一个 Workspan。
 - **Workspan Tab 导航增强**：顶层 Workspan Tab 补齐右键关闭、重命名及批量关闭菜单；Tab 全部可见时隐藏右侧下拉按钮，超过栏位后隐藏原生横向滚动条，并在下拉列表中只展示当前视口外或被裁剪的工作区；切换隐藏工作区后，当前激活 Tab 会自动滚入可视区域。
-- **Worktree Tab 标题简化**：Worktree 终端 Tab 仅显示任务名，不再重复显示主项目名称；新建、分屏、历史恢复和范围内新开终端保持一致。
 - **合并侧边面板 Tab 联动**：合并实时统计、系统资源、时间轴、Git 变更与文件面板时，顶部 Tab 跟随终端工具栏显隐开关过滤；当前 Tab 被关闭后自动切换到首个可用项，全部关闭时收起面板，宽度不足时仅显示图标避免文字挤压。
 - **CPU 小猫高负载加速**：CPU 使用率超过 45% 后额外平滑缩短奔跑周期，负载越高越显急促，低负载区间保持原有速度变化。
 
@@ -2032,4 +2037,3 @@
 - **[High]** `manager.rs` — `try_wait()` 的 `Err(_)` 分支映射为 `"error"` 而非 `"exited"`
 - **[Medium]** `TerminalTabs.tsx` / `Sidebar.tsx` — 状态指示点添加 `role="status"` 和 `aria-label` 无障碍属性
 - **[Medium]** `Sidebar.tsx` — `getProjectStatus` 改用 `useCallback` 稳定引用，状态回退使用 `?? "running"`
-
