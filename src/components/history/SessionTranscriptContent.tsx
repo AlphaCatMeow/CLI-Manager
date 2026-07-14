@@ -1,5 +1,9 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
+import { invoke } from "@tauri-apps/api/core";
+import { X } from "lucide-react";
 import { useI18n } from "../../lib/i18n";
+import type { ProjectImageFilePayload } from "../../lib/types";
 import { HistoryMarkdownContent } from "./HistoryMarkdownContent";
 import {
   isGitStatusLine,
@@ -317,13 +321,92 @@ function TranscriptLines({ lines, query, sectionId }: { lines: string[]; query: 
   );
 }
 
+function splitLocalPath(path: string): { rootPath: string; relativePath: string } | null {
+  const lastSlash = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
+  if (lastSlash < 0) return null;
+  const isWindowsDriveRoot = lastSlash === 2 && path[1] === ":";
+  const rootPath = lastSlash === 0 || isWindowsDriveRoot ? path.slice(0, lastSlash + 1) : path.slice(0, lastSlash);
+  const relativePath = path.slice(lastSlash + 1);
+  if (!rootPath || !relativePath) return null;
+  return { rootPath, relativePath };
+}
+
 function TranscriptImage({ section, query }: { section: TranscriptSection; query: string }) {
-  return (
-    <div className="ui-history-transcript-lines ui-history-transcript-image-fallback">
-      <div className="ui-history-transcript-line">
-        {renderTranscriptLineHighlights(section.text, query, `${section.id}-image-fallback`)}
+  const { t } = useI18n();
+  const [image, setImage] = useState<ProjectImageFilePayload | null>(null);
+  const [failed, setFailed] = useState(false);
+  const imagePath = section.imagePath ?? "";
+  const imageLabel = section.imageLabel ?? t("history.imagePlaceholder");
+
+  useEffect(() => {
+    const target = splitLocalPath(imagePath);
+    if (!target) {
+      setImage(null);
+      setFailed(true);
+      return;
+    }
+
+    let cancelled = false;
+    setImage(null);
+    setFailed(false);
+    void invoke<ProjectImageFilePayload>("file_read_image", target)
+      .then((payload) => {
+        if (!cancelled) setImage(payload);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [imagePath]);
+
+  if (!image || failed) {
+    return (
+      <div className="ui-history-transcript-lines ui-history-transcript-image-fallback">
+        <div className="ui-history-transcript-line">
+          {renderTranscriptLineHighlights(section.text, query, `${section.id}-image-fallback`)}
+        </div>
       </div>
-    </div>
+    );
+  }
+
+  return (
+    <DialogPrimitive.Root>
+      <figure className="ui-history-transcript-image" title={section.text}>
+        <DialogPrimitive.Trigger asChild>
+          <button
+            type="button"
+            className="ui-history-transcript-image-trigger"
+            aria-label={t("history.transcript.openImage", { label: imageLabel })}
+          >
+            <img
+              src={`data:${image.mimeType};base64,${image.dataBase64}`}
+              alt={t("history.transcript.imageAlt", { label: imageLabel })}
+              loading="lazy"
+            />
+          </button>
+        </DialogPrimitive.Trigger>
+        <figcaption>{renderTranscriptLineHighlights(imageLabel, query, `${section.id}-image-label`)}</figcaption>
+      </figure>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="ui-history-transcript-image-preview-overlay" />
+        <DialogPrimitive.Content className="ui-history-transcript-image-preview" aria-describedby={undefined}>
+          <DialogPrimitive.Title className="sr-only">{imageLabel}</DialogPrimitive.Title>
+          <img
+            src={`data:${image.mimeType};base64,${image.dataBase64}`}
+            alt={t("history.transcript.imageAlt", { label: imageLabel })}
+          />
+          <DialogPrimitive.Close
+            className="ui-history-transcript-image-preview-close"
+            aria-label={t("history.transcript.closeImage")}
+          >
+            <X size={16} strokeWidth={2} aria-hidden="true" />
+          </DialogPrimitive.Close>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 }
 
