@@ -429,3 +429,36 @@ Claude 启动阶段提前订阅子任务 transcript，Codex rollout 增加有界
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: 修复 Worktree 今日项目用量统计
+
+**Date**: 2026-07-14
+**Task**: 修复 Worktree 今日项目用量统计
+**Branch**: `master`
+
+### Summary
+
+实时统计按当前 Worktree 实际路径聚合今日用量，避免 raw project_key 导致 Token 与费用缺失；同步更新统计契约、CHANGELOG 和功能清单。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `12a2b50` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
