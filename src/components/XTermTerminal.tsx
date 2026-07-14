@@ -28,7 +28,16 @@ import { debugConsoleWarn } from "../lib/debugConsole";
 import { translateCurrent, useI18n } from "../lib/i18n";
 import { buildFastCursorMoveSequence } from "../lib/terminalCursorMovement";
 import { normalizeTerminalFontFamily } from "../lib/terminalFontFamily";
-import { decodeOscPathValue, parseOsc7Cwd } from "../lib/terminalOscPath";
+import { parseOsc7Cwd } from "../lib/terminalOscPath";
+import {
+  LEGACY_RUNTIME_OSC_PREFIX,
+  OSC_PREFIX,
+  findOscTerminator,
+  formatSpecialColorReply,
+  matchIntegrationOscPrefix,
+  parseSpecialColorQuery,
+  parseStandardIntegrationCwd,
+} from "../lib/terminalOscParse";
 import { findTerminalFileLinks, resolveTerminalFileSystemPath } from "../lib/terminalFileLinks";
 import { findProjectByPath, findWorktreeByPath } from "../lib/terminalProject";
 import { useTerminalSearch } from "../hooks/useTerminalSearch";
@@ -127,17 +136,7 @@ import { toast } from "sonner";
 import { logError, logInfo, logWarn } from "../lib/logger";
 import { registerTerminalSnapshotSource, markTerminalSnapshotDirty } from "../lib/sessionSnapshotPersistence";
 
-// Shell integration OSC 序列在原始 PTY 流上解析（而非 xterm parser hook）：
-// 后台 Tab 的输出会进入 inactive ring buffer 且可能被截断丢弃，状态事件必须
-// 在丢弃之前提取，否则后台 Tab 不再上报状态。
-// 777 为本应用私有协议（消费后剥离）；7/133/633 为 cwd / FinalTerm / VS Code 标准
-// shell integration 序列（消费后原样放行，xterm 会忽略），借此兼容 oh-my-posh、
-// VS Code shell integration 等用户自带集成。
-const LEGACY_RUNTIME_OSC_PREFIX = "\x1b]777;cli-manager;";
-const CWD_OSC_PREFIX = "\x1b]7;";
-const INTEGRATION_OSC_PREFIXES = ["\x1b]133;", "\x1b]633;", CWD_OSC_PREFIX, LEGACY_RUNTIME_OSC_PREFIX];
 const OSC_CARRY_BUFFER_MAX = 8192;
-const OSC_PREFIX = "\x1b]";
 const XTERM_BG_COLOR_MASK = 0x03ffffff;
 const XTERM_COLOR_MODE_RGB = 0x03000000;
 const XTERM_INVERSE_FLAG = 0x04000000;
@@ -159,50 +158,7 @@ const IME_CROSS_SOURCE_DUPLICATE_WINDOW_MS = 80;
 const NATIVE_TEXT_INPUT_DEDUP_WINDOW_MS = 16;
 const CJK_NATIVE_PUNCTUATION_PATTERN = /^[\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]+$/u;
 
-type SpecialColorQueryId = 10 | 11;
 type TerminalInputSource = "onData" | "nativeTextInput";
-
-type OscPrefixMatch =
-  | { kind: "match"; prefix: string }
-  | { kind: "partial" }
-  | { kind: "none" };
-
-function parseStandardIntegrationCwd(command: string, rest: string): string | null {
-  if (command !== "P") return null;
-  const field = rest.split(";").find((part) => part.toLocaleLowerCase().startsWith("cwd="));
-  if (!field) return null;
-  const value = decodeOscPathValue(field.slice(field.indexOf("=") + 1)).trim();
-  return value || null;
-}
-
-const matchIntegrationOscPrefix = (text: string, start: number): OscPrefixMatch => {
-  let partial = false;
-  for (const prefix of INTEGRATION_OSC_PREFIXES) {
-    const available = Math.min(prefix.length, text.length - start);
-    if (text.startsWith(prefix.slice(0, available), start)) {
-      if (available === prefix.length) return { kind: "match", prefix };
-      partial = true;
-    }
-  }
-  return partial ? { kind: "partial" } : { kind: "none" };
-};
-
-// 终止符：BEL 或 ST（ESC \）。null 表示序列尚未完整（跨 chunk，需缓冲）。
-type OscTerminator = { index: number; length: number } | { abortAt: number } | null;
-
-const findOscTerminator = (text: string, from: number): OscTerminator => {
-  for (let i = from; i < text.length; i += 1) {
-    const code = text.charCodeAt(i);
-    if (code === 0x07) return { index: i, length: 1 };
-    if (code === 0x1b) {
-      if (i + 1 >= text.length) return null;
-      if (text[i + 1] === "\\") return { index: i, length: 2 };
-      // OSC body 内不应出现裸 ESC，按非法序列放行避免吞掉正常输出
-      return { abortAt: i };
-    }
-  }
-  return null;
-};
 
 type MutableXtermCell = IBufferCell & {
   fg: number;
@@ -295,25 +251,6 @@ const getTerminalRenderedCellSize = (terminal: Terminal, terminalContainer: HTML
     width: rect.width > 0 ? rect.width / Math.max(1, terminal.cols) : Math.max(1, fallbackFontSize * 0.6),
     height: rect.height > 0 ? rect.height / Math.max(1, terminal.rows) : Math.max(1, fallbackFontSize * 1.2),
   };
-};
-
-const parseSpecialColorQuery = (body: string): SpecialColorQueryId | null => {
-  const separator = body.indexOf(";");
-  if (separator < 0) return null;
-  const oscId = body.slice(0, separator);
-  const payload = body.slice(separator + 1).trim();
-  if (payload !== "?") return null;
-  if (oscId === "10") return 10;
-  if (oscId === "11") return 11;
-  return null;
-};
-
-const formatSpecialColorReply = (queryId: SpecialColorQueryId, hex: string) => {
-  const normalized = normalizeHexColor(hex, queryId === 10 ? "#d8dee9" : "#0c0e10");
-  const r = normalized.slice(1, 3);
-  const g = normalized.slice(3, 5);
-  const b = normalized.slice(5, 7);
-  return `${OSC_PREFIX}${queryId};rgb:${r}${r}/${g}${g}/${b}${b}\x1b\\`;
 };
 
 const copyTextToClipboard = async (text: string) => {
