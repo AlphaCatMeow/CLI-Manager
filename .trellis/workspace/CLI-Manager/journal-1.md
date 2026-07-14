@@ -528,3 +528,36 @@ Claude 启动阶段提前订阅子任务 transcript，Codex rollout 增加有界
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: 修复终端切换渐进重绘
+
+**Date**: 2026-07-14
+**Task**: 修复终端切换渐进重绘
+**Branch**: `master`
+
+### Summary
+
+保留隐藏终端白屏恢复刷新，通过 xterm onRender 完成信号和超时兜底遮蔽渐进重绘；补充回归测试、变更记录和前端规范。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `904e4a3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
