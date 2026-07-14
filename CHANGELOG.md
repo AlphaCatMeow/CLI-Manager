@@ -4,6 +4,10 @@
 
 ### 修复
 - **终端切换渐进重绘修复**：保留隐藏终端恢复时的积压输出续写和整视口刷新，在 xterm 完成整屏渲染前临时隐藏绘制层并通过超时兜底恢复显示，避免切换终端时出现从左上到右下的可见重绘，同时不重新引入偶发白屏。
+- **WSL Codex 历史会话兼容修复**：历史查看与恢复回读按 rollout 的 `cwd` 校准真实项目，避免把日期年份误当项目而报 `session_file_not_indexed`；转换到 WSL Codex 时写入 Linux rollout 路径并停止从 Windows 跨 UNC 写入 Codex WAL 状态库，避免 `codex_state_register_failed: database is locked`。
+
+### 设置
+- **Hook 桥接独立开关**：Claude Code 与 Codex CLI Hook 桥接可分别关闭；左下角 Hook 状态灯、自动修复和快捷重装只检查已启用的桥接，避免仅安装一种 CLI 时状态灯持续显示黄色。关闭开关不会删除现有 Hook 配置。
 
 ## [V1.2.8] - 2026-07-14
 

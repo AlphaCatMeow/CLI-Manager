@@ -2,6 +2,75 @@
 
 Concrete contracts for Claude/Codex hook integration.
 
+## Scenario: Per-Tool Hook Bridge Enablement
+
+### 1. Scope / Trigger
+
+- Trigger: users may install only Claude Code or only Codex CLI, so the unused bridge must not keep the shared Hook health indicator in a warning state.
+- Applies to: persisted frontend settings, Hook settings UI, sidebar health/reinstall behavior, stats availability checks, Claude auto-repair, and terminal Hook environment injection.
+
+### 2. Signatures
+
+```ts
+interface Settings {
+  claudeHookBridgeEnabled: boolean;
+  codexHookBridgeEnabled: boolean;
+}
+```
+
+- Both settings default to `true` for backward compatibility.
+- Backend `hook_settings_get_status` keeps its existing signature; frontend callers gate `autoRepair` and interpret the returned per-tool status through the enable settings.
+
+### 3. Contracts
+
+- Disabled tools are excluded from the sidebar Hook health aggregation and one-click reinstall target list.
+- When both tools are disabled, the sidebar light is neutral/gray and clicking it only opens Hook settings.
+- Claude auto-repair may be requested only when `claudeHookBridgeEnabled && claudeHookAutoRepairKnownInstalled`.
+- Stats availability is true only when at least one enabled tool reports `status === "installed"`.
+- New terminals inject the shared Hook bridge environment only when at least one enabled tool reports `status === "installed"`.
+- Disabling a bridge does not uninstall or rewrite existing user Hook files.
+
+### 4. Validation & Error Matrix
+
+| Condition | Behavior |
+|-----------|----------|
+| Stored enable value is missing/invalid | Use default `true` |
+| Claude disabled, Codex installed/enabled | Health is green; no Claude auto-repair |
+| Codex disabled, Claude installed/enabled | Health is green; Claude auto-repair may run when previously installed |
+| Both disabled | Neutral light; no reinstall; no Hook env injection |
+| Enabled tool status request fails | Preserve existing caller error handling; do not assume installed |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a Claude-only user disables Codex and gets a green health light when Claude is fully installed.
+- Base: an existing user upgrades with no stored enable settings; both bridges remain enabled.
+- Bad: a disabled Codex bridge remains part of the shared health aggregation and keeps the light yellow.
+- Bad: disabling Claude still sends `autoRepair: true` and rewrites Claude settings.
+
+### 6. Tests Required
+
+- TypeScript type-check after settings fields, migration, or status filtering changes.
+- Manual settings persistence check across restart for both switches.
+- Manual health matrix: Claude-only, Codex-only, both enabled, both disabled, and partial enabled installation.
+- Manual terminal check: both disabled must not inject the Hook bridge environment into new PTY sessions.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+return status.claude.status === "installed" || status.codex.status === "installed";
+```
+
+#### Correct
+
+```ts
+return (
+  (settings.claudeHookBridgeEnabled && status.claude.status === "installed") ||
+  (settings.codexHookBridgeEnabled && status.codex.status === "installed")
+);
+```
+
 ## Scenario: Sub-Agent Transcript Hook
 
 ### 1. Scope / Trigger

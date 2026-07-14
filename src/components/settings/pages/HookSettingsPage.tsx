@@ -444,6 +444,8 @@ export function HookSettingsPage() {
   const hookPopupAutoCloseEnabled = useSettingsStore((s) => s.hookPopupAutoCloseEnabled);
   const hookPopupAutoCloseSeconds = useSettingsStore((s) => s.hookPopupAutoCloseSeconds);
   const hookSubagentSplitViewEnabled = useSettingsStore((s) => s.hookSubagentSplitViewEnabled);
+  const claudeHookBridgeEnabled = useSettingsStore((s) => s.claudeHookBridgeEnabled);
+  const codexHookBridgeEnabled = useSettingsStore((s) => s.codexHookBridgeEnabled);
   const systemNotificationsEnabled = useSettingsStore((s) => s.systemNotificationsEnabled);
   const suppressSystemNotificationsWhenFocused = useSettingsStore((s) => s.suppressSystemNotificationsWhenFocused);
   const systemNotificationEvents = useSettingsStore((s) => s.systemNotificationEvents);
@@ -471,7 +473,7 @@ export function HookSettingsPage() {
         selectedDir: dir,
         codexSelectedDir: codexDir,
         ccSwitchDbPath: ccSwitchDbPath ?? undefined,
-        autoRepair: claudeHookAutoRepairKnownInstalled,
+        autoRepair: claudeHookBridgeEnabled && claudeHookAutoRepairKnownInstalled,
       });
       setStatus(nextStatus);
       if (nextStatus.claude.configDir) {
@@ -854,7 +856,16 @@ export function HookSettingsPage() {
                 {text("Claude Code 的运行中、待审批、完成和异常退出状态通过 Hook 上报；普通 shell 命令由通用 Shell 运行监控补充。", "Claude Code running, approval, completion, and failure states are reported through Hook. Normal shell commands are covered by generic Shell runtime monitoring.")}
               </Text>
             </Box>
-            <StatusPill status={claudeStatus} />
+            <Group gap="sm" wrap="nowrap">
+              <Switch
+                color="cliPrimary"
+                checked={claudeHookBridgeEnabled}
+                onChange={(event) => void updateSetting("claudeHookBridgeEnabled", event.currentTarget.checked)}
+                label={t("settings.hooks.bridge.enabled")}
+                aria-label={t("settings.hooks.bridge.claudeEnabled")}
+              />
+              <StatusPill status={claudeStatus} />
+            </Group>
           </Group>
 
           <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="md">
@@ -1046,7 +1057,16 @@ export function HookSettingsPage() {
                 {text("Codex 的运行中、待审批和完成状态通过 Hook 上报；普通 shell 命令由通用 Shell 运行监控补充。", "Codex running, approval, and completion states are reported through Hook. Normal shell commands are covered by generic Shell runtime monitoring.")}
               </Text>
             </Box>
-            <StatusPill status={codexStatus} />
+            <Group gap="sm" wrap="nowrap">
+              <Switch
+                color="cliPrimary"
+                checked={codexHookBridgeEnabled}
+                onChange={(event) => void updateSetting("codexHookBridgeEnabled", event.currentTarget.checked)}
+                label={t("settings.hooks.bridge.enabled")}
+                aria-label={t("settings.hooks.bridge.codexEnabled")}
+              />
+              <StatusPill status={codexStatus} />
+            </Group>
           </Group>
 
           <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="md">

@@ -320,6 +320,8 @@ interface Settings {
   hookPopupAutoCloseEnabled: boolean;
   hookPopupAutoCloseSeconds: number;
   hookSubagentSplitViewEnabled: boolean;
+  claudeHookBridgeEnabled: boolean;
+  codexHookBridgeEnabled: boolean;
   systemNotificationsEnabled: boolean;
   suppressSystemNotificationsWhenFocused: boolean;
   systemNotificationEvents: Record<HookEventType, boolean>;
@@ -464,6 +466,8 @@ const DEFAULTS: Settings = {
   hookPopupAutoCloseEnabled: true,
   hookPopupAutoCloseSeconds: 60,
   hookSubagentSplitViewEnabled: true,
+  claudeHookBridgeEnabled: true,
+  codexHookBridgeEnabled: true,
   systemNotificationsEnabled: true,
   suppressSystemNotificationsWhenFocused: true,
   systemNotificationEvents: {
@@ -1149,6 +1153,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       typeof entries.hookSubagentSplitViewEnabled === "boolean"
         ? entries.hookSubagentSplitViewEnabled
         : DEFAULTS.hookSubagentSplitViewEnabled;
+    entries.claudeHookBridgeEnabled =
+      typeof entries.claudeHookBridgeEnabled === "boolean"
+        ? entries.claudeHookBridgeEnabled
+        : DEFAULTS.claudeHookBridgeEnabled;
+    entries.codexHookBridgeEnabled =
+      typeof entries.codexHookBridgeEnabled === "boolean"
+        ? entries.codexHookBridgeEnabled
+        : DEFAULTS.codexHookBridgeEnabled;
     entries.systemNotificationsEnabled =
       typeof entries.systemNotificationsEnabled === "boolean"
         ? entries.systemNotificationsEnabled
