@@ -4,6 +4,8 @@
 
 ### 修复
 - **终端文件路径打开方式调整**：点击终端输出中的文件路径时统一使用 Windows 资源管理器打开所在文件夹并选中文件，不再切换到内置文件浏览器或调用系统默认应用打开文件；自动剥离 `:行号`、`:行号:列号` 及其后的源码片段，避免把定位信息误当成文件名。
+- **历史用量分析全屏布局修复**：移除用量概览内容区的最大宽度限制，使统计卡片和图表铺满应用窗口；隐藏内容区横向与纵向滚动条，同时保留滚轮和键盘滚动；Token 构成明细移到饼图下方，并统一同排统计卡片高度，避免宽屏留白、内容溢出和卡片底边错位。
+- **终端 Ctrl+C 中断修复**：Windows PTY daemon 启动时不再创建 detached/new process group，仅隐藏控制台窗口，恢复 ConPTY 对 Ctrl+C 控制事件的正常投递；有文本选区时仍执行复制。
 - **终端 OSC 路径模块缺失修复**：补齐终端工作目录解析模块，恢复 Vite 开发启动，并按运行平台处理 OSC 7 的 Windows 盘符、UNC 与 macOS/Linux 本地路径，避免实时统计使用错误项目路径。
 - **终端切换渐进重绘修复**：保留隐藏终端恢复时的积压输出续写和整视口刷新，在 xterm 完成整屏渲染前临时隐藏绘制层并通过超时兜底恢复显示，避免切换终端时出现从左上到右下的可见重绘，同时不重新引入偶发白屏。
 - **WSL Codex 历史会话兼容修复**：历史查看与恢复回读按 rollout 的 `cwd` 校准真实项目，避免把日期年份误当项目而报 `session_file_not_indexed`；历史缓存会按当前配置根过滤旧的 Windows Codex 条目，避免切到 WSL 后误报 `session_file_outside_history_scope`；转换到 WSL Codex 时写入 Linux rollout 路径并停止从 Windows 跨 UNC 写入 Codex WAL 状态库，避免 `codex_state_register_failed: database is locked`。
