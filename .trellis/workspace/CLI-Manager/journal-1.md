@@ -594,3 +594,36 @@ Claude 启动阶段提前订阅子任务 transcript，Codex rollout 增加有界
 ### Next Steps
 
 - None - task complete
+
+
+## Session 18: 统一文件浏览器折叠目录聚合
+
+**Date**: 2026-07-15
+**Task**: 统一文件浏览器折叠目录聚合
+**Branch**: `master`
+
+### Summary
+
+将已加载子树中的默认折叠目录和手动忽略目录统一收集到文件树底部单一聚合行，使用相对路径区分同名目录，并同步 TEMP 变更记录与功能清单。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `123e632` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

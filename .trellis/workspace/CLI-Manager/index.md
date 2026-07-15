@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 17
-- **Last Active**: 2026-07-14
+- **Total Sessions**: 18
+- **Last Active**: 2026-07-15
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~596 | Active |
+| `journal-1.md` | ~629 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 18 | 2026-07-15 | 统一文件浏览器折叠目录聚合 | `123e632` | `master` |
 | 17 | 2026-07-14 | Hook 桥接独立启用开关 | `a4019cd` | `master` |
 | 16 | 2026-07-14 | 修复终端切换渐进重绘 | `904e4a3` | `master` |
 | 15 | 2026-07-14 | 全局统一应用内确认对话框 | `34da804` | `master` |
