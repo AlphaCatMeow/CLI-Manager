@@ -1244,6 +1244,32 @@ invoke("pty_write", { sessionId, data });
 - [ ] CMD still accepts normal paste and Enter behavior.
 - [ ] Browser text/image paste, app-internal file drag, and system file drop all focus the intended visible terminal only once.
 
+### Convention: Terminal input selection state stays in the Input controller
+
+**What**: useTerminalInput.attachSelection() owns current-input selection state and its mouse listeners: select-all, Shift+Arrow expansion, Arrow collapse, selection deletion/replacement, and the disabled-by-default click-cursor path. XTermTerminal may route keyboard branches to the returned controller, but must not recreate its selection snapshots or cursor-range state.
+
+**Why**: Selection editing combines xterm viewport cells with the PTY line-editor sequence. Keeping its state inside Input prevents changes to display rendering, output buffering, or context-menu UI from silently changing selection semantics.
+
+**Correct**:
+
+    const selection = attachSelection(terminal, {
+      inputBuffer,
+      inputCursorIndexRef,
+      markAttentionInputHandled,
+      reportPtyWriteError,
+      enableClickCursorPositioning: false,
+    });
+    inputDisposables.push({ dispose: selection.dispose });
+
+**Contracts**:
+
+- Create one controller per terminal attachment; its selection state must start empty and dispose() must remove its DOM listeners.
+- Use the existing terminalTextEditing and terminalCellWidth helpers for cursor indices and display cells. Do not approximate CJK/wide-character offsets with string length.
+- The shared TUI composer markers belong in src/lib/terminalTui.ts; selection and rendering import the same patterns instead of defining local copies.
+- forwardTerminalInput() consumes a replacement selection before writing to the PTY, then clears only the state required by the original input path.
+
+**Tests**: Run npx tsc --noEmit; manually verify Ctrl/Cmd+A, Shift+Left/Right, collapse with Left/Right, Backspace/Delete, typing to replace a selection, Ctrl/Cmd+C selection copy versus Ctrl+C interrupt, and switching sessions after a selection.
+
 ### Common Mistake: Letting xterm sync updates clear the screen while the user is reading scrollback
 
 **Symptom**: During Codex / Claude Code / Copilot-style TUI streaming, scrolling upward to inspect older output becomes impossible, or a later resize causes the current screen to be replayed into scrollback.

@@ -20,7 +20,6 @@ import {
 import { backgroundAssetUrl } from "../lib/assetUrl";
 import { resolveManualDirectCodexEnterData } from "../lib/codexManualInput";
 import { translateCurrent, useI18n } from "../lib/i18n";
-import { buildFastCursorMoveSequence } from "../lib/terminalCursorMovement";
 import { normalizeTerminalFontFamily } from "../lib/terminalFontFamily";
 import { findTerminalFileLinks, resolveTerminalFileSystemPath } from "../lib/terminalFileLinks";
 import { findProjectByPath, findWorktreeByPath } from "../lib/terminalProject";
@@ -29,16 +28,19 @@ import { useTerminalContextMenu } from "../hooks/useTerminalContextMenu";
 import { useTerminalOsc } from "../hooks/useTerminalOsc";
 import { useTerminalDisplay } from "../hooks/useTerminalDisplay";
 import { useTerminalInput, type TerminalSuggestionGhostState } from "../hooks/useTerminalInput";
-import { getTerminalCellWidth, resolveCursorIndexFromCellOffset } from "../lib/terminalCellWidth";
+import { getTerminalCellWidth } from "../lib/terminalCellWidth";
 import {
   clampTextCursorIndex,
   getTextCursorLength,
   insertTextAtCursor,
   removeTextAtCursor,
   removeTextBeforeCursor,
-  repeatControlSequence,
-  sliceTextByCursor,
 } from "../lib/terminalTextEditing";
+import {
+  TUI_BORDER_CHAR_PATTERN,
+  TUI_BORDER_PREFIX_PATTERN,
+  TUI_COMPOSER_PROMPT_PATTERN,
+} from "../lib/terminalTui";
 import { hexToRgba, normalizeHexColor } from "../lib/terminalColor";
 import { terminalShortcutMatches, wrapTerminalPasteTextForCtrlShiftV } from "../lib/terminalKeyboard";
 import { resolveSubmittedDirectoryChange } from "../lib/terminalInputSuggestions";
@@ -78,9 +80,6 @@ const VISIBILITY_RESTORE_REVEAL_TIMEOUT_MS = 500;
 // triggers a glyph-atlas rebuild. GPU sleep / lock screen (the corruption
 // trigger) implies a long absence; quick alt-tabs skip the re-rasterization.
 const WEBGL_ATLAS_REFRESH_MIN_HIDDEN_MS = 10_000;
-// Box-drawing glyphs used by TUI input boxes (Claude Code / Codex draw "│ > … │").
-const TUI_BORDER_CHAR_PATTERN = /^[│┃║▏▎▍▌▋▊▉█┆┊╎╏]$/u;
-const TUI_BORDER_PREFIX_PATTERN = /^[\s│┃║▏▎▍▌▋▊▉█┆┊╎╏]+/u;
 import { toast } from "sonner";
 import { logError, logInfo, logWarn } from "../lib/logger";
 import { registerTerminalSnapshotSource } from "../lib/sessionSnapshotPersistence";
@@ -91,7 +90,6 @@ const XTERM_INVERSE_FLAG = 0x04000000;
 const CLAUDE_LIGHT_SLASH_MENU_SELECTED_BG = 0xe7eefc;
 const TUI_COMPOSER_PRELUDE_ROWS = 1;
 const TUI_COMPOSER_CONTINUATION_ROWS = 4;
-const TUI_COMPOSER_PROMPT_PATTERN = /^[\u203a\u276f\u00bb\u2023>]\s?/u;
 const SLASH_COMMAND_MENU_LINE_PATTERN = /^\/[a-z0-9][a-z0-9:_-]*(?:\s|$)/i;
 const AI_TUI_VIEWPORT_PATTERN = /(?:openai\s+codex|claude\s+code|yolo\s+mode|mcp\s+(?:client|startup)|\/model\s+to\s+change)/i;
 const CODEX_COMMAND_PATTERN = /(?:^|\s)codex(?:\.(?:cmd|exe|ps1))?(?:\s|$)/i;
@@ -498,6 +496,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     onCommandSubmitted,
     attachPasteAndDrop,
     pasteText,
+    attachSelection,
   } = useTerminalInput({
     sessionId,
     wrapperRef,
@@ -1206,14 +1205,21 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
 
     const detachPasteAndDrop = attachPasteAndDrop(terminal);
     const contextMenuTarget = containerRef.current;
+    const inputSelection = attachSelection(terminal, {
+      inputBuffer,
+      inputCursorIndexRef,
+      markAttentionInputHandled,
+      reportPtyWriteError,
+      enableClickCursorPositioning: ENABLE_CLICK_CURSOR_POSITIONING,
+    });
+    inputDisposables.push({ dispose: inputSelection.dispose });
     const onContextMenu = (e: MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
       if (terminal.hasSelection()) {
         void copySelection();
         terminal.clearSelection();
-        keyboardInputSelection = null;
-        selectedInputSnapshot = null;
+        inputSelection.clearInputSelectionState();
         terminal.focus();
         closeContextMenu();
         return;
@@ -1221,445 +1227,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       openMenu(e.clientX, e.clientY, false);
     };
     contextMenuTarget.addEventListener("contextmenu", onContextMenu);
-
-    const moveInputCursorToClick = (e: MouseEvent) => {
-      if (
-        e.defaultPrevented ||
-        e.button !== 0 ||
-        e.detail !== 1 ||
-        e.shiftKey ||
-        e.ctrlKey ||
-        e.altKey ||
-        e.metaKey ||
-        isComposingRef.current ||
-        terminal.hasSelection()
-      ) {
-        return;
-      }
-
-      const currentInput = inputBuffer.current;
-      if (!currentInput) return;
-
-      const terminalContainer = containerRef.current;
-      const screen = terminalContainer?.querySelector(".xterm-screen") as HTMLElement | null;
-      if (!terminalContainer || !screen) return;
-
-      const screenRect = screen.getBoundingClientRect();
-      if (
-        e.clientX < screenRect.left ||
-        e.clientX > screenRect.right ||
-        e.clientY < screenRect.top ||
-        e.clientY > screenRect.bottom
-      ) {
-        return;
-      }
-
-      const cell = getTerminalRenderedCellSize(terminal, terminalContainer, fontSize);
-      const clickColumn = Math.min(
-        Math.max(0, Math.floor((e.clientX - screenRect.left) / Math.max(1, cell.width))),
-        Math.max(0, terminal.cols)
-      );
-      const clickRow = Math.min(
-        Math.max(0, Math.floor((e.clientY - screenRect.top) / Math.max(1, cell.height))),
-        Math.max(0, terminal.rows - 1)
-      );
-
-      const buffer = terminal.buffer.active;
-      const currentCursorIndex = clampTextCursorIndex(currentInput, inputCursorIndexRef.current);
-      const cursorPrefixWidth = getTerminalCellWidth(sliceTextByCursor(currentInput, 0, currentCursorIndex));
-      const cursorCellIndex = ((buffer.baseY + buffer.cursorY) * terminal.cols) + buffer.cursorX;
-      const inputStartCellIndex = cursorCellIndex - cursorPrefixWidth;
-      const inputEndCellIndex = inputStartCellIndex + getTerminalCellWidth(currentInput);
-      const clickCellIndex = ((buffer.viewportY + clickRow) * terminal.cols) + clickColumn;
-      const inputStartRow = Math.floor(inputStartCellIndex / terminal.cols);
-      const inputEndRow = Math.floor(inputEndCellIndex / terminal.cols);
-      const clickRowAbsolute = buffer.viewportY + clickRow;
-      if (clickRowAbsolute < inputStartRow || clickRowAbsolute > inputEndRow) return;
-
-      const targetCellOffset = Math.min(
-        Math.max(0, clickCellIndex - inputStartCellIndex),
-        Math.max(0, inputEndCellIndex - inputStartCellIndex)
-      );
-      const targetCursorIndex = resolveCursorIndexFromCellOffset(currentInput, targetCellOffset);
-      const data = buildFastCursorMoveSequence(
-        currentCursorIndex,
-        targetCursorIndex,
-        getTextCursorLength(currentInput),
-        !/[\r\n]/.test(currentInput),
-        terminal.modes.applicationCursorKeysMode
-      );
-      if (!data) {
-        terminal.focus();
-        return;
-      }
-
-      inputCursorIndexRef.current = targetCursorIndex;
-      keyboardInputSelection = null;
-      selectedInputSnapshot = null;
-      clearSuggestionGhost();
-      cancelAiSuggestionRefresh();
-      markAttentionInputHandled();
-      invoke("pty_write", { sessionId, data }).catch((err) => reportPtyWriteError("click_cursor", err));
-      terminal.focus();
-    };
-    if (ENABLE_CLICK_CURSOR_POSITIONING) {
-      contextMenuTarget.addEventListener("click", moveInputCursorToClick);
-    }
-
-    let selectedInputSnapshot: string | null = null;
-    let keyboardInputSelection: {
-      anchorIndex: number;
-      focusIndex: number;
-      inputStartCellIndex: number;
-    } | null = null;
-
-    const clearKeyboardInputSelectionOnMouseDown = (e: MouseEvent) => {
-      if (e.button !== 0) return;
-      keyboardInputSelection = null;
-      selectedInputSnapshot = null;
-    };
-    contextMenuTarget.addEventListener("mousedown", clearKeyboardInputSelectionOnMouseDown);
-
-    // \x15 (Ctrl+U) 在 bash/PSReadLine/Claude Code 等行编辑器中的语义是"删除光标之前"，
-    // 并非整行清除；光标不在行尾时（点击移光标、Shift+方向键选择后右键/Ctrl+C 复制中断）
-    // 后半段会残留，随后重打的文本与残留拼接，表现为"选区删除后又多出一份"。
-    // 因此清行前先按跟踪的光标位置右移到输入末尾，使 \x15 等价于整行清除。
-    const buildKillCurrentInputSequence = () => {
-      const currentInput = inputBuffer.current;
-      const currentCursorIndex = clampTextCursorIndex(currentInput, inputCursorIndexRef.current);
-      const moveToEnd = repeatControlSequence(
-        "\x1b[C",
-        getTextCursorLength(currentInput) - currentCursorIndex
-      );
-      return `${moveToEnd}\x15`;
-    };
-
-    const rewriteCurrentInput = (
-      nextInput: string,
-      stage: string,
-      cursorIndex: number = getTextCursorLength(nextInput)
-    ) => {
-      const killCurrentInput = buildKillCurrentInputSequence();
-      const nextCursorIndex = clampTextCursorIndex(nextInput, cursorIndex);
-      const cursorRestore = repeatControlSequence(
-        "\x1b[D",
-        getTextCursorLength(nextInput) - nextCursorIndex
-      );
-      inputBuffer.current = nextInput;
-      inputCursorIndexRef.current = nextCursorIndex;
-      terminal.clearSelection();
-      keyboardInputSelection = null;
-      selectedInputSnapshot = null;
-      markAttentionInputHandled();
-      clearSuggestionGhost();
-      cancelAiSuggestionRefresh();
-      invoke("pty_write", { sessionId, data: `${killCurrentInput}${nextInput}${cursorRestore}` })
-        .catch((err) => reportPtyWriteError(stage, err));
-    };
-
-    const isReplaceableInputData = (data: string) => {
-      if (!data || data === "\r" || data === "\x7f" || data === "\b") return false;
-      if (data.startsWith("\x1b") && !data.startsWith("\x1b[200~")) return false;
-      return true;
-    };
-
-    // 返回清空当前输入所需的控制序列；null 表示本次输入不做"替换选区"。
-    const consumeSelectedInputForReplacement = (data: string) => {
-      if (
-        !selectedInputSnapshot ||
-        selectedInputSnapshot !== inputBuffer.current ||
-        !terminal.hasSelection() ||
-        !isReplaceableInputData(data)
-      ) {
-        return null;
-      }
-
-      const killCurrentInput = buildKillCurrentInputSequence();
-      inputBuffer.current = "";
-      inputCursorIndexRef.current = 0;
-      selectedInputSnapshot = null;
-      terminal.clearSelection();
-      return killCurrentInput;
-    };
-
-    const resolveVisibleInputSelection = () => {
-      const buffer = terminal.buffer.active;
-      const rowText = (row: number) => {
-        const line = buffer.getLine(buffer.viewportY + row);
-        return line ? line.translateToString(true) : null;
-      };
-      const rowIsHorizontalRule = (row: number) => {
-        const text = rowText(row);
-        if (text === null) return false;
-        const trimmed = text.trim();
-        return trimmed.length > 0 && /^[─━═╌╍┄┅┈┉╴╶]+$/u.test(trimmed);
-      };
-      const findPromptContentStartColumn = (line: IBufferLine) => {
-        const limit = Math.min(terminal.cols, line.length);
-        for (let x = 0; x < limit; x += 1) {
-          const cell = line.getCell(x);
-          const chars = cell?.getChars() ?? "";
-          if (!cell || !chars.trim() || TUI_BORDER_CHAR_PATTERN.test(chars)) continue;
-          if (!TUI_COMPOSER_PROMPT_PATTERN.test(chars)) return null;
-          let start = x + Math.max(1, cell.getWidth());
-          while (start < limit) {
-            const nextCell = line.getCell(start);
-            const nextChars = nextCell?.getChars() ?? "";
-            if (nextChars !== " ") break;
-            start += Math.max(1, nextCell?.getWidth() ?? 1);
-          }
-          return start;
-        }
-        return null;
-      };
-      const getContentEndColumn = (line: IBufferLine, minColumn: number) => {
-        const limit = Math.min(terminal.cols, line.length);
-        for (let x = limit - 1; x >= minColumn; x -= 1) {
-          const cell = line.getCell(x);
-          const chars = cell?.getChars() ?? "";
-          if (!cell || cell.getWidth() === 0 || !chars.trim() || TUI_BORDER_CHAR_PATTERN.test(chars)) continue;
-          return Math.min(terminal.cols, x + Math.max(1, cell.getWidth()));
-        }
-        return minColumn;
-      };
-
-      for (let row = terminal.rows - 1; row >= 0; row -= 1) {
-        const line = buffer.getLine(buffer.viewportY + row);
-        if (!line) continue;
-        const startColumn = findPromptContentStartColumn(line);
-        if (startColumn === null) continue;
-
-        let endRow = row;
-        let endColumn = getContentEndColumn(line, startColumn);
-        for (let nextRow = row + 1; nextRow < terminal.rows; nextRow += 1) {
-          const nextLine = buffer.getLine(buffer.viewportY + nextRow);
-          if (!nextLine || rowIsHorizontalRule(nextRow) || !nextLine.isWrapped) break;
-          const nextEndColumn = getContentEndColumn(nextLine, 0);
-          if (nextEndColumn <= 0) break;
-          endRow = nextRow;
-          endColumn = nextEndColumn;
-        }
-
-        const startCellIndex = ((buffer.viewportY + row) * terminal.cols) + startColumn;
-        const endCellIndex = ((buffer.viewportY + endRow) * terminal.cols) + endColumn;
-        const length = endCellIndex - startCellIndex;
-        if (length <= 0) return null;
-        return { startColumn, startRow: buffer.viewportY + row, length };
-      }
-
-      return null;
-    };
-
-    const selectCurrentInputText = () => {
-      const currentInput = inputBuffer.current;
-      keyboardInputSelection = null;
-      selectedInputSnapshot = currentInput || null;
-      terminal.clearSelection();
-      if (!currentInput) {
-        terminal.focus();
-        return true;
-      }
-
-      const inputCellWidth = getTerminalCellWidth(currentInput);
-      if (inputCellWidth <= 0) {
-        terminal.focus();
-        return true;
-      }
-
-      const visibleSelection = resolveVisibleInputSelection();
-      if (visibleSelection) {
-        terminal.select(visibleSelection.startColumn, visibleSelection.startRow, visibleSelection.length);
-        terminal.focus();
-        return true;
-      }
-
-      const buffer = terminal.buffer.active;
-      const cursorCellIndex = ((buffer.baseY + buffer.cursorY) * terminal.cols) + buffer.cursorX;
-      const cursorPrefixWidth = getTerminalCellWidth(sliceTextByCursor(currentInput, 0, inputCursorIndexRef.current));
-      const startCellIndex = Math.max(0, cursorCellIndex - cursorPrefixWidth);
-      const startRow = Math.floor(startCellIndex / terminal.cols);
-      const startColumn = startCellIndex % terminal.cols;
-      terminal.select(startColumn, startRow, inputCellWidth);
-      terminal.focus();
-      return true;
-    };
-
-    const renderKeyboardInputSelection = (
-      currentInput: string,
-      selection: NonNullable<typeof keyboardInputSelection>
-    ) => {
-      const startIndex = Math.min(selection.anchorIndex, selection.focusIndex);
-      const endIndex = Math.max(selection.anchorIndex, selection.focusIndex);
-      if (startIndex === endIndex) {
-        terminal.clearSelection();
-        return;
-      }
-
-      const startCellIndex = selection.inputStartCellIndex
-        + getTerminalCellWidth(sliceTextByCursor(currentInput, 0, startIndex));
-      const selectionCellWidth = getTerminalCellWidth(sliceTextByCursor(currentInput, startIndex, endIndex));
-      terminal.select(startCellIndex % terminal.cols, Math.floor(startCellIndex / terminal.cols), selectionCellWidth);
-    };
-
-    const extendKeyboardInputSelection = (direction: -1 | 1) => {
-      const currentInput = inputBuffer.current;
-      const currentCursorIndex = clampTextCursorIndex(currentInput, inputCursorIndexRef.current);
-      const targetCursorIndex = clampTextCursorIndex(currentInput, currentCursorIndex + direction);
-      if (!currentInput || targetCursorIndex === currentCursorIndex) {
-        terminal.focus();
-        return;
-      }
-
-      const selection = keyboardInputSelection ?? (() => {
-        const buffer = terminal.buffer.active;
-        const cursorCellIndex = ((buffer.baseY + buffer.cursorY) * terminal.cols) + buffer.cursorX;
-        const cursorPrefixWidth = getTerminalCellWidth(sliceTextByCursor(currentInput, 0, currentCursorIndex));
-        return {
-          anchorIndex: currentCursorIndex,
-          focusIndex: currentCursorIndex,
-          inputStartCellIndex: Math.max(0, cursorCellIndex - cursorPrefixWidth),
-        };
-      })();
-
-      const nextSelection = { ...selection, focusIndex: targetCursorIndex };
-      keyboardInputSelection = nextSelection;
-      selectedInputSnapshot = null;
-      inputCursorIndexRef.current = targetCursorIndex;
-      renderKeyboardInputSelection(currentInput, nextSelection);
-      clearSuggestionGhost();
-      cancelAiSuggestionRefresh();
-      markAttentionInputHandled();
-      invoke("pty_write", { sessionId, data: direction < 0 ? "\x1b[D" : "\x1b[C" })
-        .catch((err) => reportPtyWriteError("keyboard_selection", err));
-      terminal.focus();
-    };
-
-    const collapseKeyboardInputSelection = (direction: -1 | 1) => {
-      if (!keyboardInputSelection) return false;
-      const startIndex = Math.min(keyboardInputSelection.anchorIndex, keyboardInputSelection.focusIndex);
-      const endIndex = Math.max(keyboardInputSelection.anchorIndex, keyboardInputSelection.focusIndex);
-      if (startIndex === endIndex) {
-        keyboardInputSelection = null;
-        return false;
-      }
-
-      const currentCursorIndex = clampTextCursorIndex(inputBuffer.current, inputCursorIndexRef.current);
-      const targetCursorIndex = direction < 0 ? startIndex : endIndex;
-      const delta = targetCursorIndex - currentCursorIndex;
-      const data = delta > 0
-        ? repeatControlSequence("\x1b[C", delta)
-        : repeatControlSequence("\x1b[D", -delta);
-      keyboardInputSelection = null;
-      selectedInputSnapshot = null;
-      inputCursorIndexRef.current = targetCursorIndex;
-      terminal.clearSelection();
-      clearSuggestionGhost();
-      cancelAiSuggestionRefresh();
-      markAttentionInputHandled();
-      if (data) {
-        invoke("pty_write", { sessionId, data }).catch((err) => reportPtyWriteError("keyboard_selection_collapse", err));
-      }
-      terminal.focus();
-      return true;
-    };
-
-    const removeSelectedInputText = () => {
-      const selectedText = terminal.getSelection();
-      const currentInput = inputBuffer.current;
-      const findSelectedTextRange = (preferredStartIndex?: number) => {
-        if (!selectedText || !currentInput) return null;
-        const candidates = [
-          selectedText,
-          selectedText.replace(/\r\n?/g, "\n"),
-          selectedText.replace(/\r\n?|\n/g, ""),
-        ].filter((text, index, list) => Boolean(text) && list.indexOf(text) === index);
-        const inputChars = Array.from(currentInput);
-
-        for (const candidate of candidates) {
-          const candidateChars = Array.from(candidate);
-          if (!candidateChars.length || candidateChars.length > inputChars.length) continue;
-
-          const ranges: Array<{ startIndex: number; endIndex: number }> = [];
-          for (let index = 0; index <= inputChars.length - candidateChars.length; index += 1) {
-            const matched = candidateChars.every((char, offset) => inputChars[index + offset] === char);
-            if (matched) {
-              ranges.push({ startIndex: index, endIndex: index + candidateChars.length });
-            }
-          }
-
-          if (ranges.length === 1 || (ranges.length && preferredStartIndex !== undefined)) {
-            return ranges.reduce((best, range) => (
-              Math.abs(range.startIndex - (preferredStartIndex ?? range.startIndex)) <
-              Math.abs(best.startIndex - (preferredStartIndex ?? best.startIndex))
-                ? range
-                : best
-            ));
-          }
-        }
-
-        return null;
-      };
-      const deleteInputRange = (startIndex: number, endIndex: number, stage: string) => {
-        if (startIndex >= endIndex) return false;
-        const nextInput = `${sliceTextByCursor(currentInput, 0, startIndex)}${sliceTextByCursor(currentInput, endIndex)}`;
-        rewriteCurrentInput(nextInput, stage, startIndex);
-        return true;
-      };
-
-      if (keyboardInputSelection && terminal.hasSelection()) {
-        const startIndex = Math.min(keyboardInputSelection.anchorIndex, keyboardInputSelection.focusIndex);
-        const endIndex = Math.max(keyboardInputSelection.anchorIndex, keyboardInputSelection.focusIndex);
-        if (deleteInputRange(startIndex, endIndex, "keyboard_selection_delete")) return true;
-      }
-      keyboardInputSelection = null;
-
-      if (terminal.hasSelection() && currentInput) {
-        const selectionPosition = terminal.getSelectionPosition();
-        const visibleSelection = resolveVisibleInputSelection();
-        if (selectionPosition && visibleSelection) {
-          const inputStartCellIndex = (visibleSelection.startRow * terminal.cols) + visibleSelection.startColumn;
-          const inputEndCellIndex = inputStartCellIndex + visibleSelection.length;
-          const selectionStartCellIndex = (selectionPosition.start.y * terminal.cols) + selectionPosition.start.x;
-          const selectionEndCellIndex = (selectionPosition.end.y * terminal.cols) + selectionPosition.end.x;
-          const selectedStartCellIndex = Math.max(inputStartCellIndex, Math.min(selectionStartCellIndex, selectionEndCellIndex));
-          const selectedEndCellIndex = Math.min(inputEndCellIndex, Math.max(selectionStartCellIndex, selectionEndCellIndex));
-
-          if (selectedEndCellIndex > selectedStartCellIndex) {
-            const startIndex = resolveCursorIndexFromCellOffset(currentInput, selectedStartCellIndex - inputStartCellIndex);
-            const endIndex = resolveCursorIndexFromCellOffset(currentInput, selectedEndCellIndex - inputStartCellIndex);
-            const textRange = findSelectedTextRange(startIndex);
-            if (textRange && deleteInputRange(textRange.startIndex, textRange.endIndex, "selection_delete_text")) {
-              return true;
-            }
-            if (deleteInputRange(startIndex, endIndex, "selection_delete")) return true;
-          }
-        }
-
-        const textRange = findSelectedTextRange();
-        if (textRange && deleteInputRange(textRange.startIndex, textRange.endIndex, "selection_delete_text")) {
-          return true;
-        }
-      }
-
-      if (!selectedText && selectedInputSnapshot === currentInput && currentInput) {
-        rewriteCurrentInput("", "selection_delete_all");
-        return true;
-      }
-
-      if (!selectedText || !currentInput) {
-        selectedInputSnapshot = null;
-        return false;
-      }
-
-      if (selectedInputSnapshot === currentInput) {
-        rewriteCurrentInput("", "selection_delete_all");
-        return true;
-      }
-
-      const textRange = findSelectedTextRange();
-      if (!textRange) return false;
-      return deleteInputRange(textRange.startIndex, textRange.endIndex, "selection_delete_text");
-    };
 
     terminal.attachCustomKeyEventHandler((e) => {
       const isMacSelectAll = (
@@ -1674,7 +1241,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
         ((isMacSelectAll && e.metaKey && !e.ctrlKey) || (!isMacSelectAll && e.ctrlKey && !e.metaKey))
       ) {
         e.preventDefault();
-        selectCurrentInputText();
+        inputSelection.selectCurrentInputText();
         return false;
       }
 
@@ -1687,7 +1254,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
         (e.key === "ArrowLeft" || e.key === "ArrowRight")
       ) {
         e.preventDefault();
-        extendKeyboardInputSelection(e.key === "ArrowLeft" ? -1 : 1);
+        inputSelection.extendKeyboardInputSelection(e.key === "ArrowLeft" ? -1 : 1);
         return false;
       }
 
@@ -1698,7 +1265,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
         !e.altKey &&
         !e.metaKey &&
         (e.key === "ArrowLeft" || e.key === "ArrowRight") &&
-        collapseKeyboardInputSelection(e.key === "ArrowLeft" ? -1 : 1)
+        inputSelection.collapseKeyboardInputSelection(e.key === "ArrowLeft" ? -1 : 1)
       ) {
         e.preventDefault();
         return false;
@@ -1711,7 +1278,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
         !e.altKey &&
         !e.metaKey
       ) {
-        if (removeSelectedInputText()) {
+        if (inputSelection.removeSelectedInputText()) {
           e.preventDefault();
           return false;
         }
@@ -1800,13 +1367,11 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
         const copyAndClearSelection = () => {
           void copySelection();
           terminal.clearSelection();
-          keyboardInputSelection = null;
-          selectedInputSnapshot = null;
+          inputSelection.clearInputSelectionState();
         };
         const sendInterrupt = () => {
           markAttentionInputHandled();
-          keyboardInputSelection = null;
-          selectedInputSnapshot = null;
+          inputSelection.clearInputSelectionState();
           invoke("pty_write", { sessionId, data: "\x03" }).catch((err) => reportPtyWriteError("interrupt", err));
         };
         const isMacCopy = isMacSelectAll && e.metaKey && !e.ctrlKey;
@@ -1970,11 +1535,11 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
         return;
       }
       markAttentionInputHandled();
-      const replacingSelectedInput = consumeSelectedInputForReplacement(data);
+      const replacingSelectedInput = inputSelection.consumeSelectedInputForReplacement(data);
       if (!replacingSelectedInput) {
-        selectedInputSnapshot = null;
+        inputSelection.clearSelectedInputSnapshot();
       }
-      keyboardInputSelection = null;
+      inputSelection.clearKeyboardInputSelection();
       const inputBufferBefore = inputBuffer.current;
       const manualDirectCodexOverride = resolveManualDirectCodexEnterData({
         data,
@@ -2451,10 +2016,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       cancelPendingCursorShow();
       detachPasteAndDrop();
       contextMenuTarget.removeEventListener("contextmenu", onContextMenu);
-      if (ENABLE_CLICK_CURSOR_POSITIONING) {
-        contextMenuTarget.removeEventListener("click", moveInputCursorToClick);
-      }
-      contextMenuTarget.removeEventListener("mousedown", clearKeyboardInputSelectionOnMouseDown);
       terminalContainer.removeEventListener("keydown", onImeProcessKeyDown, nativeTextInputListenerOptions);
       terminalContainer.removeEventListener("beforeinput", onNativeTextBeforeInput, nativeTextInputListenerOptions);
       terminalContainer.removeEventListener("input", onNativeTextInput, nativeTextInputListenerOptions);

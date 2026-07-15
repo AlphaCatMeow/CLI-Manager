@@ -29,6 +29,6 @@
     "src/hooks/useTerminalContextMenu.ts",
     "src/lib/terminalOscParse.ts"
   ],
-  "notes": "第1层纯函数抽离(fa85bb4)、域K搜索(f1980a6)、域L右键菜单(4419f91)、域D OSC解析(cde76a5) 已完成。本 task 覆盖剩余的编排层重构 + Display/Input 子系统化 + 修复 a/b。进度：OSC 子系统 hook 已抽出并通过手动验证，提交 47dff31；第3步 Display 已抽出 WebGL、fit/viewport、写队列、隐藏输出缓冲与 pty-output 监听，保留重构前行为语义，提交 7c70cdd。第4步拆为可验证的小切片：第一切片已将命令建议的缓存、定时器、异步请求隔离和浮层定位迁入 useTerminalInput，提交 3a874f6；第二切片已将普通粘贴、截图附件、应用内/系统文件拖放及快捷键/菜单粘贴迁入同一 Input 控制器。选区、onData 转发与 IME 仍待后续迁移。用户验证确认 Claude 反复缩放切 tab 的渲染异常、Codex 缩放时从上到下重载的现象均为重构前既有缺陷；完成所有抽取重构后，再单独决定根因修复范围。",
+  "notes": "第1层纯函数抽离(fa85bb4)、域K搜索(f1980a6)、域L右键菜单(4419f91)、域D OSC解析(cde76a5) 已完成。本 task 覆盖剩余的编排层重构 + Display/Input 子系统化 + 修复 a/b。进度：OSC 子系统 hook 已抽出并通过手动验证，提交 1481650；第3步 Display 已抽出 WebGL、fit/viewport、写队列、隐藏输出缓冲与 pty-output 监听，保留重构前行为语义，提交 e2fbdcf。第4步拆为可验证的小切片：命令建议已迁入 useTerminalInput，提交 6c0f3d0；普通粘贴、截图附件、应用内/系统文件拖放及快捷键/菜单粘贴已迁入同一 Input 控制器，提交 f9f04e5；第三切片已将当前输入选区状态、选区编辑、替换、右键清理和禁用的点击定位路径迁入 useTerminalInput，已提交，待手动验证。后续仅迁移 onData 转发、输入缓冲/命令历史同步与 IME 原生事件。用户验证确认 Claude 反复缩放切 tab 的渲染异常、Codex 缩放时从上到下重载的现象均为重构前既有缺陷；完成所有抽取重构后，再单独决定根因修复范围。",
   "meta": {}
 }
