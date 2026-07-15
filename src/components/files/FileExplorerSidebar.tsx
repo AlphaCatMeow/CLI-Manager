@@ -199,9 +199,21 @@ function splitAutoCollapsedEntries(entries: ProjectFileEntry[], ignoredPaths: Se
   for (const entry of entries) {
     if (entry.kind === "directory" && (isDefaultCollapsedDirectoryName(entry.name) || ignoredPaths.has(entry.path))) {
       collapsedEntries.push(entry);
-    } else {
-      normalEntries.push(entry);
+      continue;
     }
+
+    if (entry.kind === "directory" && entry.children) {
+      const nested = splitAutoCollapsedEntries(entry.children, ignoredPaths);
+      collapsedEntries.push(...nested.collapsedEntries);
+      normalEntries.push(
+        nested.collapsedEntries.length > 0
+          ? { ...entry, children: nested.normalEntries }
+          : entry
+      );
+      continue;
+    }
+
+    normalEntries.push(entry);
   }
 
   return { normalEntries, collapsedEntries };
@@ -359,6 +371,7 @@ function FileNode({
   onFilePointerCancel,
   autoCollapseGroups,
   menuPortalContainer,
+  showRelativePath = false,
 }: {
   entry: ProjectFileEntry;
   depth: number;
@@ -383,6 +396,7 @@ function FileNode({
   onFilePointerCancel: (event: ReactPointerEvent<HTMLElement>) => void;
   autoCollapseGroups: AutoCollapseGroupState;
   menuPortalContainer: HTMLDivElement | null;
+  showRelativePath?: boolean;
 }) {
   const { t } = useI18n();
   const project = useFileExplorerStore((s) => s.project);
@@ -458,7 +472,7 @@ function FileNode({
       onFilePointerCancel={onFilePointerCancel}
       autoCollapseGroups={autoCollapseGroups}
       menuPortalContainer={menuPortalContainer}
-      renderAutoCollapsedGroup
+      renderAutoCollapsedGroup={false}
     />
   ) : null;
 
@@ -535,7 +549,7 @@ function FileNode({
               className="flex min-w-0 flex-1 items-baseline gap-0.5 truncate"
               style={displayStatus ? { color: displayStatus.color } : undefined}
             >
-              <span className="truncate">{entry.name}</span>
+              <span className="truncate">{showRelativePath ? entry.path : entry.name}</span>
               {suffixParts.length > 0 && (
                 <span className="truncate text-[11px] font-normal text-text-muted">
                   /{suffixParts.join("/")}
@@ -671,11 +685,9 @@ function FileTreeRows({
   menuPortalContainer: HTMLDivElement | null;
   renderAutoCollapsedGroup: boolean;
 }) {
-  const { normalEntries, collapsedEntries: currentLevelCollapsedEntries } = splitAutoCollapsedEntries(
-    entries,
-    autoCollapseGroups.ignoredPaths
-  );
-  const collapsedEntries = renderAutoCollapsedGroup ? currentLevelCollapsedEntries : [];
+  const { normalEntries, collapsedEntries } = renderAutoCollapsedGroup
+    ? splitAutoCollapsedEntries(entries, autoCollapseGroups.ignoredPaths)
+    : { normalEntries: entries, collapsedEntries: [] };
   const groupOpen = autoCollapseGroups.expandedGroupPaths.has(parentPath);
 
   return (
@@ -742,6 +754,7 @@ function FileTreeRows({
               onFilePointerCancel={onFilePointerCancel}
               autoCollapseGroups={autoCollapseGroups}
               menuPortalContainer={menuPortalContainer}
+              showRelativePath
             />
           ))}
         </>
