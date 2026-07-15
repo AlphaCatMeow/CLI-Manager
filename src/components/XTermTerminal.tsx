@@ -320,7 +320,6 @@ const withVisibleSelectionTheme = (theme: ITheme, searchActive = false): ITheme 
     ...theme,
     selectionBackground: isLight ? "rgba(37, 99, 235, 0.28)" : "rgba(56, 189, 248, 0.52)",
     selectionInactiveBackground: isLight ? "rgba(37, 99, 235, 0.18)" : "rgba(56, 189, 248, 0.34)",
-    selectionForeground: isLight ? "#0f172a" : "#f8fafc",
   };
 };
 
