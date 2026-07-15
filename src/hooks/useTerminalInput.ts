@@ -1,5 +1,23 @@
 import { useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
 import type { Terminal } from "@xterm/xterm";
+import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { toast } from "sonner";
+import { TERMINAL_FILE_PATH_MIME } from "../lib/aiPathFormatter";
+import {
+  arrayBufferToBase64,
+  createClipboardImageFileName,
+  getClipboardImageFile,
+  hasDataTransferType,
+} from "../lib/terminalClipboardImage";
+import {
+  endTerminalFileDrag,
+  getTerminalFileDropZoneIdAtPoint,
+  getTerminalFileDragText,
+  registerTerminalDropZone,
+  updateTerminalFileDragPointFromEvent,
+} from "../lib/terminalFileDrag";
 import {
   TERMINAL_INPUT_SUGGESTION_AI_MODEL,
   TERMINAL_INPUT_SUGGESTION_BUILTIN_PROMPT,
@@ -10,8 +28,13 @@ import {
   type TerminalInputSuggestion,
   type TerminalInputSuggestionContext,
 } from "../lib/terminalInputSuggestions";
+import { trimTerminalPasteBoundaryLineBreaks } from "../lib/terminalKeyboard";
+import { logError } from "../lib/logger";
+import { defaultShellForOs } from "../lib/shell";
+import { formatShellPathList, joinLocalPath, normalizeShellForKnownOs } from "../lib/terminalShellPath";
 import type { CommandHistoryEntry, CommandTemplate, TerminalSession } from "../lib/types";
 import { useCommandHistoryStore } from "../stores/commandHistoryStore";
+import { useProjectStore } from "../stores/projectStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useTemplateStore } from "../stores/templateStore";
 import { useTerminalStore } from "../stores/terminalStore";
@@ -45,6 +68,8 @@ interface UseTerminalInputOptions {
   canShowSuggestionAtCurrentInputEnd: (terminal: Terminal, input: string) => boolean;
   getTerminalRenderedCellSize: (terminal: Terminal, container: HTMLElement, fallbackFontSize: number) => TerminalCellSize;
   setSuggestionGhost: Dispatch<SetStateAction<TerminalSuggestionGhostState | null>>;
+  getOsPlatformForPathQuoting: () => Promise<Parameters<typeof normalizeShellForKnownOs>[1]>;
+  cleanupExpiredAttachmentsOnce: (rootPath: string | null | undefined) => void;
 }
 
 interface SuggestionContextCache {
@@ -62,6 +87,8 @@ export interface UseTerminalInputResult {
   updateSuggestionGhostPosition: () => void;
   acceptSuggestion: () => boolean;
   onCommandSubmitted: (command: string) => void;
+  attachPasteAndDrop: (terminal: Terminal) => () => void;
+  pasteText: (terminal: Terminal, text: string) => void;
 }
 
 export function useTerminalInput({
@@ -76,6 +103,8 @@ export function useTerminalInput({
   canShowSuggestionAtCurrentInputEnd,
   getTerminalRenderedCellSize,
   setSuggestionGhost,
+  getOsPlatformForPathQuoting,
+  cleanupExpiredAttachmentsOnce,
 }: UseTerminalInputOptions): UseTerminalInputResult {
   const suggestionRef = useRef<TerminalInputSuggestion | null>(null);
   const suggestionRequestIdRef = useRef(0);
@@ -410,6 +439,152 @@ export function useTerminalInput({
     };
   };
 
+  const attachPasteAndDrop = (terminal: Terminal) => {
+    const pasteTarget = containerRef.current;
+    if (!pasteTarget) return () => {};
+
+    const pasteIntoTerminal = (text: string) => pasteText(terminal, text);
+    const pasteListenerOptions = { capture: true } as const;
+    const isPointInsidePasteTarget = (x: number, y: number) => {
+      const rect = pasteTarget.getBoundingClientRect();
+      return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    };
+    const hasTerminalFileDragData = (dataTransfer: DataTransfer | null) => (
+      Boolean(getTerminalFileDragText()) || hasDataTransferType(dataTransfer, TERMINAL_FILE_PATH_MIME)
+    );
+    const unregisterTerminalDropZone = registerTerminalDropZone({
+      id: sessionId,
+      getRect: () => (isVisibleRef.current ? pasteTarget.getBoundingClientRect() : null),
+      paste: pasteIntoTerminal,
+      focus: () => terminal.focus(),
+    });
+    const getShellForPathQuoting = async () => {
+      const os = await getOsPlatformForPathQuoting();
+      const session = useTerminalStore.getState().sessions.find((item) => item.id === sessionId);
+      const sessionShell = normalizeShellForKnownOs(session?.shell, os);
+      if (sessionShell) return sessionShell;
+      const defaultShell = normalizeShellForKnownOs(useSettingsStore.getState().defaultShell, os);
+      return defaultShell ?? defaultShellForOs(os);
+    };
+    const getCurrentDropContext = () => {
+      const session = useTerminalStore.getState().sessions.find((item) => item.id === sessionId);
+      const project = session?.projectId
+        ? useProjectStore.getState().projects.find((item) => item.id === session.projectId)
+        : null;
+      return { session, project };
+    };
+    const savePastedImageForTerminal = async (
+      file: File,
+      context: ReturnType<typeof getCurrentDropContext>,
+    ): Promise<string | null> => {
+      const { session, project } = context;
+      const attachRootPath = project?.path || session?.cwd || null;
+      if (!attachRootPath) return null;
+
+      try {
+        const fileName = createClipboardImageFileName(file);
+        const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
+        const attachedRelativePath = await invoke<string>("file_attach_data", {
+          rootPath: attachRootPath,
+          fileName,
+          dataBase64,
+        });
+        cleanupExpiredAttachmentsOnce(attachRootPath);
+        return joinLocalPath(attachRootPath, attachedRelativePath);
+      } catch (err) {
+        logError("Failed to attach pasted terminal image", { sessionId, err });
+        toast.error("截图粘贴失败", { description: String(err) });
+        return null;
+      }
+    };
+
+    const onPaste = (event: ClipboardEvent) => {
+      const imageFile = getClipboardImageFile(event.clipboardData);
+      const context = getCurrentDropContext();
+      if (imageFile) {
+        event.preventDefault();
+        event.stopPropagation();
+        void savePastedImageForTerminal(imageFile, context).then(async (path) => {
+          if (!path) return;
+          pasteIntoTerminal(formatShellPathList([path], await getShellForPathQuoting()));
+          terminal.focus();
+        });
+        return;
+      }
+
+      const text = event.clipboardData?.getData("text/plain");
+      if (text === undefined) return;
+      event.preventDefault();
+      event.stopPropagation();
+      pasteIntoTerminal(text);
+    };
+    pasteTarget.addEventListener("paste", onPaste, pasteListenerOptions);
+
+    const onDragOver = (event: DragEvent) => {
+      const isActiveTerminalFileDrag = Boolean(getTerminalFileDragText());
+      if (isActiveTerminalFileDrag) updateTerminalFileDragPointFromEvent(event);
+      if (!isPointInsidePasteTarget(event.clientX, event.clientY) || !hasTerminalFileDragData(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    };
+    const onDrop = (event: DragEvent) => {
+      if (!isPointInsidePasteTarget(event.clientX, event.clientY) || !hasTerminalFileDragData(event.dataTransfer)) return;
+      const text = getTerminalFileDragText()
+        || event.dataTransfer?.getData(TERMINAL_FILE_PATH_MIME)
+        || event.dataTransfer?.getData("text/plain")
+        || "";
+      event.preventDefault();
+      event.stopPropagation();
+      if (!text) return;
+      pasteIntoTerminal(text);
+      endTerminalFileDrag();
+      terminal.focus();
+    };
+    window.addEventListener("dragover", onDragOver, true);
+    window.addEventListener("drop", onDrop, true);
+
+    let fileDropCancelled = false;
+    let unlistenFileDrop: (() => void) | null = null;
+    getCurrentWebview().onDragDropEvent(async (event) => {
+      const payload = event.payload;
+      if (payload.type !== "drop" || payload.paths.length === 0 || !isVisibleRef.current) return;
+      const scaleFactor = await getCurrentWindow().scaleFactor().catch(() => window.devicePixelRatio || 1);
+      if (fileDropCancelled) return;
+      const position = payload.position.toLogical(scaleFactor);
+      const dropZoneId = getTerminalFileDropZoneIdAtPoint(position.x, position.y);
+      if (dropZoneId && dropZoneId !== sessionId) return;
+      if (!dropZoneId && (!isActiveRef.current || !isVisibleRef.current)) return;
+
+      pasteIntoTerminal(formatShellPathList(payload.paths, await getShellForPathQuoting()));
+      terminal.focus();
+    }).then((unlisten) => {
+      if (fileDropCancelled) {
+        unlisten();
+      } else {
+        unlistenFileDrop = unlisten;
+      }
+    }).catch((err) => {
+      logError("Failed to listen terminal file drop", { sessionId, err });
+    });
+
+    return () => {
+      pasteTarget.removeEventListener("paste", onPaste, pasteListenerOptions);
+      unregisterTerminalDropZone();
+      window.removeEventListener("dragover", onDragOver, true);
+      window.removeEventListener("drop", onDrop, true);
+      fileDropCancelled = true;
+      unlistenFileDrop?.();
+    };
+  };
+
+  const pasteText = (terminal: Terminal, text: string) => {
+    const normalizedText = trimTerminalPasteBoundaryLineBreaks(text);
+    if (!normalizedText) return;
+    useTerminalStore.getState().markAttentionInputHandled(sessionId);
+    terminal.paste(normalizedText);
+  };
+
   return {
     attachSuggestions,
     clearSuggestion: () => clearSuggestionRef.current(),
@@ -421,5 +596,7 @@ export function useTerminalInput({
       lastSubmittedCommandRef.current = command;
       suggestionContextCacheRef.current = null;
     },
+    attachPasteAndDrop,
+    pasteText,
   };
 }

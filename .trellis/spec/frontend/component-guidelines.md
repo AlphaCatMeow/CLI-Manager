@@ -1231,11 +1231,18 @@ const data = text.replace(/\r\n?/g, "\n");
 invoke("pty_write", { sessionId, data });
 ```
 
+**Contracts**:
+
+- Browser paste, keyboard/menu paste, in-app file drag, and native WebView file drop belong to the Input controller and must converge on one `terminal.paste()` path.
+- `attachPasteAndDrop()` owns its DOM listeners, drop-zone registration, and native drag-drop unlisten callback; its returned cleanup must release all of them, including an unlisten callback that resolves after cleanup begins.
+- File/image paths are formatted for the resolved shell before native paste; do not bypass shell quoting by writing the raw path directly to the PTY.
+
 **Tests / manual checks**:
 
 - [ ] Windows 10 + PowerShell retains scrollback after tab switch / resize / fit.
 - [ ] Claude Code multi-line paste preserves line order and is not submitted line-by-line.
 - [ ] CMD still accepts normal paste and Enter behavior.
+- [ ] Browser text/image paste, app-internal file drag, and system file drop all focus the intended visible terminal only once.
 
 ### Common Mistake: Letting xterm sync updates clear the screen while the user is reading scrollback
 
