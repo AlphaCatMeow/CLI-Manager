@@ -261,6 +261,46 @@ pub(crate) const MIGRATION_CREATE_REQUEST_LOGS_SQL: &str = "
                 );
             ";
 
+const MIGRATION_CREATE_SSH_HOSTS_VERSION: i64 = 20;
+const MIGRATION_CREATE_SSH_HOSTS_DESCRIPTION: &str = "create_ssh_hosts_and_project_environment";
+const MIGRATION_CREATE_SSH_HOSTS_SQL: &str = "
+                CREATE TABLE IF NOT EXISTS ssh_hosts (
+                    id                        TEXT PRIMARY KEY,
+                    name                      TEXT NOT NULL,
+                    group_name                TEXT NOT NULL DEFAULT '',
+                    host                      TEXT NOT NULL DEFAULT '',
+                    port                      INTEGER NOT NULL DEFAULT 22,
+                    username                  TEXT NOT NULL DEFAULT '',
+                    config_alias              TEXT NOT NULL DEFAULT '',
+                    auth_mode                 TEXT NOT NULL DEFAULT 'ssh_config',
+                    identity_file             TEXT NOT NULL DEFAULT '',
+                    credential_ref            TEXT NOT NULL DEFAULT '',
+                    jump_mode                 TEXT NOT NULL DEFAULT 'none',
+                    jump_host_id              TEXT REFERENCES ssh_hosts(id) ON DELETE SET NULL,
+                    proxy_type                TEXT NOT NULL DEFAULT 'none',
+                    proxy_host                TEXT NOT NULL DEFAULT '',
+                    proxy_port                INTEGER NOT NULL DEFAULT 0,
+                    proxy_command             TEXT NOT NULL DEFAULT '',
+                    connect_timeout_sec       INTEGER NOT NULL DEFAULT 15,
+                    server_alive_interval_sec INTEGER NOT NULL DEFAULT 30,
+                    server_alive_count_max    INTEGER NOT NULL DEFAULT 3,
+                    terminal_encoding         TEXT NOT NULL DEFAULT 'UTF-8',
+                    startup_script            TEXT NOT NULL DEFAULT '',
+                    notes                     TEXT NOT NULL DEFAULT '',
+                    sort_order                INTEGER NOT NULL DEFAULT 0,
+                    created_at                TEXT NOT NULL,
+                    updated_at                TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_ssh_hosts_group ON ssh_hosts(group_name, sort_order, name);
+                CREATE INDEX IF NOT EXISTS idx_ssh_hosts_jump ON ssh_hosts(jump_host_id);
+
+                ALTER TABLE projects ADD COLUMN environment_type TEXT NOT NULL DEFAULT 'local';
+                ALTER TABLE projects ADD COLUMN ssh_host_id TEXT REFERENCES ssh_hosts(id) ON DELETE SET NULL;
+                ALTER TABLE projects ADD COLUMN remote_path TEXT NOT NULL DEFAULT '';
+                CREATE INDEX IF NOT EXISTS idx_projects_environment ON projects(environment_type);
+                CREATE INDEX IF NOT EXISTS idx_projects_ssh_host ON projects(ssh_host_id);
+            ";
+
 fn migrations() -> Vec<Migration> {
     vec![
         Migration {
@@ -479,6 +519,12 @@ fn migrations() -> Vec<Migration> {
             version: MIGRATION_CREATE_REQUEST_LOGS_VERSION,
             description: MIGRATION_CREATE_REQUEST_LOGS_DESCRIPTION,
             sql: MIGRATION_CREATE_REQUEST_LOGS_SQL,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: MIGRATION_CREATE_SSH_HOSTS_VERSION,
+            description: MIGRATION_CREATE_SSH_HOSTS_DESCRIPTION,
+            sql: MIGRATION_CREATE_SSH_HOSTS_SQL,
             kind: MigrationKind::Up,
         },
     ]
@@ -897,7 +943,8 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = &event {
-                app.state::<commands::cc_connect::CcConnectManager>().shutdown();
+                app.state::<commands::cc_connect::CcConnectManager>()
+                    .shutdown();
             }
 
             #[cfg(target_os = "macos")]
@@ -914,4 +961,73 @@ pub fn run() {
             #[cfg(not(target_os = "macos"))]
             let _ = (app, event);
         });
+}
+
+#[cfg(test)]
+mod ssh_migration_tests {
+    use super::MIGRATION_CREATE_SSH_HOSTS_SQL;
+    use sqlx::{Connection, Row, SqliteConnection};
+
+    #[tokio::test]
+    async fn ssh_host_migration_preserves_local_defaults_and_foreign_keys() {
+        let mut conn = SqliteConnection::connect(":memory:").await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                path TEXT NOT NULL
+            )",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(MIGRATION_CREATE_SSH_HOSTS_SQL)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+
+        sqlx::query("INSERT INTO projects (id, name, path) VALUES ('local', 'Local', 'D:/repo')")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let local = sqlx::query(
+            "SELECT environment_type, ssh_host_id, remote_path FROM projects WHERE id = 'local'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(local.get::<String, _>("environment_type"), "local");
+        assert_eq!(local.get::<Option<String>, _>("ssh_host_id"), None);
+        assert_eq!(local.get::<String, _>("remote_path"), "");
+
+        sqlx::query(
+            "INSERT INTO ssh_hosts (id, name, host, created_at, updated_at)
+             VALUES ('host-1', 'Server', 'example.com', '1', '1')",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (
+                id, name, path, environment_type, ssh_host_id, remote_path
+             ) VALUES ('remote', 'Remote', '', 'ssh', 'host-1', '/srv/app')",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM ssh_hosts WHERE id = 'host-1'")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let remote = sqlx::query("SELECT ssh_host_id FROM projects WHERE id = 'remote'")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(remote.get::<Option<String>, _>("ssh_host_id"), None);
+    }
 }

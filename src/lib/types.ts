@@ -8,6 +8,74 @@ export interface Group {
 
 export type WorktreeIsolationStrategy = "prompt" | "disabled" | "autoParallel" | "always";
 
+export type ProjectEnvironmentType = "local" | "wsl" | "ssh";
+
+export type SshAuthMode =
+  | "ssh_config"
+  | "agent"
+  | "identity_file"
+  | "password_prompt"
+  | "interactive"
+  | "credential_ref";
+
+export type SshJumpMode = "none" | "host" | "proxy_jump";
+
+export type SshProxyType = "none" | "http" | "socks5" | "proxy_command";
+
+export interface SshHost {
+  id: string;
+  name: string;
+  group_name: string;
+  host: string;
+  port: number;
+  username: string;
+  config_alias: string;
+  auth_mode: SshAuthMode;
+  identity_file: string;
+  credential_ref: string;
+  jump_mode: SshJumpMode;
+  jump_host_id: string | null;
+  proxy_type: SshProxyType;
+  proxy_host: string;
+  proxy_port: number;
+  proxy_command: string;
+  connect_timeout_sec: number;
+  server_alive_interval_sec: number;
+  server_alive_count_max: number;
+  terminal_encoding: string;
+  startup_script: string;
+  notes: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateSshHostInput {
+  name: string;
+  group_name?: string;
+  host?: string;
+  port?: number;
+  username?: string;
+  config_alias?: string;
+  auth_mode?: SshAuthMode;
+  identity_file?: string;
+  credential_ref?: string;
+  jump_mode?: SshJumpMode;
+  jump_host_id?: string | null;
+  proxy_type?: SshProxyType;
+  proxy_host?: string;
+  proxy_port?: number;
+  proxy_command?: string;
+  connect_timeout_sec?: number;
+  server_alive_interval_sec?: number;
+  server_alive_count_max?: number;
+  terminal_encoding?: string;
+  startup_script?: string;
+  notes?: string;
+}
+
+export type UpdateSshHostInput = Partial<CreateSshHostInput> & { sort_order?: number };
+
 export type WorktreeStatus = "active" | "missing";
 
 export interface WorktreeRecord {
@@ -41,6 +109,9 @@ export interface Project {
   worktree_strategy: WorktreeIsolationStrategy;
   worktree_root: string;
   worktree_deps_prompt_enabled: number;
+  environment_type: ProjectEnvironmentType;
+  ssh_host_id: string | null;
+  remote_path: string;
   created_at: string;
   updated_at: string;
 }
@@ -59,6 +130,9 @@ export interface CreateProjectInput {
   worktree_strategy?: WorktreeIsolationStrategy;
   worktree_root?: string;
   worktree_deps_prompt_enabled?: number;
+  environment_type?: ProjectEnvironmentType;
+  ssh_host_id?: string | null;
+  remote_path?: string;
 }
 
 export interface UpdateProjectInput {
@@ -76,6 +150,9 @@ export interface UpdateProjectInput {
   worktree_strategy?: WorktreeIsolationStrategy;
   worktree_root?: string;
   worktree_deps_prompt_enabled?: number;
+  environment_type?: ProjectEnvironmentType;
+  ssh_host_id?: string | null;
+  remote_path?: string;
 }
 
 export type TerminalScope =

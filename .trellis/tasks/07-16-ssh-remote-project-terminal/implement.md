@@ -51,6 +51,8 @@
 
 ### Stage 1：领域模型与数据库
 
+状态：已完成并通过阶段 review（2026-07-17）。验证：SSH migration 定向 Rust 测试、`cargo check`、`npx tsc --noEmit`。
+
 1. 新增 `ssh_hosts` 表及索引。
 2. 为 `projects` 增加 `environment_type`、`ssh_host_id`、`remote_path`。
 3. 旧项目迁移为 `local`，不改变现有 `path` 行为。

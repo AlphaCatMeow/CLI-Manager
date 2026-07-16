@@ -213,10 +213,11 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         let projectHealth = get().projectHealth;
         if (policy.includePathHealth && projects.length > 0) {
           try {
-            const paths = projects.map((p) => p.path);
+            const localProjects = projects.filter((project) => project.environment_type !== "ssh");
+            const paths = localProjects.map((project) => project.path);
             const results = await invoke<boolean[]>("check_paths_exist", { paths });
             const health: Record<string, boolean> = {};
-            projects.forEach((p, i) => { health[p.id] = results[i]; });
+            localProjects.forEach((project, index) => { health[project.id] = results[index]; });
             projectHealth = health;
           } catch { /* ignore */ }
         }
@@ -238,10 +239,11 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     const projects = get().projects;
     if (projects.length > 0) {
       try {
-        const paths = projects.map((project) => project.path);
+        const localProjects = projects.filter((project) => project.environment_type !== "ssh");
+        const paths = localProjects.map((project) => project.path);
         const results = await invoke<boolean[]>("check_paths_exist", { paths });
         const projectHealth: Record<string, boolean> = {};
-        projects.forEach((project, index) => {
+        localProjects.forEach((project, index) => {
           projectHealth[project.id] = results[index];
         });
         set({ projectHealth });
@@ -373,6 +375,9 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       worktree_strategy: input.worktree_strategy ?? "disabled",
       worktree_root: input.worktree_root ?? "",
       worktree_deps_prompt_enabled: input.worktree_deps_prompt_enabled ?? 0,
+      environment_type: input.environment_type ?? "local",
+      ssh_host_id: input.ssh_host_id ?? null,
+      remote_path: input.remote_path ?? "",
       created_at: ts,
       updated_at: ts,
     };
@@ -380,9 +385,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       `INSERT INTO projects (
          id, name, path, group_name, group_id, sort_order,
          cli_tool, cli_args, startup_cmd, env_vars, shell, provider_overrides,
-         worktree_strategy, worktree_root, worktree_deps_prompt_enabled, created_at, updated_at
+         worktree_strategy, worktree_root, worktree_deps_prompt_enabled,
+         environment_type, ssh_host_id, remote_path, created_at, updated_at
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
       [
         project.id,
         project.name,
@@ -399,6 +405,9 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         project.worktree_strategy,
         project.worktree_root,
         project.worktree_deps_prompt_enabled,
+        project.environment_type,
+        project.ssh_host_id,
+        project.remote_path,
         project.created_at,
         project.updated_at,
       ]
