@@ -7,6 +7,7 @@ import {
   Keyboard,
   PanelLeft,
   PawPrint,
+  RadioTower,
   RefreshCw,
   ServerCog,
   Settings2,
@@ -34,6 +35,7 @@ import { ProviderSettingsPage } from "./settings/pages/ProviderSettingsPage";
 import { ModelPricingSettingsPage } from "./settings/pages/ModelPricingSettingsPage";
 import { AboutSettingsPage } from "./settings/pages/AboutSettingsPage";
 import { DesktopPetSettingsPage } from "./settings/pages/DesktopPetSettingsPage";
+import { CcConnectSettingsPage } from "./settings/pages/CcConnectSettingsPage";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useI18n, type TranslationKey } from "../lib/i18n";
 import { normalizeFontFamilyStack } from "../lib/systemFonts";
@@ -48,6 +50,7 @@ export type SettingsTab =
   | "templates"
   | "providers"
   | "model-pricing"
+  | "cc-connect"
   | "sync"
   | "hooks"
   | "statusline"
@@ -70,6 +73,7 @@ const SETTINGS_TAB_ORDER: SettingsTab[] = [
   "templates",
   "providers",
   "model-pricing",
+  "cc-connect",
   "sync",
   "hooks",
   "statusline",
@@ -137,6 +141,12 @@ const SETTINGS_TAB_CONFIG: Record<SettingsTab, SettingsTabConfig> = {
     description: "settings.tabs.modelPricing.description",
     icon: Coins,
     searchPlaceholder: "settings.tabs.modelPricing.search",
+  },
+  "cc-connect": {
+    label: "settings.tabs.ccConnect.label",
+    title: "settings.tabs.ccConnect.title",
+    description: "settings.tabs.ccConnect.description",
+    icon: RadioTower,
   },
   sync: {
     label: "settings.tabs.sync.label",
@@ -255,6 +265,7 @@ export function SettingsModal({ open, onClose, onAfterClose, initialTab, onActiv
     if (activeTab === "templates") return <TemplateSettingsPage searchValue={searchValue} />;
     if (activeTab === "providers") return <ProviderSettingsPage searchValue={searchValue} />;
     if (activeTab === "model-pricing") return <ModelPricingSettingsPage searchValue={searchValue} />;
+    if (activeTab === "cc-connect") return <CcConnectSettingsPage />;
     if (activeTab === "sync") return <SyncSettingsPage />;
     if (activeTab === "hooks") return <HookSettingsPage />;
     if (activeTab === "statusline") return <StatuslineSettingsPage searchValue={searchValue} />;
