@@ -555,6 +555,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if commands::cc_connect::handle_single_instance_args(app, &args) {
+                return;
+            }
             if let Some(session_id) = background_session_arg(&args) {
                 set_pending_background_session(app, session_id);
             }

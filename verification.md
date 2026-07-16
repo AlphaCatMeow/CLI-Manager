@@ -33,3 +33,13 @@
 - npm run build 通过；仅有既有的动态/静态混合导入和大 chunk 警告。
 - git diff --check 通过，仅有工作区既有的 LF/CRLF 转换提示。
 - 尚未启动 Tauri 窗口手动检查开关交互与中英文切换；本次未打包。
+
+## 远程项目切换增量验证（2026-07-16）
+
+- 新增 /cli-manager-list，输出托管配置生成时 CLI-Manager 已登记的项目、路径、当前项目及不可用路径状态。
+- 新增 /cli-manager-switch <序号>，通过固定别名和项目 ID 摘要令牌请求已运行的 CLI-Manager 更新 profile/config，再延迟重启受管 cc-connect。
+- 切换参数不接受任意路径；/dir、/shell、/commands 等高风险命令仍保持禁用。
+- cargo test cc_connect::tests --lib 通过：15 项通过、0 项失败；包含真实 cc-connect v1.4.1 配置格式验证和 Windows PowerShell UTF-8 清单输出。
+- cargo check 通过。
+- npm run build 通过；仅有既有的动态/静态混合导入和大 chunk 警告。
+- 未执行真实 Telegram/飞书消息下的单实例回调与受管进程重启冒烟；需使用新构建安装包验证。

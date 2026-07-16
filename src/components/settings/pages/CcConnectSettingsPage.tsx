@@ -217,7 +217,7 @@ export function CcConnectSettingsPage() {
 
   useEffect(() => {
     void refreshStatus(true, true);
-    const statusTimer = window.setInterval(() => void refreshStatus(false, false, true), 2_000);
+    const statusTimer = window.setInterval(() => void refreshStatus(false, true, true), 2_000);
     return () => {
       window.clearInterval(statusTimer);
     };

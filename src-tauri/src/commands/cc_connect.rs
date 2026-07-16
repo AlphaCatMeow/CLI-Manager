@@ -16,6 +16,7 @@ use tauri::{AppHandle, Manager, State};
 
 const PROFILE_FILE_NAME: &str = "profile.json";
 const CONFIG_FILE_NAME: &str = "config.toml";
+const PROJECT_LIST_FILE_NAME: &str = "cli-manager-projects.txt";
 const LOG_FILE_NAME: &str = "cc-connect.log";
 const MAX_LOG_LINES: usize = 1_000;
 const DEFAULT_LOG_PAGE_SIZE: usize = 200;
@@ -25,6 +26,8 @@ const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(6);
 const CONFIG_FORMAT_TIMEOUT: Duration = Duration::from_secs(8);
 const LOCAL_PROXY_CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
 const LOCAL_PROXY_PORTS: [u16; 2] = [7890, 10808];
+const REMOTE_SWITCH_ARG_PREFIX: &str = "--cc-connect-switch=";
+const REMOTE_SWITCH_RESTART_DELAY: Duration = Duration::from_secs(5);
 const PROXY_ENV_KEYS: [&str; 6] = [
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -598,6 +601,8 @@ struct ManagedConfig {
     webhook: DisabledFeature,
     bridge: DisabledFeature,
     management: DisabledFeature,
+    commands: Vec<ManagedCommand>,
+    aliases: Vec<ManagedAlias>,
     projects: Vec<ManagedProject>,
 }
 #[derive(Serialize)]
@@ -645,10 +650,46 @@ struct ManagedPlatform {
     options: BTreeMap<String, toml::Value>,
 }
 
-fn build_managed_config(profile: &CcConnectProfile) -> Result<ManagedConfig, String> {
+#[derive(Serialize)]
+struct ManagedCommand {
+    name: String,
+    description: String,
+    exec: String,
+    work_dir: String,
+}
+
+#[derive(Serialize)]
+struct ManagedAlias {
+    name: String,
+    command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegisteredProject {
+    id: String,
+    name: String,
+    path: String,
+    agent: CcConnectAgent,
+}
+
+fn build_managed_config(
+    profile: &CcConnectProfile,
+    registered_projects: &[RegisteredProject],
+    cli_manager_executable: &Path,
+    project_list_path: &Path,
+) -> Result<ManagedConfig, String> {
     let allow_from = normalize_allow_from(profile.platform, &profile.allow_from)?;
+    let (commands, aliases) = build_remote_project_commands(
+        profile,
+        registered_projects,
+        cli_manager_executable,
+        project_list_path,
+    )?;
     let mut options = BTreeMap::new();
-    options.insert("allow_from".to_string(), toml::Value::String(allow_from));
+    options.insert(
+        "allow_from".to_string(),
+        toml::Value::String(allow_from.clone()),
+    );
     options.insert("group_reply_all".to_string(), toml::Value::Boolean(false));
     options.insert(
         "share_session_in_channel".to_string(),
@@ -699,9 +740,13 @@ fn build_managed_config(profile: &CcConnectProfile) -> Result<ManagedConfig, Str
         webhook: DisabledFeature { enabled: false },
         bridge: DisabledFeature { enabled: false },
         management: DisabledFeature { enabled: false },
+        commands,
+        aliases,
         projects: vec![ManagedProject {
             name: profile.project_name.clone(),
-            admin_from: String::new(),
+            // Exec-backed CLI-Manager commands require cc-connect admin status.
+            // Every other privileged built-in remains disabled below.
+            admin_from: allow_from,
             // Preserve basic session controls while blocking commands that can
             // change authorization, persistence, providers, workspaces, or files.
             disabled_commands: [
@@ -766,6 +811,145 @@ fn build_managed_config(profile: &CcConnectProfile) -> Result<ManagedConfig, Str
             }],
         }],
     })
+}
+
+fn build_remote_project_commands(
+    profile: &CcConnectProfile,
+    registered_projects: &[RegisteredProject],
+    cli_manager_executable: &Path,
+    project_list_path: &Path,
+) -> Result<(Vec<ManagedCommand>, Vec<ManagedAlias>), String> {
+    let work_dir = config_path_value(&remote_manager_dir()?);
+    let list_path = powershell_single_quoted(&user_path_string(project_list_path));
+    let list_description = match profile.language {
+        CcConnectLanguage::Zh => "列出 CLI-Manager 已登记项目",
+        CcConnectLanguage::En => "List projects registered in CLI-Manager",
+    };
+    let list_exec = format!(
+        "$OutputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding; \
+         Get-Content -Raw -Encoding UTF8 -LiteralPath {list_path}; $null='{{{{0:}}}}'"
+    );
+    let mut commands = vec![ManagedCommand {
+        name: "cli-manager-list".to_string(),
+        description: list_description.to_string(),
+        exec: list_exec,
+        work_dir: work_dir.clone(),
+    }];
+    let mut aliases = Vec::with_capacity(registered_projects.len());
+    let executable = powershell_single_quoted(&user_path_string(cli_manager_executable));
+
+    for (index, project) in registered_projects.iter().enumerate() {
+        let number = index + 1;
+        let token = project_switch_token(&project.id);
+        let result_path = switch_result_path(&token)?;
+        let result = powershell_single_quoted(&user_path_string(&result_path));
+        let switch_arg = powershell_single_quoted(&format!("{REMOTE_SWITCH_ARG_PREFIX}{token}"));
+        let timeout_message = match profile.language {
+            CcConnectLanguage::Zh => "CLI-Manager 项目切换请求超时。",
+            CcConnectLanguage::En => "The CLI-Manager project switch request timed out.",
+        };
+        let timeout_message = powershell_single_quoted(timeout_message);
+        let exec = format!(
+            "$OutputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding; \
+             $result={result}; Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue; \
+             Start-Process -FilePath {executable} -ArgumentList {switch_arg} -Wait -WindowStyle Hidden | Out-Null; \
+             $deadline=(Get-Date).AddSeconds(10); \
+             while (!(Test-Path -LiteralPath $result) -and (Get-Date) -lt $deadline) {{ Start-Sleep -Milliseconds 100 }}; \
+             if (Test-Path -LiteralPath $result) {{ Get-Content -Raw -Encoding UTF8 -LiteralPath $result }} \
+             else {{ Write-Output {timeout_message} }}; $null='{{{{0:}}}}'"
+        );
+        let internal_name = format!("cli-manager-switch-{number}");
+        commands.push(ManagedCommand {
+            name: internal_name.clone(),
+            description: match profile.language {
+                CcConnectLanguage::Zh => format!("切换到 CLI-Manager 项目 {}", project.name),
+                CcConnectLanguage::En => {
+                    format!("Switch to CLI-Manager project {}", project.name)
+                }
+            },
+            exec,
+            work_dir: work_dir.clone(),
+        });
+        aliases.push(ManagedAlias {
+            name: format!("/cli-manager-switch {number}"),
+            command: format!("/{internal_name}"),
+        });
+    }
+    Ok((commands, aliases))
+}
+
+fn powershell_single_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn project_switch_token(project_id: &str) -> String {
+    format!("{:x}", Sha256::digest(project_id.as_bytes()))[..32].to_string()
+}
+
+fn project_list_path() -> Result<PathBuf, String> {
+    Ok(remote_manager_dir()?.join(PROJECT_LIST_FILE_NAME))
+}
+
+fn switch_result_path(token: &str) -> Result<PathBuf, String> {
+    if token.len() != 32 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("invalid CLI-Manager project switch token".to_string());
+    }
+    Ok(remote_manager_dir()?.join(format!("switch-result-{token}.txt")))
+}
+
+fn remote_switch_token_from_args(args: &[String]) -> Option<&str> {
+    args.iter()
+        .find_map(|arg| arg.strip_prefix(REMOTE_SWITCH_ARG_PREFIX))
+}
+
+fn render_project_list(
+    profile: &CcConnectProfile,
+    registered_projects: &[RegisteredProject],
+) -> String {
+    let mut output = match profile.language {
+        CcConnectLanguage::Zh => format!(
+            "CLI-Manager 项目（当前：{}）\n",
+            single_line(&profile.project_name)
+        ),
+        CcConnectLanguage::En => format!(
+            "CLI-Manager projects (current: {})\n",
+            single_line(&profile.project_name)
+        ),
+    };
+    if registered_projects.is_empty() {
+        output.push_str(match profile.language {
+            CcConnectLanguage::Zh => "\n暂无已登记项目。",
+            CcConnectLanguage::En => "\nNo registered projects.",
+        });
+        return output;
+    }
+    for (index, project) in registered_projects.iter().enumerate() {
+        let current = project.id == profile.project_id;
+        let unavailable = !Path::new(&project.path).is_dir();
+        let state = match (profile.language, current, unavailable) {
+            (CcConnectLanguage::Zh, true, false) => " [当前]",
+            (CcConnectLanguage::Zh, _, true) => " [路径不可用]",
+            (CcConnectLanguage::En, true, false) => " [current]",
+            (CcConnectLanguage::En, _, true) => " [path unavailable]",
+            _ => "",
+        };
+        output.push_str(&format!(
+            "\n{}. {}{}\n   {}",
+            index + 1,
+            single_line(&project.name),
+            state,
+            single_line(&user_path_string(Path::new(&project.path)))
+        ));
+    }
+    output.push_str(match profile.language {
+        CcConnectLanguage::Zh => "\n\n切换项目：/cli-manager-switch <序号>",
+        CcConnectLanguage::En => "\n\nSwitch project: /cli-manager-switch <number>",
+    });
+    output
+}
+
+fn single_line(value: &str) -> String {
+    value.replace(['\r', '\n'], " ").trim().to_string()
 }
 
 fn user_path_string(path: &Path) -> String {
@@ -854,9 +1038,44 @@ fn write_managed_config(profile: &CcConnectProfile) -> Result<PathBuf, String> {
     fs::create_dir_all(data_dir()?)
         .map_err(|err| format!("create cc-connect data dir failed: {err}"))?;
     let path = config_path()?;
-    let payload = toml::to_string_pretty(&build_managed_config(profile)?)
-        .map_err(|err| format!("serialize cc-connect config failed: {err}"))?;
-    write_file_atomically(&path, payload.as_bytes(), "cc-connect config")?;
+    let list_path = project_list_path()?;
+    let registered_projects = load_registered_projects()?;
+    let cli_manager_executable = std::env::current_exe()
+        .map_err(|err| format!("resolve CLI-Manager executable failed: {err}"))?;
+    let payload = toml::to_string_pretty(&build_managed_config(
+        profile,
+        &registered_projects,
+        &cli_manager_executable,
+        &list_path,
+    )?)
+    .map_err(|err| format!("serialize cc-connect config failed: {err}"))?;
+    let list_payload = render_project_list(profile, &registered_projects);
+    let config_snapshot = FileSnapshot::capture(path.clone(), "cc-connect config")?;
+    let list_snapshot = FileSnapshot::capture(list_path.clone(), "CLI-Manager project list")?;
+    if let Err(write_error) = (|| {
+        write_file_atomically(
+            &list_path,
+            list_payload.as_bytes(),
+            "CLI-Manager project list",
+        )?;
+        write_file_atomically(&path, payload.as_bytes(), "cc-connect config")
+    })() {
+        let mut rollback_errors = Vec::new();
+        if let Err(err) = config_snapshot.restore() {
+            rollback_errors.push(err);
+        }
+        if let Err(err) = list_snapshot.restore() {
+            rollback_errors.push(err);
+        }
+        return if rollback_errors.is_empty() {
+            Err(write_error)
+        } else {
+            Err(format!(
+                "{write_error}; rollback failed: {}",
+                rollback_errors.join("; ")
+            ))
+        };
+    }
     Ok(path)
 }
 
@@ -990,12 +1209,12 @@ fn profile_issue_codes(profile: &CcConnectProfile) -> Vec<String> {
     issues
 }
 
-fn validate_registered_project(profile: &CcConnectProfile) -> Result<(), String> {
+fn load_registered_projects() -> Result<Vec<RegisteredProject>, String> {
     let database_path = crate::app_paths::db_path()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|err| format!("create project validation runtime failed: {err}"))?;
+        .map_err(|err| format!("create project query runtime failed: {err}"))?;
     runtime.block_on(async {
         let options = SqliteConnectOptions::new()
             .filename(&database_path)
@@ -1004,31 +1223,66 @@ fn validate_registered_project(profile: &CcConnectProfile) -> Result<(), String>
         let mut connection = SqliteConnection::connect_with(&options)
             .await
             .map_err(|err| format!("open CLI-Manager project database failed: {err}"))?;
-        let row = sqlx::query("SELECT name, path FROM projects WHERE id = ? LIMIT 1")
-            .bind(&profile.project_id)
-            .fetch_optional(&mut connection)
-            .await
-            .map_err(|err| format!("query CLI-Manager project failed: {err}"))?
-            .ok_or_else(|| "selected project is no longer registered in CLI-Manager".to_string())?;
-        let current_name: String = row
-            .try_get("name")
-            .map_err(|err| format!("read project name failed: {err}"))?;
-        let current_path: String = row
-            .try_get("path")
-            .map_err(|err| format!("read project path failed: {err}"))?;
-        let current_path = PathBuf::from(current_path)
-            .canonicalize()
-            .map_err(|err| format!("canonicalize registered project path failed: {err}"))?;
-        let profile_path = PathBuf::from(&profile.project_path)
-            .canonicalize()
-            .map_err(|err| format!("canonicalize remote profile project path failed: {err}"))?;
-        if current_name != profile.project_name || current_path != profile_path {
-            return Err(
-                "remote profile is stale; save it again from the current project list".to_string(),
-            );
-        }
-        Ok(())
+        let rows = sqlx::query(
+            "SELECT id, name, path, cli_tool FROM projects \
+             ORDER BY sort_order ASC, name COLLATE NOCASE ASC, id ASC",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .map_err(|err| format!("query CLI-Manager projects failed: {err}"))?;
+        rows.into_iter()
+            .map(|row| {
+                let cli_tool: String = row
+                    .try_get("cli_tool")
+                    .map_err(|err| format!("read project CLI tool failed: {err}"))?;
+                Ok(RegisteredProject {
+                    id: row
+                        .try_get("id")
+                        .map_err(|err| format!("read project ID failed: {err}"))?,
+                    name: row
+                        .try_get("name")
+                        .map_err(|err| format!("read project name failed: {err}"))?,
+                    path: row
+                        .try_get("path")
+                        .map_err(|err| format!("read project path failed: {err}"))?,
+                    agent: if cli_tool.to_ascii_lowercase().contains("codex") {
+                        CcConnectAgent::Codex
+                    } else {
+                        CcConnectAgent::Claude
+                    },
+                })
+            })
+            .collect()
     })
+}
+
+fn registered_project_by_token(token: &str) -> Result<RegisteredProject, String> {
+    if switch_result_path(token).is_err() {
+        return Err("invalid CLI-Manager project switch token".to_string());
+    }
+    load_registered_projects()?
+        .into_iter()
+        .find(|project| project_switch_token(&project.id).eq_ignore_ascii_case(token))
+        .ok_or_else(|| "the selected project is no longer registered in CLI-Manager".to_string())
+}
+
+fn validate_registered_project(profile: &CcConnectProfile) -> Result<(), String> {
+    let project = load_registered_projects()?
+        .into_iter()
+        .find(|project| project.id == profile.project_id)
+        .ok_or_else(|| "selected project is no longer registered in CLI-Manager".to_string())?;
+    let current_path = PathBuf::from(&project.path)
+        .canonicalize()
+        .map_err(|err| format!("canonicalize registered project path failed: {err}"))?;
+    let profile_path = PathBuf::from(&profile.project_path)
+        .canonicalize()
+        .map_err(|err| format!("canonicalize remote profile project path failed: {err}"))?;
+    if project.name != profile.project_name || current_path != profile_path {
+        return Err(
+            "remote profile is stale; save it again from the current project list".to_string(),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -1308,6 +1562,14 @@ impl FileSnapshot {
     }
 }
 
+struct RemoteSwitchOutcome {
+    language: CcConnectLanguage,
+    project_name: String,
+    project_path: String,
+    restart_required: bool,
+    already_current: bool,
+}
+
 impl CcConnectManager {
     fn save_profile(&self, request: CcConnectSaveProfileRequest) -> Result<(), String> {
         let _operation = self
@@ -1329,6 +1591,8 @@ impl CcConnectManager {
         let profile = normalize_profile(self, request.profile.clone())?;
         let credential_snapshot = CredentialSnapshot::capture(Some(request.profile.platform))?;
         let config_snapshot = FileSnapshot::capture(config_path()?, "cc-connect config")?;
+        let project_list_snapshot =
+            FileSnapshot::capture(project_list_path()?, "CLI-Manager project list")?;
         let profile_snapshot = FileSnapshot::capture(profile_path()?, "cc-connect profile")?;
         if let Err(save_error) = (|| {
             save_request_credentials(&request)?;
@@ -1340,6 +1604,9 @@ impl CcConnectManager {
                 rollback_errors.push(err);
             }
             if let Err(err) = config_snapshot.restore() {
+                rollback_errors.push(err);
+            }
+            if let Err(err) = project_list_snapshot.restore() {
                 rollback_errors.push(err);
             }
             if let Err(err) = credential_snapshot.restore() {
@@ -1361,6 +1628,81 @@ impl CcConnectManager {
             profile.project_name, profile.platform
         ));
         Ok(())
+    }
+
+    fn switch_project_from_remote(&self, token: &str) -> Result<RemoteSwitchOutcome, String> {
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| "cc-connect operation lock poisoned".to_string())?;
+        self.refresh_process_state();
+        let mut profile =
+            load_profile()?.ok_or_else(|| "cc-connect profile is not configured".to_string())?;
+        let project = registered_project_by_token(token)?;
+        let already_current = project.id == profile.project_id;
+        let restart_required = {
+            let state = self
+                .process
+                .lock()
+                .map_err(|_| "cc-connect process lock poisoned".to_string())?;
+            if state.starting {
+                return Err("cc-connect is still starting; retry shortly".to_string());
+            }
+            state.process.is_some() && !already_current
+        };
+        if already_current {
+            return Ok(RemoteSwitchOutcome {
+                language: profile.language,
+                project_name: profile.project_name,
+                project_path: user_path_string(Path::new(&profile.project_path)),
+                restart_required: false,
+                already_current: true,
+            });
+        }
+
+        profile.project_id = project.id;
+        profile.project_name = project.name;
+        profile.project_path = project.path;
+        profile.agent = project.agent;
+        let profile = normalize_profile(self, profile)?;
+        let config_snapshot = FileSnapshot::capture(config_path()?, "cc-connect config")?;
+        let project_list_snapshot =
+            FileSnapshot::capture(project_list_path()?, "CLI-Manager project list")?;
+        let profile_snapshot = FileSnapshot::capture(profile_path()?, "cc-connect profile")?;
+        if let Err(save_error) = (|| {
+            write_managed_config(&profile)?;
+            persist_profile(&profile)
+        })() {
+            let mut rollback_errors = Vec::new();
+            if let Err(err) = profile_snapshot.restore() {
+                rollback_errors.push(err);
+            }
+            if let Err(err) = config_snapshot.restore() {
+                rollback_errors.push(err);
+            }
+            if let Err(err) = project_list_snapshot.restore() {
+                rollback_errors.push(err);
+            }
+            return if rollback_errors.is_empty() {
+                Err(save_error)
+            } else {
+                Err(format!(
+                    "{save_error}; rollback failed: {}",
+                    rollback_errors.join("; ")
+                ))
+            };
+        }
+        self.append_system_log(format!(
+            "cc-connect remote project switched to '{}' ({})",
+            profile.project_name, profile.project_path
+        ));
+        Ok(RemoteSwitchOutcome {
+            language: profile.language,
+            project_name: profile.project_name,
+            project_path: user_path_string(Path::new(&profile.project_path)),
+            restart_required,
+            already_current: false,
+        })
     }
 
     fn clear_credentials(&self, platform: Option<CcConnectPlatform>) -> Result<(), String> {
@@ -1767,6 +2109,73 @@ impl CcConnectManager {
     }
 }
 
+pub fn handle_single_instance_args(app: &AppHandle, args: &[String]) -> bool {
+    let Some(token) = remote_switch_token_from_args(args) else {
+        return false;
+    };
+    let language = load_profile()
+        .ok()
+        .flatten()
+        .map(|profile| profile.language)
+        .unwrap_or(CcConnectLanguage::Zh);
+    let result_path = match switch_result_path(token) {
+        Ok(path) => path,
+        Err(err) => {
+            log::warn!("ignored invalid cc-connect remote switch request: {err}");
+            return true;
+        }
+    };
+    let manager = app.state::<CcConnectManager>().inner().clone();
+    let token = token.to_string();
+    std::thread::spawn(move || {
+        let outcome = manager.switch_project_from_remote(&token);
+        let (message, restart_required) = match outcome {
+            Ok(outcome) => {
+                let message = match (outcome.language, outcome.already_current) {
+                    (CcConnectLanguage::Zh, true) => {
+                        format!("当前已经是 CLI-Manager 项目：{}", outcome.project_name)
+                    }
+                    (CcConnectLanguage::En, true) => {
+                        format!("Already using CLI-Manager project: {}", outcome.project_name)
+                    }
+                    (CcConnectLanguage::Zh, false) => format!(
+                        "已切换到 CLI-Manager 项目：{}\n工作目录：{}\n远程连接将在数秒内重启。",
+                        outcome.project_name, outcome.project_path
+                    ),
+                    (CcConnectLanguage::En, false) => format!(
+                        "Switched to CLI-Manager project: {}\nWorking directory: {}\nRemote access will restart in a few seconds.",
+                        outcome.project_name, outcome.project_path
+                    ),
+                };
+                (message, outcome.restart_required)
+            }
+            Err(err) => (
+                match language {
+                    CcConnectLanguage::Zh => format!("切换 CLI-Manager 项目失败：{err}"),
+                    CcConnectLanguage::En => {
+                        format!("Failed to switch CLI-Manager project: {err}")
+                    }
+                },
+                false,
+            ),
+        };
+        if let Err(err) = write_file_atomically(
+            &result_path,
+            message.as_bytes(),
+            "cc-connect project switch result",
+        ) {
+            log::warn!("write cc-connect project switch result failed: {err}");
+        }
+        if restart_required {
+            std::thread::sleep(REMOTE_SWITCH_RESTART_DELAY);
+            if let Err(err) = manager.restart() {
+                log::warn!("restart cc-connect after remote project switch failed: {err}");
+            }
+        }
+    });
+    true
+}
+
 fn format_and_check_config_syntax(executable: &Path, config: &Path) -> Result<(), String> {
     let mut command = silent_command(&path_string(executable));
     command.args(["config", "format", "--config"]).arg(config);
@@ -2040,6 +2449,7 @@ pub fn auto_start(app: &AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn sample_profile(project_path: &Path) -> CcConnectProfile {
         CcConnectProfile {
             auto_start: false,
@@ -2054,6 +2464,15 @@ mod tests {
             proxy_url: None,
             logging_enabled: false,
             language: CcConnectLanguage::Zh,
+        }
+    }
+
+    fn sample_registered_project(id: &str, name: &str, project_path: &Path) -> RegisteredProject {
+        RegisteredProject {
+            id: id.to_string(),
+            name: name.to_string(),
+            path: path_string(project_path),
+            agent: CcConnectAgent::Claude,
         }
     }
     #[test]
@@ -2243,8 +2662,22 @@ mod tests {
     #[test]
     fn managed_config_is_safe() {
         let project = tempfile::tempdir().unwrap();
-        let raw = toml::to_string(&build_managed_config(&sample_profile(project.path())).unwrap())
-            .unwrap();
+        let profile = sample_profile(project.path());
+        let projects = vec![sample_registered_project(
+            &profile.project_id,
+            &profile.project_name,
+            project.path(),
+        )];
+        let raw = toml::to_string(
+            &build_managed_config(
+                &profile,
+                &projects,
+                Path::new(r"C:\Program Files\CLI-Manager\cli-manager.exe"),
+                Path::new(r"C:\Users\test\AppData\Local\CLI-Manager\cli-manager-projects.txt"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let value = toml::from_str::<toml::Value>(&raw).unwrap();
         assert_eq!(value["management"]["enabled"].as_bool(), Some(false));
         assert_eq!(value["bridge"]["enabled"].as_bool(), Some(false));
@@ -2261,13 +2694,125 @@ mod tests {
             value["projects"][0]["agent"]["options"]["env"][TELEGRAM_TOKEN_ENV].as_str(),
             Some("")
         );
-        assert_eq!(value["projects"][0]["admin_from"].as_str(), Some(""));
+        assert_eq!(
+            value["projects"][0]["admin_from"].as_str(),
+            Some("123456789")
+        );
         let disabled = value["projects"][0]["disabled_commands"]
             .as_array()
             .unwrap();
         assert!(disabled.iter().any(|item| item.as_str() == Some("mode")));
         assert!(disabled.iter().any(|item| item.as_str() == Some("config")));
+        assert!(disabled.iter().any(|item| item.as_str() == Some("dir")));
+        assert!(disabled.iter().any(|item| item.as_str() == Some("shell")));
         assert!(!disabled.iter().any(|item| item.as_str() == Some("new")));
+        assert_eq!(
+            value["commands"][0]["name"].as_str(),
+            Some("cli-manager-list")
+        );
+        assert_eq!(
+            value["commands"][1]["name"].as_str(),
+            Some("cli-manager-switch-1")
+        );
+        assert_eq!(
+            value["aliases"][0]["name"].as_str(),
+            Some("/cli-manager-switch 1")
+        );
+        assert_eq!(
+            value["aliases"][0]["command"].as_str(),
+            Some("/cli-manager-switch-1")
+        );
+        let switch_exec = value["commands"][1]["exec"].as_str().unwrap();
+        assert!(switch_exec.contains(&project_switch_token("project-1")));
+        assert!(switch_exec.contains("{{0:}}"));
+        assert!(!switch_exec.contains(&path_string(project.path())));
+    }
+    #[test]
+    fn project_list_and_switch_tokens_are_stable_and_safe() {
+        let current = tempfile::tempdir().unwrap();
+        let unavailable = current.path().join("missing");
+        let mut profile = sample_profile(current.path());
+        profile.project_name = "Current\nProject".to_string();
+        let projects = vec![
+            sample_registered_project("project-1", "Current\nProject", current.path()),
+            sample_registered_project("project-2", "Missing", &unavailable),
+        ];
+        let list = render_project_list(&profile, &projects);
+        assert!(list.contains("1. Current Project [当前]"));
+        assert!(list.contains("2. Missing [路径不可用]"));
+        assert!(list.contains("/cli-manager-switch <序号>"));
+        assert!(!list.contains("Current\nProject"));
+
+        let first = project_switch_token("project-1");
+        assert_eq!(first.len(), 32);
+        assert_eq!(first, project_switch_token("project-1"));
+        assert_ne!(first, project_switch_token("project-2"));
+        assert!(switch_result_path(&first).is_ok());
+        assert!(switch_result_path("../invalid").is_err());
+        assert_eq!(powershell_single_quoted("a'b"), "'a''b'");
+        assert_eq!(
+            remote_switch_token_from_args(&[
+                "cli-manager.exe".to_string(),
+                format!("{REMOTE_SWITCH_ARG_PREFIX}{first}"),
+            ]),
+            Some(first.as_str())
+        );
+        assert_eq!(
+            remote_switch_token_from_args(&["cli-manager.exe".to_string()]),
+            None
+        );
+    }
+    #[test]
+    fn managed_config_matches_installed_cc_connect_when_requested() {
+        let Ok(binary) = std::env::var("CLI_MANAGER_TEST_CC_CONNECT") else {
+            return;
+        };
+        let project = tempfile::tempdir().unwrap();
+        let profile = sample_profile(project.path());
+        let projects = vec![sample_registered_project(
+            &profile.project_id,
+            &profile.project_name,
+            project.path(),
+        )];
+        let config = build_managed_config(
+            &profile,
+            &projects,
+            Path::new(r"C:\Program Files\CLI-Manager\cli-manager.exe"),
+            Path::new(r"C:\Users\test\AppData\Local\CLI-Manager\cli-manager-projects.txt"),
+        )
+        .unwrap();
+        let config_path = project.path().join("config.toml");
+        fs::write(&config_path, toml::to_string_pretty(&config).unwrap()).unwrap();
+        format_and_check_config_syntax(Path::new(&binary), &config_path).unwrap();
+    }
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn project_list_command_returns_utf8_manifest() {
+        let project = tempfile::tempdir().unwrap();
+        let profile = sample_profile(project.path());
+        let list_path = project.path().join("projects.txt");
+        fs::write(&list_path, "项目一\n1. 示例").unwrap();
+        let (commands, _) = build_remote_project_commands(
+            &profile,
+            &[],
+            Path::new(r"C:\Program Files\CLI-Manager\cli-manager.exe"),
+            &list_path,
+        )
+        .unwrap();
+        let command = commands[0].exec.replace("{{0:}}", "");
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            "项目一\n1. 示例"
+        );
     }
     #[test]
     fn log_redaction_and_cursor_work() {
