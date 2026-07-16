@@ -1790,11 +1790,17 @@ export function CcusageStatsPanel({ open, onClose }: CcusageStatsPanelProps) {
                 <ReportContextNote reportKind={report.reportKind} sourceLabel={sourceLabel} schemaLabel={summary.schemaLabel} />
                 <DailyUsageTrendChart items={chartItems} granularity={chartGranularity} />
 
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-4">
-                  <PeakDaySummaryCard summary={summary} />
-                  <TokenCompositionStrip summary={summary} />
-                  <DailyUsageHeatmap items={chartItems} granularity={chartGranularity} />
-                  <ModelRankingChart summary={summary} />
+                <div className="grid grid-cols-1 items-start gap-3 2xl:grid-cols-12">
+                  <div className="grid min-w-0 gap-3 md:grid-cols-2 2xl:col-span-8">
+                    <PeakDaySummaryCard summary={summary} />
+                    <TokenCompositionStrip summary={summary} />
+                    <div className="min-w-0 md:col-span-2">
+                      <DailyUsageHeatmap items={chartItems} granularity={chartGranularity} />
+                    </div>
+                  </div>
+                  <div className="min-w-0 2xl:col-span-4">
+                    <ModelRankingChart summary={summary} />
+                  </div>
                 </div>
 
                 <PayloadOverviewFooter summary={summary} />

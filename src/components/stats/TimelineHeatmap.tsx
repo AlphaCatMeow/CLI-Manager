@@ -180,23 +180,22 @@ function TimelineHeatmapImpl({
               <ZAxis range={[140, 140]} />
               <Tooltip
                 cursor={false}
-                contentStyle={RECHARTS_TOOLTIP_STYLE}
-                itemStyle={RECHARTS_TOOLTIP_ITEM_STYLE}
-                labelStyle={RECHARTS_TOOLTIP_LABEL_STYLE}
                 wrapperStyle={RECHARTS_TOOLTIP_WRAPPER_STYLE}
-                formatter={(_, __, payload) => {
-                  const point = payload?.payload as HeatmapPoint | undefined;
-                  if (!point) return ["", ""];
-                  return [
-                    t("stats.summary.sessionsMessages", {
-                      bucket: point.label,
-                      sessions: formatCount(point.day.sessions, language),
-                      messages: formatCount(point.day.messages, language),
-                    }),
-                    "",
-                  ];
+                content={({ active, payload }) => {
+                  const point = payload?.[0]?.payload as HeatmapPoint | undefined;
+                  if (!active || !point) return null;
+                  return (
+                    <div style={{ ...RECHARTS_TOOLTIP_STYLE, padding: "8px 10px" }}>
+                      <div style={RECHARTS_TOOLTIP_ITEM_STYLE}>
+                        {t("stats.summary.sessionsMessages", {
+                          bucket: point.label,
+                          sessions: formatCount(point.day.sessions, language),
+                          messages: formatCount(point.day.messages, language),
+                        })}
+                      </div>
+                    </div>
+                  );
                 }}
-                labelFormatter={() => ""}
               />
               <Scatter
                 data={points}
