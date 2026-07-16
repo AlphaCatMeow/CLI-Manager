@@ -14,6 +14,8 @@ import { useTerminalStore, type ShellRuntimeEventName } from "../stores/terminal
 import type { OsPlatform } from "../lib/shell";
 
 const OSC_CARRY_BUFFER_MAX = 8192;
+const SSH_CONNECTED_MARKER = "\x1b]777;cli-manager-ssh=connected\x07";
+const SSH_AUTH_PROMPT_PATTERN = /password|passphrase|verification code|one-time|authenticity of host|continue connecting|permission denied/i;
 
 interface TerminalColors {
   foreground: string;
@@ -39,6 +41,7 @@ export function useTerminalOsc({
 }: UseTerminalOscOptions): UseTerminalOscResult {
   const runtimeOscBufferRef = useRef("");
   const specialOscBufferRef = useRef("");
+  const sshMarkerBufferRef = useRef("");
   const terminalColorRepliesRef = useRef({
     foreground: formatSpecialColorReply(10, "#d8dee9"),
     background: formatSpecialColorReply(11, "#0c0e10"),
@@ -207,7 +210,48 @@ export function useTerminalOsc({
     return output;
   };
 
-  const normalizeTerminalOutput = (text: string) => processShellIntegrationOsc(processSpecialOscQueries(text));
+  const processSshConnectionMarker = (text: string) => {
+    let combined = sshMarkerBufferRef.current + text;
+    sshMarkerBufferRef.current = "";
+    let markerSeen = false;
+    if (combined.includes(SSH_CONNECTED_MARKER)) {
+      markerSeen = true;
+      combined = combined.split(SSH_CONNECTED_MARKER).join("");
+    }
+
+    let carryLength = 0;
+    const maximumCarry = Math.min(combined.length, SSH_CONNECTED_MARKER.length - 1);
+    for (let length = maximumCarry; length > 0; length -= 1) {
+      if (combined.endsWith(SSH_CONNECTED_MARKER.slice(0, length))) {
+        carryLength = length;
+        break;
+      }
+    }
+    if (carryLength > 0) {
+      sshMarkerBufferRef.current = combined.slice(-carryLength);
+      combined = combined.slice(0, -carryLength);
+    }
+
+    const store = useTerminalStore.getState();
+    const session = store.sessions.find((item) => item.id === sessionId);
+    if (session?.environmentType === "ssh") {
+      if (markerSeen) {
+        store.updateSshConnectionState(sessionId, "connected");
+      } else if (combined.trim()) {
+        const authenticationPrompt = SSH_AUTH_PROMPT_PATTERN.test(combined);
+        if (authenticationPrompt && session.connectionState !== "disconnected" && session.connectionState !== "failed") {
+          store.updateSshConnectionState(sessionId, "authenticating");
+        } else if (session.connectionState === "connecting" || session.connectionState === "authenticating") {
+          store.updateSshConnectionState(sessionId, "connected");
+        }
+      }
+    }
+    return combined;
+  };
+
+  const normalizeTerminalOutput = (text: string) => (
+    processShellIntegrationOsc(processSpecialOscQueries(processSshConnectionMarker(text)))
+  );
 
   const updateTerminalColorReplies = (colors: TerminalColors) => {
     terminalColorRepliesRef.current = {

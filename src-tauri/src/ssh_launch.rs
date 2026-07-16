@@ -162,7 +162,10 @@ impl SshLaunchPlan {
     }
 
     fn remote_command(&self) -> String {
-        let mut setup = vec![format!("cd -- {}", posix_quote(self.remote_path.trim()))];
+        let mut setup = vec![
+            format!("cd -- {}", posix_quote(self.remote_path.trim())),
+            "printf '\\033]777;cli-manager-ssh=connected\\007'".to_string(),
+        ];
         let mut environment: Vec<_> = self.environment_overrides.iter().collect();
         environment.sort_by(|left, right| left.0.cmp(right.0));
         setup.extend(
@@ -170,24 +173,33 @@ impl SshLaunchPlan {
                 .into_iter()
                 .map(|(key, value)| format!("export {key}={}", posix_quote(value))),
         );
+        let setup = setup.join(" && ");
+        let mut shell_commands = Vec::new();
         if let Some(command) = self
             .initialization_command
             .as_deref()
             .map(str::trim)
             .filter(|command| !command.is_empty())
         {
-            setup.push(format!(
-                "\"${{SHELL:-/bin/sh}}\" -lc {}",
-                posix_quote(command)
-            ));
+            shell_commands.push(command);
         }
-        let setup = setup.join(" && ");
-        match self.startup_command.as_deref().map(str::trim) {
-            Some(command) if !command.is_empty() => format!(
-                "{setup} && exec \"${{SHELL:-/bin/sh}}\" -lc {}",
-                posix_quote(command)
-            ),
-            _ => format!("{setup} && exec \"${{SHELL:-/bin/sh}}\" -l"),
+        if let Some(command) = self
+            .startup_command
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+        {
+            shell_commands.push(command);
+        }
+        if shell_commands.is_empty() {
+            format!("{setup} && exec \"${{SHELL:-/bin/sh}}\" -l")
+        } else {
+            let mut command_then_shell = shell_commands.join("\n");
+            command_then_shell.push_str("\nexec \"${SHELL:-/bin/sh}\" -l");
+            format!(
+                "{setup} && exec \"${{SHELL:-/bin/sh}}\" -lic {}",
+                posix_quote(&command_then_shell)
+            )
         }
     }
 }
@@ -269,7 +281,7 @@ mod tests {
         assert!(launch.args.windows(2).any(|pair| pair == ["-J", "bastion"]));
         assert!(launch.args.iter().any(|arg| arg == "IdentitiesOnly=yes"));
         assert_eq!(launch.args[launch.args.len() - 2], "dev@example.com");
-        assert_eq!(launch.args.last().unwrap(), "cd -- '/srv/project name/开发' && export APP_MODE='remote dev' && exec \"${SHELL:-/bin/sh}\" -lc 'printf '\\''%s\\n'\\'' \"it'\\''s ready\"'");
+        assert_eq!(launch.args.last().unwrap(), "cd -- '/srv/project name/开发' && printf '\\033]777;cli-manager-ssh=connected\\007' && export APP_MODE='remote dev' && exec \"${SHELL:-/bin/sh}\" -lic 'printf '\\''%s\\n'\\'' \"it'\\''s ready\"\nexec \"${SHELL:-/bin/sh}\" -l'");
     }
 
     #[test]
@@ -287,7 +299,7 @@ mod tests {
     fn interactive_shell_is_started_when_no_startup_command_exists() {
         let mut value = plan();
         value.startup_command = None;
-        assert_eq!(value.build_process_launch().unwrap().args.last().unwrap(), "cd -- '/srv/project name/开发' && export APP_MODE='remote dev' && exec \"${SHELL:-/bin/sh}\" -l");
+        assert_eq!(value.build_process_launch().unwrap().args.last().unwrap(), "cd -- '/srv/project name/开发' && printf '\\033]777;cli-manager-ssh=connected\\007' && export APP_MODE='remote dev' && exec \"${SHELL:-/bin/sh}\" -l");
     }
 
     #[test]

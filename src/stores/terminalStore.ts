@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "sonner";
-import type { SubagentTranscriptSource, TerminalSession, Project } from "../lib/types";
+import type { SubagentTranscriptSource, TerminalSession, Project, SshConnectionState, SshDisconnectReason } from "../lib/types";
 import { debugConsoleWarn } from "../lib/debugConsole";
 import { sourceTool, type SyncedHistoryGroup } from "../lib/externalSessionGrouping";
 import { logError, logInfo, logWarn } from "../lib/logger";
@@ -74,6 +74,9 @@ interface DaemonSessionState {
   alive: boolean;
   cwd?: string | null;
   shell?: string | null;
+  environmentType?: string | null;
+  sshHostId?: string | null;
+  remotePath?: string | null;
   createdAtMs?: number;
   taskStatus?: TabNotificationState | null;
   taskUpdatedAtMs?: number | null;
@@ -223,6 +226,7 @@ interface TerminalStore {
   renameWorkspan: (id: string, title: string) => void;
   mergeWorkspanAtPaneEdge: (sourceId: string, targetId: string, targetPaneId: string, edge: TerminalPaneDropEdge) => void;
   updateSessionCwd: (sessionId: string, cwd: string) => void;
+  updateSshConnectionState: (sessionId: string, connectionState: SshConnectionState, disconnectReason?: SshDisconnectReason) => void;
   updateSessionTerminalSnapshot: (sessionId: string, initialTerminalOutput: string) => void;
   markAttentionInputHandled: (sessionId: string) => void;
   handleCliHookEvent: (payload: CliHookPayload) => string | null;
@@ -258,6 +262,14 @@ interface TerminalStore {
 
 // 防止 StrictMode 双重调用
 let restoreInProgress = false;
+let sshSessionPersistenceQueue = Promise.resolve();
+
+function queueSshSessionPersistence(sessions: TerminalSession[]): void {
+  const snapshot = sessions.map((session) => ({ ...session }));
+  sshSessionPersistenceQueue = sshSessionPersistenceQueue
+    .catch(() => {})
+    .then(() => useSessionStore.getState().saveSessions(snapshot));
+}
 
 function basenameFromPath(path: string | null | undefined): string | null {
   const normalized = path?.trim().replace(/\\/g, "/").replace(/\/+$/g, "") ?? "";
@@ -294,17 +306,24 @@ function resolveDaemonAttachUpdatedAt(attach: DaemonSessionState): string {
 function resolveAttachedDaemonSession(
   persisted: TerminalSession | undefined,
   attach: DaemonSessionState
-): Pick<TerminalSession, "projectId" | "worktreeId" | "title" | "cwd" | "shell"> {
+): Pick<TerminalSession, "projectId" | "worktreeId" | "title" | "cwd" | "shell" | "environmentType" | "sshHostId" | "remotePath" | "connectionState" | "disconnectReason"> {
   const projectState = useProjectStore.getState();
   const cwd = persisted?.cwd ?? attach.cwd ?? undefined;
   const worktree = persisted?.worktreeId
     ? projectState.worktrees.find((item) => item.id === persisted.worktreeId) ?? null
     : findWorktreeByPath(projectState.worktrees, cwd);
+  const sshProject = attach.environmentType === "ssh"
+    ? projectState.projects.find((item) => (
+        item.environment_type === "ssh"
+        && item.ssh_host_id === attach.sshHostId
+        && item.remote_path === attach.remotePath
+      )) ?? null
+    : null;
   const project = persisted?.projectId
     ? projectState.projects.find((item) => item.id === persisted.projectId) ?? null
     : worktree
       ? projectState.projects.find((item) => item.id === worktree.project_id) ?? null
-      : findProjectByPath(projectState.projects, cwd);
+      : sshProject ?? findProjectByPath(projectState.projects, cwd);
   const fallbackTitle = worktree?.name || project?.name || basenameFromPath(cwd) || translateCurrent("terminal.backgroundTasks.untitled");
   return {
     projectId: persisted?.projectId ?? project?.id,
@@ -312,6 +331,19 @@ function resolveAttachedDaemonSession(
     title: isGenericDaemonSessionTitle(persisted?.title) ? fallbackTitle : persisted!.title,
     cwd,
     shell: persisted?.shell ?? attach.shell,
+    environmentType: persisted?.environmentType ?? (attach.environmentType === "ssh" ? "ssh" : undefined),
+    sshHostId: persisted?.sshHostId ?? attach.sshHostId ?? undefined,
+    remotePath: persisted?.remotePath ?? attach.remotePath ?? undefined,
+    connectionState: (persisted?.environmentType === "ssh" || attach.environmentType === "ssh")
+      ? (attach.alive
+          ? (persisted?.connectionState === "connected" || persisted?.connectionState === "authenticating"
+              ? persisted.connectionState
+              : "connecting")
+          : "disconnected")
+      : undefined,
+    disconnectReason: !attach.alive && (persisted?.environmentType === "ssh" || attach.environmentType === "ssh")
+      ? persisted?.disconnectReason ?? "remote_exit"
+      : persisted?.disconnectReason,
   };
 }
 
@@ -950,6 +982,42 @@ export interface DetachedPtyLaunchResult {
   startupCmd?: string;
 }
 
+function applySshExitState(session: TerminalSession, payload: PtyStatusPayload): TerminalSession {
+  if (session.environmentType !== "ssh" || (payload.status !== "exited" && payload.status !== "error")) {
+    return session;
+  }
+  const wasConnected = session.connectionState === "connected";
+  let disconnectReason: SshDisconnectReason;
+  if (payload.status === "error") disconnectReason = "local_process_error";
+  else if (payload.exit_code === 255) disconnectReason = "ssh_transport_error";
+  else if (payload.exit_code === 0) disconnectReason = "remote_exit";
+  else disconnectReason = "remote_command_exit";
+  return {
+    ...session,
+    connectionState: wasConnected ? "disconnected" : "failed",
+    disconnectReason,
+  };
+}
+
+function applyPtyStatusToSessions(
+  sessions: TerminalSession[],
+  sessionId: string,
+  payload: PtyStatusPayload
+): TerminalSession[] {
+  return sessions.map((session) => (
+    session.id === sessionId ? applySshExitState(session, payload) : session
+  ));
+}
+
+function persistSshConnectionStateAfterPtyStatus(sessionId: string, payload: PtyStatusPayload): void {
+  if (payload.status !== "exited" && payload.status !== "error") return;
+  queueMicrotask(() => {
+    const sessions = useTerminalStore.getState().sessions;
+    if (!sessions.some((session) => session.id === sessionId && session.environmentType === "ssh")) return;
+    queueSshSessionPersistence(sessions);
+  });
+}
+
 interface SshLaunchPayload extends SshConnectionSpecPayload {
   hostId: string;
   remotePath: string;
@@ -962,6 +1030,9 @@ interface ResolvedPtyLaunch {
   shell: string | null;
   startupCmd?: string;
   startupHandledByLaunch: boolean;
+  environmentType?: "ssh";
+  sshHostId?: string;
+  remotePath?: string;
   invokeArgs: {
     cwd: string | null;
     envVars: Record<string, string> | null;
@@ -1081,6 +1152,9 @@ async function resolvePtyLaunch(options: DetachedPtyLaunchOptions, os: OsPlatfor
     return {
       shell: null,
       startupHandledByLaunch: true,
+      environmentType: "ssh",
+      sshHostId: host.id,
+      remotePath,
       invokeArgs: {
         cwd: null,
         envVars: null,
@@ -1161,6 +1235,25 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     )),
   })),
 
+  updateSshConnectionState: (sessionId, connectionState, disconnectReason) => {
+    const current = get().sessions.find((session) => session.id === sessionId);
+    if (!current || current.environmentType !== "ssh") return;
+    const nextReason = connectionState === "disconnected" || connectionState === "failed"
+      ? disconnectReason
+      : undefined;
+    if (current.connectionState === connectionState && current.disconnectReason === nextReason) return;
+    set((state) => ({
+      sessions: state.sessions.map((session) => (
+        session.id === sessionId
+          ? { ...session, connectionState, disconnectReason: nextReason }
+          : session
+      )),
+    }));
+    if (connectionState === "connected" || connectionState === "disconnected" || connectionState === "failed") {
+      queueSshSessionPersistence(get().sessions);
+    }
+  },
+
   updateSessionTerminalSnapshot: (sessionId, initialTerminalOutput) => set((state) => ({
     sessions: state.sessions.map((session) => (
       session.id === sessionId && (session.kind ?? "pty") === "pty" && session.initialTerminalOutput !== initialTerminalOutput
@@ -1198,14 +1291,20 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       shell: resolvedShell,
       envVars,
       startupCmd,
+      environmentType: launch.environmentType,
+      sshHostId: launch.sshHostId,
+      remotePath: launch.remotePath,
+      connectionState: launch.environmentType === "ssh" ? "connecting" : undefined,
     };
 
     const unlisten = await listen<PtyStatusPayload>(`pty-status-${sessionId}`, (event) => {
       const status = event.payload.status as SessionStatus;
       logTerminalExitStatus(session, event.payload);
       set((state) => ({
+        sessions: applyPtyStatusToSessions(state.sessions, sessionId, event.payload),
         sessionStatuses: { ...state.sessionStatuses, [sessionId]: status },
       }));
+      persistSshConnectionStateAfterPtyStatus(sessionId, event.payload);
     });
 
     const state = get();
@@ -1630,14 +1729,20 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       shell: resolvedShell,
       envVars: options?.envVars,
       startupCmd: options?.startupCmd,
+      environmentType: launch.environmentType,
+      sshHostId: launch.sshHostId,
+      remotePath: launch.remotePath,
+      connectionState: launch.environmentType === "ssh" ? "connecting" : undefined,
     };
 
     const unlisten = await listen<PtyStatusPayload>(`pty-status-${splitSessionId}`, (event) => {
       const status = event.payload.status as SessionStatus;
       logTerminalExitStatus(splitSession, event.payload);
       set((state) => ({
+        sessions: applyPtyStatusToSessions(state.sessions, splitSessionId, event.payload),
         sessionStatuses: { ...state.sessionStatuses, [splitSessionId]: status },
       }));
+      persistSshConnectionStateAfterPtyStatus(splitSessionId, event.payload);
     });
 
     const currentState = get();
@@ -1794,8 +1899,10 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       const status = event.payload.status as SessionStatus;
       logTerminalExitStatus(historySession, event.payload);
       set((state) => ({
+        sessions: applyPtyStatusToSessions(state.sessions, launch.sessionId, event.payload),
         sessionStatuses: { ...state.sessionStatuses, [launch.sessionId]: status },
       }));
+      persistSshConnectionStateAfterPtyStatus(launch.sessionId, event.payload);
     });
     const state = get();
     const sessions = [...state.sessions, historySession];
@@ -1976,7 +2083,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         "pty_daemon_sessions"
       );
       daemonSessionsById = new Map(
-        daemonSessions.filter((session) => session.alive).map((session) => [session.sessionId, session])
+        daemonSessions.map((session) => [session.sessionId, session])
       );
     } catch (err) {
       logInfo("pty daemon sessions unavailable, restoring via recreate", { err });
@@ -1994,7 +2101,6 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       const daemonSession = daemonSessionsById.get(ps.id);
       if (daemonSession) {
         try {
-          if (daemonSession.alive) {
             const taskStatus = resolveDaemonAttachTaskStatus(daemonSession);
             const taskUpdatedAt = resolveDaemonAttachUpdatedAt(daemonSession);
             const attachedMeta = resolveAttachedDaemonSession(ps, daemonSession);
@@ -2005,6 +2111,11 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
               title: attachedMeta.title,
               cwd: attachedMeta.cwd,
               shell: attachedMeta.shell,
+              environmentType: attachedMeta.environmentType,
+              sshHostId: attachedMeta.sshHostId,
+              remotePath: attachedMeta.remotePath,
+              connectionState: attachedMeta.connectionState,
+              disconnectReason: attachedMeta.disconnectReason,
               envVars: ps.envVars,
               // 仅保留给 Tab 厂商识别；daemon attach 不会重新执行该命令。
               startupCmd: ps.startupCmd,
@@ -2018,6 +2129,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
                 const sessionStatuses = { ...state.sessionStatuses, [ps.id]: status };
                 if (status === "running") return { sessionStatuses };
                 return {
+                  sessions: applyPtyStatusToSessions(state.sessions, ps.id, event.payload),
                   sessionStatuses,
                   ...buildTabStatusUpdate(
                     state,
@@ -2028,15 +2140,15 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
                   ),
                 };
               });
+              persistSshConnectionStateAfterPtyStatus(ps.id, event.payload);
             });
             newIdMap[ps.id] = ps.id;
             restoredSessions.push(attachedSession);
-            restoredStatuses[ps.id] = "running";
+            restoredStatuses[ps.id] = daemonSession.alive ? "running" : "exited";
             restoredListeners[ps.id] = unlisten;
             daemonAttachPendingSessionIds.add(ps.id);
             restoredTabState = buildTabStatusUpdate(restoredTabState, ps.id, "hook", taskStatus, taskUpdatedAt);
             continue;
-          }
         } catch (err) {
           logError("daemon attach failed, falling back to recreate", { sessionId: ps.id, err });
         }
@@ -2122,6 +2234,11 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         shell: resolvedShell,
         envVars: ps.envVars,
         startupCmd: launch.startupHandledByLaunch ? restoredStartupCmd : launchStartupCmd,
+        environmentType: launch.environmentType ?? ps.environmentType,
+        sshHostId: launch.sshHostId ?? ps.sshHostId,
+        remotePath: launch.remotePath ?? ps.remotePath,
+        connectionState: (launch.environmentType ?? ps.environmentType) === "ssh" ? "connecting" : undefined,
+        disconnectReason: undefined,
         // 保留 cliSessionId：hook 上报会用它绑定实时统计；下次落盘也需要它继续 resume。
         cliSessionId: ps.cliSessionId,
         initialTerminalOutput,
@@ -2134,8 +2251,10 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
           const status = event.payload.status as SessionStatus;
           logTerminalExitStatus(restoredSession, event.payload);
           useTerminalStore.setState((state) => ({
+            sessions: applyPtyStatusToSessions(state.sessions, newSessionId, event.payload),
             sessionStatuses: { ...state.sessionStatuses, [newSessionId]: status },
           }));
+          persistSshConnectionStateAfterPtyStatus(newSessionId, event.payload);
         });
       } catch (err) {
         logError("Failed to register status listener", { sessionId: newSessionId, err });
@@ -2252,6 +2371,11 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       title: attachedMeta.title,
       cwd: attachedMeta.cwd,
       shell: attachedMeta.shell,
+      environmentType: attachedMeta.environmentType,
+      sshHostId: attachedMeta.sshHostId,
+      remotePath: attachedMeta.remotePath,
+      connectionState: attachedMeta.connectionState,
+      disconnectReason: attachedMeta.disconnectReason,
       envVars: persisted?.envVars,
       // 元数据用于 Tab 厂商识别；daemon attach 不会重新执行该命令。
       startupCmd: persisted?.startupCmd,
@@ -2264,6 +2388,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         const sessionStatuses = { ...state.sessionStatuses, [sessionId]: status };
         if (status === "running") return { sessionStatuses };
         return {
+          sessions: applyPtyStatusToSessions(state.sessions, sessionId, event.payload),
           sessionStatuses,
           ...buildTabStatusUpdate(
             state,
@@ -2274,6 +2399,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
           ),
         };
       });
+      persistSshConnectionStateAfterPtyStatus(sessionId, event.payload);
     });
 
     const nextSessions = [...current.sessions, session];

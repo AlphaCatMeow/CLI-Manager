@@ -22,6 +22,7 @@ import { useTerminalStore, type SplitTerminalOptions, type TabNotificationState 
 import { TERMINAL_PANEL_WIDTH_DEFAULTS, useSettingsStore } from "../stores/settingsStore";
 import { useWorktreeStore } from "../stores/worktreeStore";
 import { useProjectStore } from "../stores/projectStore";
+import { useSshHostStore } from "../stores/sshHostStore";
 import { isProjectFileDirty, useFileExplorerStore } from "../stores/fileExplorerStore";
 import { useI18n, type TranslationKey } from "../lib/i18n";
 import { logError } from "../lib/logger";
@@ -54,7 +55,7 @@ import { FileExplorerSidebar } from "./files/FileExplorerSidebar";
 import { openWindowsTerminal } from "../lib/externalTerminal";
 import { normalizeDirectCodexStartupCommand, resolveProjectStartupCommand } from "../lib/projectStartupCommand";
 import { parseProjectEnvVars } from "../lib/providerSwitching";
-import { Activity, Terminal, Plus, ListClockIcon, X, Copy, Maximize2, Minimize2, ChevronDown, ChevronRight, BarChart3, GitBranch, Folder, Check, Cpu } from "./icons";
+import { Activity, Terminal, Plus, ListClockIcon, X, Copy, Maximize2, Minimize2, ChevronDown, ChevronRight, BarChart3, GitBranch, Folder, Check, Cpu, Cloud } from "./icons";
 import { WorktreeIcon } from "./WorktreeIcon";
 import { VendorIcon, inferVendor, type VendorKey } from "./VendorIcon";
 import { EmptyState } from "./ui/EmptyState";
@@ -201,6 +202,13 @@ const TERMINAL_TAB_HOVER_DELAY_MS = 260;
 const TERMINAL_TAB_HOVER_CLOSE_DELAY_MS = 320;
 const TERMINAL_TAB_HOVER_CARD_WIDTH = 320;
 const TERMINAL_TAB_HOVER_CARD_ESTIMATED_HEIGHT = 190;
+const SSH_CONNECTION_STATE_COLORS: Record<NonNullable<TerminalSession["connectionState"]>, string> = {
+  connecting: "#60a5fa",
+  authenticating: "#f59e0b",
+  connected: "#22c55e",
+  disconnected: "#94a3b8",
+  failed: "#ef4444",
+};
 
 interface TerminalTabHoverInfo {
   name: string;
@@ -209,6 +217,9 @@ interface TerminalTabHoverInfo {
   project: string;
   path: string;
   sessionId: string;
+  sshHost?: string;
+  connectionState?: TerminalSession["connectionState"];
+  disconnectReason?: TerminalSession["disconnectReason"];
 }
 
 function isTerminalPaneDropEdge(value: string): value is TerminalPaneDropEdge {
@@ -304,13 +315,19 @@ function buildTerminalTabHoverInfo(session: TerminalSession, project?: Project):
       sessionId: session.syncedHistory?.key || session.id,
     };
   }
+  const sshHost = session.environmentType === "ssh"
+    ? useSshHostStore.getState().hosts.find((host) => host.id === session.sshHostId)
+    : undefined;
   return {
     name: session.title.trim() || "Terminal",
     cli: formatCliToolLabel(project?.cli_tool),
-    shell: formatShellLabel(session.shell ?? project?.shell),
+    shell: session.environmentType === "ssh" ? "SSH" : formatShellLabel(session.shell ?? project?.shell),
     project: project?.name.trim() || "\u672a\u7ed1\u5b9a\u9879\u76ee",
-    path: session.cwd?.trim() || project?.path.trim() || "-",
+    path: session.remotePath?.trim() || session.cwd?.trim() || project?.remote_path.trim() || project?.path.trim() || "-",
     sessionId: session.cliSessionId?.trim() || session.id,
+    sshHost: sshHost?.name || sshHost?.config_alias || sshHost?.host || session.sshHostId,
+    connectionState: session.connectionState,
+    disconnectReason: session.disconnectReason,
   };
 }
 
@@ -657,7 +674,18 @@ function SortableTab({
               aria-label={t("terminal.tab.rename")}
             />
           ) : (
-            <span className="ui-terminal-tab-title min-w-0 flex-1 truncate tracking-[0.01em]">{title}</span>
+            <>
+              {hoverInfo.connectionState && (
+                <Cloud
+                  size={12}
+                  strokeWidth={2}
+                  className="shrink-0"
+                  style={{ color: SSH_CONNECTION_STATE_COLORS[hoverInfo.connectionState] }}
+                  aria-label={t(`terminal.ssh.connection.${hoverInfo.connectionState}` as TranslationKey)}
+                />
+              )}
+              <span className="ui-terminal-tab-title min-w-0 flex-1 truncate tracking-[0.01em]">{title}</span>
+            </>
           )}
           <button
             onClick={(e) => { e.stopPropagation(); hideHoverCard(); onClose(e.currentTarget.getBoundingClientRect()); }}
@@ -702,6 +730,15 @@ function TerminalTabHoverCard({
     { label: "Shell", value: info.shell },
     { label: t("termStats.project"), value: info.project },
     { label: t("termStats.path"), value: info.path },
+    ...(info.sshHost ? [{ label: t("terminal.ssh.host"), value: info.sshHost }] : []),
+    ...(info.connectionState ? [{
+      label: t("terminal.ssh.connectionState"),
+      value: t(`terminal.ssh.connection.${info.connectionState}` as TranslationKey),
+    }] : []),
+    ...(info.disconnectReason ? [{
+      label: t("terminal.ssh.disconnectReason"),
+      value: t(`terminal.ssh.disconnect.${info.disconnectReason}` as TranslationKey),
+    }] : []),
   ];
   const sessionIdPreview = formatSessionIdPreview(info.sessionId);
 

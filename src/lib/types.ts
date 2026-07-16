@@ -9,6 +9,8 @@ export interface Group {
 export type WorktreeIsolationStrategy = "prompt" | "disabled" | "autoParallel" | "always";
 
 export type ProjectEnvironmentType = "local" | "wsl" | "ssh";
+export type SshConnectionState = "connecting" | "authenticating" | "connected" | "disconnected" | "failed";
+export type SshDisconnectReason = "remote_exit" | "remote_command_exit" | "ssh_transport_error" | "local_process_error";
 
 export type SshAuthMode =
   | "ssh_config"
@@ -205,6 +207,11 @@ export interface TerminalSession {
   shell?: string | null;
   envVars?: Record<string, string>;
   startupCmd?: string;
+  environmentType?: ProjectEnvironmentType;
+  sshHostId?: string;
+  remotePath?: string;
+  connectionState?: SshConnectionState;
+  disconnectReason?: SshDisconnectReason;
   /** 终端首次挂载时写入 xterm scrollback 的本地文本，不发送到 PTY。 */
   initialTerminalOutput?: string;
   /** true 时启动命令由 XTermTerminal 在 initialTerminalOutput 写完后再发送。 */

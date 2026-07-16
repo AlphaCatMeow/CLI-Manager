@@ -5,7 +5,7 @@ import { CSS } from "@dnd-kit/utilities";
 import type { TreeNode as TNode } from "../../lib/types";
 import type { ProviderBadge } from "../../stores/projectStore";
 import { useTreeActions, worktreeListCollapseId } from "./TreeContext";
-import { Folder, Terminal, Play, ChevronRight, AlertTriangle } from "../icons";
+import { Folder, Terminal, Play, ChevronRight, AlertTriangle, Cloud } from "../icons";
 import { VendorIcon, inferVendor } from "../VendorIcon";
 import { WorktreeIcon } from "../WorktreeIcon";
 import { useI18n } from "../../lib/i18n";
@@ -319,6 +319,16 @@ function TreeNodeItemImpl({
           </span>
           <span className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="block truncate font-medium">{p.name}</span>
+            {p.environment_type === "ssh" && (
+              <span
+                className="ui-tree-meta-chip inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] leading-none"
+                title={`${t("terminal.ssh.remoteProject")} · ${p.remote_path}`}
+                aria-label={t("terminal.ssh.remoteProject")}
+              >
+                <Cloud size={10} strokeWidth={2} aria-hidden="true" />
+                SSH
+              </span>
+            )}
             {providerBadge && <ProviderBadgeChip badge={providerBadge} />}
             {terminalCount > 0 && (
               <span
