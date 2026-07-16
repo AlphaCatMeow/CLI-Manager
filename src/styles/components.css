@@ -628,6 +628,15 @@
   isolation: isolate;
 }
 
+.ui-stats-panel .recharts-surface:focus {
+  outline: none;
+}
+
+.ui-stats-panel .recharts-surface:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 72%, transparent);
+  outline-offset: -2px;
+}
+
 .ui-stats-panel::before {
   content: "";
   position: absolute;
