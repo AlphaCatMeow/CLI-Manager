@@ -87,6 +87,8 @@
 
 ### Stage 4：远程目录浏览与检测
 
+状态：已完成并通过阶段 review（2026-07-17）。验证：远程路径引用/遍历拒绝 Rust 单测、SSH command 单测、`cargo check`、`npx tsc --noEmit`；真实 SFTP/SSH 服务器行为列入最终人工验收。
+
 1. 实现短生命周期 SSH/SFTP 浏览会话。
 2. 支持路径输入、面包屑、目录列表、刷新和选择。
 3. SFTP 不可用时降级为手工路径 + `ssh test -d`。

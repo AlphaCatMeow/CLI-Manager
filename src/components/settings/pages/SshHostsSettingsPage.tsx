@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { CheckCircle2, CircleAlert, Pencil, Plus, Server, Trash2, X } from "lucide-react";
 import { useI18n, type TranslationKey } from "../../../lib/i18n";
 import type { CreateSshHostInput, SshAuthMode, SshHost } from "../../../lib/types";
+import { buildSshConnectionSpec } from "../../../lib/ssh";
 import { useSshHostStore } from "../../../stores/sshHostStore";
 import { useAppConfirm } from "../../ui/useAppConfirm";
 
@@ -68,6 +69,36 @@ const DETAIL_LABELS: Record<string, TranslationKey> = {
 
 function formFromHost(host: SshHost): CreateSshHostInput {
   return { ...host };
+}
+
+function hostFromForm(form: CreateSshHostInput, id: string): SshHost {
+  return {
+    id,
+    name: form.name,
+    group_name: form.group_name ?? "",
+    host: form.host ?? "",
+    port: form.port ?? 22,
+    username: form.username ?? "",
+    config_alias: form.config_alias ?? "",
+    auth_mode: form.auth_mode ?? "ssh_config",
+    identity_file: form.identity_file ?? "",
+    credential_ref: form.credential_ref ?? "",
+    jump_mode: form.jump_mode ?? "none",
+    jump_host_id: form.jump_host_id ?? null,
+    proxy_type: form.proxy_type ?? "none",
+    proxy_host: form.proxy_host ?? "",
+    proxy_port: form.proxy_port ?? 0,
+    proxy_command: form.proxy_command ?? "",
+    connect_timeout_sec: form.connect_timeout_sec ?? 15,
+    server_alive_interval_sec: form.server_alive_interval_sec ?? 30,
+    server_alive_count_max: form.server_alive_count_max ?? 3,
+    terminal_encoding: form.terminal_encoding ?? "UTF-8",
+    startup_script: form.startup_script ?? "",
+    notes: form.notes ?? "",
+    sort_order: 0,
+    created_at: "",
+    updated_at: "",
+  };
 }
 
 export function SshHostsSettingsPage({ searchValue }: Props) {
@@ -158,21 +189,9 @@ export function SshHostsSettingsPage({ searchValue }: Props) {
     setError(null);
     setDiagnostic(null);
     try {
-      const jumpHost = hosts.find((host) => host.id === form.jump_host_id);
+      const draftHost = hostFromForm(form, editingId ?? "draft");
       const result = await invoke<SshConnectionTestResult>("ssh_test_connection", {
-        spec: {
-          host: form.host ?? "",
-          port: form.port ?? 22,
-          username: form.username ?? "",
-          configAlias: form.config_alias ?? "",
-          authMode: form.auth_mode ?? "ssh_config",
-          identityFile: form.identity_file ?? "",
-          jumpTarget: jumpHost?.config_alias || jumpHost?.host || "",
-          proxyCommand: form.proxy_command ?? "",
-          connectTimeoutSec: form.connect_timeout_sec ?? 15,
-          serverAliveIntervalSec: form.server_alive_interval_sec ?? 30,
-          serverAliveCountMax: form.server_alive_count_max ?? 3,
-        },
+        spec: buildSshConnectionSpec(draftHost, hosts),
       });
       setDiagnostic(result);
     } catch (nextError) {

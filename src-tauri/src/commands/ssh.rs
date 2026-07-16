@@ -43,6 +43,21 @@ pub struct SshConnectionTestResult {
     stages: Vec<SshDiagnosticStage>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshPathCheckResult {
+    exists: bool,
+    accessible: bool,
+    git_repository: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshDirectoryEntry {
+    name: String,
+    path: String,
+}
+
 fn single_line(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .lines()
@@ -79,7 +94,29 @@ fn target(spec: &SshConnectionSpec) -> String {
     }
 }
 
-fn ssh_probe_command(spec: &SshConnectionSpec) -> Command {
+fn validate_remote_path(path: &str) -> Result<&str, String> {
+    let path = path.trim();
+    if !path.starts_with('/') || path.contains('\0') || path.contains('\n') || path.contains('\r') {
+        return Err("ssh_remote_path_invalid".to_string());
+    }
+    if path.split('/').any(|part| part == "..") {
+        return Err("ssh_remote_path_parent_forbidden".to_string());
+    }
+    Ok(path)
+}
+
+fn posix_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn ensure_non_interactive(spec: &SshConnectionSpec) -> Result<(), String> {
+    if matches!(spec.auth_mode.as_str(), "password_prompt" | "interactive") {
+        return Err("ssh_interactive_auth_required".to_string());
+    }
+    Ok(())
+}
+
+fn ssh_remote_command(spec: &SshConnectionSpec, remote_command: &str) -> Command {
     let mut command = silent_command("ssh");
     command
         .arg("-T")
@@ -108,10 +145,12 @@ fn ssh_probe_command(spec: &SshConnectionSpec) -> Command {
     if !spec.proxy_command.trim().is_empty() {
         command.args(["-o", &format!("ProxyCommand={}", spec.proxy_command.trim())]);
     }
+    command.arg(target(spec)).arg(remote_command);
     command
-        .arg(target(spec))
-        .args(["sh", "-lc", "printf CLI_MANAGER_SSH_OK"]);
-    command
+}
+
+fn ssh_probe_command(spec: &SshConnectionSpec) -> Command {
+    ssh_remote_command(spec, "printf CLI_MANAGER_SSH_OK")
 }
 
 #[tauri::command]
@@ -203,9 +242,105 @@ pub async fn ssh_test_connection(
     Ok(SshConnectionTestResult { success, stages })
 }
 
+#[tauri::command]
+pub async fn ssh_check_path(
+    spec: SshConnectionSpec,
+    path: String,
+) -> Result<SshPathCheckResult, String> {
+    validate_spec(&spec)?;
+    ensure_non_interactive(&spec)?;
+    let path = validate_remote_path(&path)?.to_string();
+    let quoted = posix_quote(&path);
+    let script = format!(
+        "if [ ! -d {quoted} ]; then printf 'missing'; \
+         elif [ ! -x {quoted} ]; then printf 'inaccessible'; \
+         elif git -C {quoted} rev-parse --is-inside-work-tree >/dev/null 2>&1; then printf 'git'; \
+         else printf 'ok'; fi"
+    );
+    let timeout = Duration::from_secs(spec.connect_timeout_sec.saturating_add(5).min(305));
+    let output = tauri::async_runtime::spawn_blocking(move || {
+        output_with_timeout(ssh_remote_command(&spec, &script), timeout)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(single_line(&output.stderr));
+    }
+    Ok(match String::from_utf8_lossy(&output.stdout).trim() {
+        "git" => SshPathCheckResult {
+            exists: true,
+            accessible: true,
+            git_repository: true,
+        },
+        "ok" => SshPathCheckResult {
+            exists: true,
+            accessible: true,
+            git_repository: false,
+        },
+        "inaccessible" => SshPathCheckResult {
+            exists: true,
+            accessible: false,
+            git_repository: false,
+        },
+        _ => SshPathCheckResult {
+            exists: false,
+            accessible: false,
+            git_repository: false,
+        },
+    })
+}
+
+#[tauri::command]
+pub async fn ssh_list_directories(
+    spec: SshConnectionSpec,
+    path: String,
+) -> Result<Vec<SshDirectoryEntry>, String> {
+    validate_spec(&spec)?;
+    ensure_non_interactive(&spec)?;
+    let path = validate_remote_path(&path)?.to_string();
+    let script = format!(
+        "find -- {} -mindepth 1 -maxdepth 1 -type d -print0",
+        posix_quote(&path)
+    );
+    let timeout = Duration::from_secs(spec.connect_timeout_sec.saturating_add(10).min(310));
+    let output = tauri::async_runtime::spawn_blocking(move || {
+        output_with_timeout(ssh_remote_command(&spec, &script), timeout)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(single_line(&output.stderr));
+    }
+    let mut entries: Vec<SshDirectoryEntry> = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|value| !value.is_empty())
+        .filter_map(|value| String::from_utf8(value.to_vec()).ok())
+        .map(|entry_path| {
+            let normalized = entry_path.trim_end_matches('/').to_string();
+            let name = normalized
+                .rsplit('/')
+                .next()
+                .unwrap_or(&normalized)
+                .to_string();
+            SshDirectoryEntry {
+                name,
+                path: normalized,
+            }
+        })
+        .collect();
+    entries.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    Ok(entries)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ssh_probe_command, target, validate_spec, SshConnectionSpec};
+    use super::{
+        posix_quote, ssh_probe_command, target, validate_remote_path, validate_spec,
+        SshConnectionSpec,
+    };
 
     fn spec() -> SshConnectionSpec {
         SshConnectionSpec {
@@ -254,5 +389,13 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         assert!(!args.iter().any(|arg| arg == "-p"));
+    }
+
+    #[test]
+    fn quotes_remote_paths_and_rejects_parent_traversal() {
+        assert_eq!(posix_quote("/srv/team's app"), "'/srv/team'\\''s app'");
+        assert_eq!(validate_remote_path("/srv/app").unwrap(), "/srv/app");
+        assert!(validate_remote_path("srv/app").is_err());
+        assert!(validate_remote_path("/srv/../etc").is_err());
     }
 }

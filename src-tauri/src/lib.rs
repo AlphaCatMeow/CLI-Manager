@@ -785,6 +785,8 @@ pub fn run() {
             commands::terminal_shell::terminal_shell_scan,
             commands::ssh::ssh_client_status,
             commands::ssh::ssh_test_connection,
+            commands::ssh::ssh_check_path,
+            commands::ssh::ssh_list_directories,
             commands::third_party_notification::third_party_notification_test_send,
             commands::logging::set_debug_logging,
             commands::fs::check_paths_exist,
