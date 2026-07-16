@@ -353,8 +353,12 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     const id = crypto.randomUUID();
     const ts = Date.now().toString();
     const os = await getOsPlatform();
+    const isSshProject = input.environment_type === "ssh";
+    if (isSshProject && (!input.ssh_host_id || !input.remote_path?.trim())) {
+      throw new Error("ssh_project_location_required");
+    }
     const rawShell = input.shell?.trim() ?? "";
-    const shell =
+    const shell = isSshProject ? "" :
       normalizeShellForOs(rawShell, os) ??
       (rawShell && !normalizeShellKey(rawShell)
         ? rawShell
@@ -362,7 +366,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     const project: Project = {
       id,
       name: input.name,
-      path: input.path,
+      path: isSshProject ? "" : input.path,
       group_name: input.group_name ?? "",
       group_id: input.group_id ?? null,
       sort_order: 0,
@@ -372,12 +376,12 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       env_vars: input.env_vars ?? "{}",
       shell,
       provider_overrides: input.provider_overrides ?? "{}",
-      worktree_strategy: input.worktree_strategy ?? "disabled",
-      worktree_root: input.worktree_root ?? "",
-      worktree_deps_prompt_enabled: input.worktree_deps_prompt_enabled ?? 0,
+      worktree_strategy: isSshProject ? "disabled" : input.worktree_strategy ?? "disabled",
+      worktree_root: isSshProject ? "" : input.worktree_root ?? "",
+      worktree_deps_prompt_enabled: isSshProject ? 0 : input.worktree_deps_prompt_enabled ?? 0,
       environment_type: input.environment_type ?? "local",
-      ssh_host_id: input.ssh_host_id ?? null,
-      remote_path: input.remote_path ?? "",
+      ssh_host_id: isSshProject ? input.ssh_host_id ?? null : null,
+      remote_path: isSshProject ? input.remote_path?.trim() ?? "" : "",
       created_at: ts,
       updated_at: ts,
     };

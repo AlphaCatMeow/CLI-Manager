@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useProjectStore } from "../stores/projectStore";
 import { useSettingsStore } from "../stores/settingsStore";
-import type { Project, Group, ProjectFileEntry, WorktreeIsolationStrategy } from "../lib/types";
+import type { Project, Group, ProjectFileEntry, ProjectEnvironmentType, WorktreeIsolationStrategy } from "../lib/types";
+import { useSshHostStore } from "../stores/sshHostStore";
 import { getOsPlatform, normalizeShellKey } from "../lib/shell";
 import { getConfigModalShellPrefill } from "../lib/configModalShellPrefill";
 import type { OsPlatform } from "../lib/shell";
@@ -77,6 +78,8 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
   const { language, t } = useI18n();
   const text = (zh: string, en: string) => (language === "zh-CN" ? zh : en);
   const { createProject, updateProject, groups } = useProjectStore();
+  const sshHosts = useSshHostStore((state) => state.hosts);
+  const fetchSshHosts = useSshHostStore((state) => state.fetchHosts);
   const symlinkCompatibilityEnabled = useSettingsStore((s) => s.symlinkCompatibilityEnabled);
   const projectWorktreeConfigEnabled = useSettingsStore((s) => s.projectWorktreeConfigEnabled);
   const terminalShellProfiles = useSettingsStore((s) => s.terminalShellProfiles);
@@ -95,6 +98,8 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
   const cliToolLabelId = useId();
   const shellFieldId = useId();
   const worktreeDepsPromptFieldId = useId();
+  const sshHostFieldId = useId();
+  const remotePathFieldId = useId();
 
   const [osPlatform, setOsPlatform] = useState<OsPlatform>("windows");
 
@@ -102,6 +107,12 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
     cloneFrom ? `${cloneFrom.name} (副本)` : (project?.name ?? "")
   );
   const [path, setPath] = useState(cloneFrom?.path ?? project?.path ?? "");
+  const sourceProject = cloneFrom ?? project;
+  const [projectType, setProjectType] = useState<"local" | "ssh">(
+    sourceProject?.environment_type === "ssh" ? "ssh" : "local"
+  );
+  const [sshHostId, setSshHostId] = useState(sourceProject?.ssh_host_id ?? "");
+  const [remotePath, setRemotePath] = useState(sourceProject?.remote_path ?? "");
   const [groupId, setGroupId] = useState<string | null>(
     cloneFrom?.group_id ?? project?.group_id ?? defaultGroupId ?? null
   );
@@ -126,6 +137,10 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
   const [wslPickerEntries, setWslPickerEntries] = useState<ProjectFileEntry[]>([]);
   const [wslPickerLoading, setWslPickerLoading] = useState(false);
   const [wslPickerError, setWslPickerError] = useState("");
+
+  useEffect(() => {
+    void fetchSshHosts();
+  }, [fetchSshHosts]);
 
   const resolveFallbackShell = useCallback((platform: OsPlatform) => {
     const enabledOptions = getEnabledTerminalShellOptions(platform, terminalShellProfiles);
@@ -279,19 +294,27 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !path.trim()) {
-      setError("名称和路径为必填项");
-      toast.error("保存失败", { description: "名称和路径为必填项" });
+    const requiredFieldsReady = projectType === "ssh"
+      ? Boolean(name.trim() && sshHostId && remotePath.trim())
+      : Boolean(name.trim() && path.trim());
+    if (!requiredFieldsReady) {
+      const description = projectType === "ssh"
+        ? t("configModal.ssh.required")
+        : t("configModal.local.required");
+      setError(description);
+      toast.error(t("configModal.saveFailed"), { description });
       return;
     }
 
-    const normalizedPath = path.trim();
-    const pathOk = await validatePath(normalizedPath);
-    if (!pathOk) {
-      const description = "路径不存在或不可访问";
-      setError(description);
-      toast.error("路径校验失败", { description });
-      return;
+    if (projectType === "local") {
+      const normalizedPath = path.trim();
+      const pathOk = await validatePath(normalizedPath);
+      if (!pathOk) {
+        const description = t("configModal.local.pathUnavailable");
+        setError(description);
+        toast.error(t("configModal.local.pathValidationFailed"), { description });
+        return;
+      }
     }
 
     setError("");
@@ -309,34 +332,43 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
     const trimmedCliArgs = trimmedCliTool ? cliArgs.trim() : "";
     const trimmedStartupCmd = trimmedCliTool ? "" : startupCmd.trim();
     try {
+      const environmentType: ProjectEnvironmentType = projectType === "ssh"
+        ? "ssh"
+        : isWslUncPath(path.trim()) ? "wsl" : "local";
       if (isEdit && project) {
         await updateProject(project.id, {
           name: name.trim(),
-          path: path.trim(),
+          path: projectType === "ssh" ? "" : path.trim(),
           group_id: groupId,
           cli_tool: trimmedCliTool,
           cli_args: trimmedCliArgs,
           startup_cmd: trimmedStartupCmd,
           env_vars: envVarsText.trim(),
-          shell,
-          worktree_strategy: worktreeStrategy,
-          worktree_root: worktreeRoot.trim(),
-          worktree_deps_prompt_enabled: worktreeDepsPromptEnabled ? 1 : 0,
+          shell: projectType === "ssh" ? "" : shell,
+          worktree_strategy: projectType === "ssh" ? "disabled" : worktreeStrategy,
+          worktree_root: projectType === "ssh" ? "" : worktreeRoot.trim(),
+          worktree_deps_prompt_enabled: projectType === "ssh" ? 0 : worktreeDepsPromptEnabled ? 1 : 0,
+          environment_type: environmentType,
+          ssh_host_id: projectType === "ssh" ? sshHostId : null,
+          remote_path: projectType === "ssh" ? remotePath.trim() : "",
         });
         toast.success("终端修改成功");
       } else {
         await createProject({
           name: name.trim(),
-          path: path.trim(),
+          path: projectType === "ssh" ? "" : path.trim(),
           group_id: groupId,
           cli_tool: trimmedCliTool || undefined,
           cli_args: trimmedCliArgs || undefined,
           startup_cmd: trimmedStartupCmd || undefined,
           env_vars: envVarsText.trim() || undefined,
-          shell,
-          worktree_strategy: worktreeStrategy,
-          worktree_root: worktreeRoot.trim() || undefined,
-          worktree_deps_prompt_enabled: worktreeDepsPromptEnabled ? 1 : 0,
+          shell: projectType === "ssh" ? "" : shell,
+          worktree_strategy: projectType === "ssh" ? "disabled" : worktreeStrategy,
+          worktree_root: projectType === "ssh" ? undefined : worktreeRoot.trim() || undefined,
+          worktree_deps_prompt_enabled: projectType === "ssh" ? 0 : worktreeDepsPromptEnabled ? 1 : 0,
+          environment_type: environmentType,
+          ssh_host_id: projectType === "ssh" ? sshHostId : null,
+          remote_path: projectType === "ssh" ? remotePath.trim() : "",
         });
         toast.success("终端创建成功");
       }
@@ -419,6 +451,23 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
             </div>
 
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-4">
+              <div className="grid grid-cols-2 gap-1 rounded-xl border border-border bg-bg-secondary p-1">
+                {(["local", "ssh"] as const).map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    disabled={isEdit}
+                    onClick={() => setProjectType(type)}
+                    className={`rounded-lg px-3 py-2 text-xs font-bold transition-colors ${
+                      projectType === type
+                        ? "bg-primary/15 text-primary ring-1 ring-primary/50"
+                        : "text-text-muted hover:bg-bg-tertiary hover:text-text-secondary"
+                    } disabled:cursor-not-allowed`}
+                  >
+                    {t(type === "local" ? "configModal.type.local" : "configModal.type.ssh")}
+                  </button>
+                ))}
+              </div>
               <Field
                 id={nameFieldId}
                 inputRef={nameInputRef}
@@ -427,8 +476,7 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
                 onChange={setName}
               />
 
-              {/* Path with folder picker */}
-              <div>
+              {projectType === "local" ? <div>
                 <label htmlFor={pathFieldId} className="mb-1 block text-xs text-text-muted">路径 *</label>
                 <div className="flex gap-1">
                   <Input
@@ -458,10 +506,46 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
                     </button>
                   )}
                 </div>
-              </div>
+              </div> : (
+                <>
+                  <div>
+                    <label htmlFor={sshHostFieldId} className="mb-1 block text-xs text-text-muted">
+                      {t("configModal.ssh.host")} *
+                    </label>
+                    <Select
+                      id={sshHostFieldId}
+                      value={sshHostId}
+                      onChange={(event) => setSshHostId(event.target.value)}
+                      className="text-sm"
+                    >
+                      <option value="">{t("configModal.ssh.selectHost")}</option>
+                      {sshHosts.map((host) => (
+                        <option key={host.id} value={host.id}>
+                          {host.name} · {host.config_alias || `${host.username ? `${host.username}@` : ""}${host.host}`}
+                        </option>
+                      ))}
+                    </Select>
+                    {sshHosts.length === 0 && (
+                      <p className="mt-1 text-[11px] text-warning">{t("configModal.ssh.noHosts")}</p>
+                    )}
+                  </div>
+                  <div>
+                    <label htmlFor={remotePathFieldId} className="mb-1 block text-xs text-text-muted">
+                      {t("configModal.ssh.remotePath")} *
+                    </label>
+                    <Input
+                      id={remotePathFieldId}
+                      value={remotePath}
+                      onChange={(event) => setRemotePath(event.target.value)}
+                      placeholder="/home/dev/projects/my-app"
+                      className="text-sm"
+                    />
+                  </div>
+                </>
+              )}
 
               {/* Group selector */}
-              <div>
+              {projectType === "local" && <div>
                 <label className="mb-1 block text-xs text-text-muted">分组</label>
                 <GroupSelector
                   groups={groups}
@@ -469,7 +553,7 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
                   onChange={setGroupId}
                   displayName={selectedGroupName}
                 />
-              </div>
+              </div>}
 
               <div>
                 <label id={cliToolLabelId} htmlFor={cliToolFieldId} className="mb-1 block text-xs text-text-muted">CLI 工具</label>
@@ -537,7 +621,7 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
               </div>
 
               <div
-                hidden={!projectWorktreeConfigEnabled}
+                hidden={!projectWorktreeConfigEnabled || projectType === "ssh"}
                 className="rounded-xl border border-border/70 bg-bg-secondary/60 p-3"
               >
                 <div className="mb-2 text-xs font-semibold text-text-secondary">{t("worktree.settings.title")}</div>
@@ -598,6 +682,11 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
                   </div>
                 </div>
               </div>
+              {projectType === "ssh" && (
+                <div className="rounded-xl border border-warning/35 bg-warning/10 px-3 py-2 text-[11px] leading-relaxed text-warning">
+                  {t("configModal.ssh.capabilityNotice")}
+                </div>
+              )}
             </div>
 
             <DialogFooter className="shrink-0 border-t border-border/70 px-4 py-3">
