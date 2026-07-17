@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { useShallow } from "zustand/react/shallow";
 import {
+  DESKTOP_PET_CLOSE_MENU_EVENT,
   DESKTOP_PET_CONFIG_EVENT,
   DESKTOP_PET_OPEN_SETTINGS_EVENT,
   DESKTOP_PET_OPEN_TARGET_EVENT,
@@ -44,12 +45,13 @@ export function useDesktopPetCoordinator({
   const updateSetting = useSettingsStore((state) => state.update);
   const projects = useProjectStore((state) => state.projects);
   const persistedSessions = useSessionStore((state) => state.sessions);
-  const { sessions, activeSessionId, tabNotifications, tabStatusDetails } = useTerminalStore(
+  const { sessions, activeSessionId, tabNotifications, tabStatusDetails, ptyOutputActivityAt } = useTerminalStore(
     useShallow((state) => ({
       sessions: state.sessions,
       activeSessionId: state.activeSessionId,
       tabNotifications: state.tabNotifications,
       tabStatusDetails: state.tabStatusDetails,
+      ptyOutputActivityAt: state.ptyOutputActivityAt,
     }))
   );
   const [backgroundTasks, setBackgroundTasks] = useState<BackgroundPetTask[]>([]);
@@ -61,10 +63,20 @@ export function useDesktopPetCoordinator({
       activeSessionId,
       tabNotifications,
       tabStatusDetails,
+      ptyOutputActivityAt,
       projects,
       backgroundTasks,
     }),
-    [activeSessionId, backgroundTasks, persistedSessions, projects, sessions, tabNotifications, tabStatusDetails]
+    [
+      activeSessionId,
+      backgroundTasks,
+      persistedSessions,
+      projects,
+      ptyOutputActivityAt,
+      sessions,
+      tabNotifications,
+      tabStatusDetails,
+    ]
   );
 
   const configPayload = useMemo<DesktopPetConfigPayload>(() => ({
@@ -125,17 +137,18 @@ export function useDesktopPetCoordinator({
   useEffect(() => {
     if (!appReady || !settingsLoaded) return;
     const enabled = desktopPet.enabled && !(desktopPet.autoHideFullscreen && terminalFullscreen);
-    void invoke("desktop_pet_window_sync", {
-      config: {
-        enabled,
-        alwaysOnTop: desktopPet.alwaysOnTop,
-        scale: desktopPetScale(desktopPet.size),
-        position: desktopPet.position,
-      },
-    })
-      .then(() => sendState())
-      .catch((err) => logWarn("Failed to synchronize desktop pet window", err));
-  }, [appReady, desktopPet, sendState, settingsLoaded, terminalFullscreen]);
+    void (async () => {
+      await emitTo(DESKTOP_PET_WINDOW_LABEL, DESKTOP_PET_CLOSE_MENU_EVENT).catch(() => {});
+      await invoke("desktop_pet_window_sync", {
+        config: {
+          enabled,
+          alwaysOnTop: desktopPet.alwaysOnTop,
+          scale: desktopPetScale(desktopPet.size),
+          position: desktopPet.position,
+        },
+      });
+    })().catch((err) => logWarn("Failed to synchronize desktop pet window", err));
+  }, [appReady, desktopPet, settingsLoaded, terminalFullscreen]);
 
   useEffect(() => {
     if (!appReady || !settingsLoaded || !desktopPet.enabled) return;
@@ -148,17 +161,12 @@ export function useDesktopPetCoordinator({
     });
     const unlistenOpenTarget = listen<DesktopPetOpenTargetPayload>(DESKTOP_PET_OPEN_TARGET_EVENT, (event) => {
       void (async () => {
+        await invoke("app_show_main_window");
         const sessionId = event.payload.sessionId;
-        if (!sessionId) {
-          await invoke("app_show_main_window");
-          return;
-        }
+        if (!sessionId) return;
         if (event.payload.daemonOnly) {
           const restored = await useTerminalStore.getState().attachDaemonSession(sessionId);
-          if (!restored) {
-            await invoke("app_show_main_window");
-            return;
-          }
+          if (!restored) return;
         }
         await onActivateSession(sessionId);
       })().catch((err) => logWarn("Failed to activate desktop pet target", err));

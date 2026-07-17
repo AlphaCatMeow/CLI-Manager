@@ -8,6 +8,7 @@ export const DESKTOP_PET_SNAPSHOT_EVENT = "desktop-pet-snapshot";
 export const DESKTOP_PET_READY_EVENT = "desktop-pet-ready";
 export const DESKTOP_PET_OPEN_TARGET_EVENT = "desktop-pet-open-target";
 export const DESKTOP_PET_OPEN_SETTINGS_EVENT = "desktop-pet-open-settings";
+export const DESKTOP_PET_CLOSE_MENU_EVENT = "desktop-pet-close-menu";
 export const DESKTOP_PET_POSITION_EVENT = "desktop-pet-position";
 
 export type DesktopPetMood = "idle" | "working" | "waiting" | "success" | "error" | "sleeping";
@@ -127,6 +128,110 @@ export interface DesktopPetOpenTargetPayload {
   daemonOnly: boolean;
 }
 
+export interface DesktopPetWindowRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface DesktopPetMenuWindowGeometry {
+  logicalWidth: number;
+  logicalHeight: number;
+  x: number;
+  y: number;
+  anchorWidth: number;
+  anchorHeight: number;
+  panelWidth: number;
+  targetListHeight: number;
+}
+
+const DESKTOP_PET_MENU_TARGET_EXTRA_WIDTH = 306;
+const DESKTOP_PET_MENU_ACTIONS_EXTRA_WIDTH = 214;
+const DESKTOP_PET_MENU_CARD_HEIGHT = 58;
+const DESKTOP_PET_MENU_CARD_STEP = 43;
+const DESKTOP_PET_MENU_MAX_VISIBLE_TARGETS = 5;
+const DESKTOP_PET_MENU_VERTICAL_CHROME = 64;
+export const DESKTOP_PET_OUTPUT_ACTIVITY_TTL_MS = 6000;
+const DESKTOP_PET_OUTPUT_ACTIVITY_FINAL_GRACE_MS = 1200;
+
+function clampWindowCoordinate(value: number, minimum: number, maximum: number): number {
+  return Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
+}
+
+export function calculateDesktopPetMenuWindowGeometry(
+  collapsed: DesktopPetWindowRect,
+  scaleFactor: number,
+  targetCount: number,
+  workArea?: DesktopPetWindowRect | null
+): DesktopPetMenuWindowGeometry {
+  const safeScaleFactor = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+  const anchorWidth = collapsed.width / safeScaleFactor;
+  const anchorHeight = collapsed.height / safeScaleFactor;
+  const visibleTargets = Math.min(
+    Math.max(0, Math.floor(targetCount)),
+    DESKTOP_PET_MENU_MAX_VISIBLE_TARGETS
+  );
+  const requestedTargetListHeight = visibleTargets > 0
+    ? DESKTOP_PET_MENU_CARD_HEIGHT + (visibleTargets - 1) * DESKTOP_PET_MENU_CARD_STEP
+    : 0;
+  const requestedPanelWidth = visibleTargets > 0
+    ? DESKTOP_PET_MENU_TARGET_EXTRA_WIDTH
+    : DESKTOP_PET_MENU_ACTIONS_EXTRA_WIDTH;
+  let logicalWidth = anchorWidth + requestedPanelWidth;
+  let logicalHeight = Math.max(
+    anchorHeight,
+    requestedTargetListHeight > 0
+      ? requestedTargetListHeight + DESKTOP_PET_MENU_VERTICAL_CHROME
+      : anchorHeight
+  );
+  if (workArea) {
+    logicalWidth = Math.min(logicalWidth, workArea.width / safeScaleFactor);
+    logicalHeight = Math.min(logicalHeight, workArea.height / safeScaleFactor);
+  }
+  const panelWidth = Math.max(0, logicalWidth - anchorWidth);
+  const targetListHeight = Math.min(
+    requestedTargetListHeight,
+    Math.max(0, logicalHeight - DESKTOP_PET_MENU_VERTICAL_CHROME)
+  );
+  const physicalWidth = Math.round(logicalWidth * safeScaleFactor);
+  const physicalHeight = Math.round(logicalHeight * safeScaleFactor);
+  const desiredX = collapsed.x - Math.max(0, physicalWidth - collapsed.width);
+  const desiredY = collapsed.y - Math.max(0, physicalHeight - collapsed.height);
+
+  if (!workArea) {
+    return {
+      logicalWidth,
+      logicalHeight,
+      x: desiredX,
+      y: desiredY,
+      anchorWidth,
+      anchorHeight,
+      panelWidth,
+      targetListHeight,
+    };
+  }
+
+  return {
+    logicalWidth,
+    logicalHeight,
+    x: clampWindowCoordinate(
+      desiredX,
+      workArea.x,
+      workArea.x + workArea.width - physicalWidth
+    ),
+    y: clampWindowCoordinate(
+      desiredY,
+      workArea.y,
+      workArea.y + workArea.height - physicalHeight
+    ),
+    anchorWidth,
+    anchorHeight,
+    panelWidth,
+    targetListHeight,
+  };
+}
+
 const STATUS_PRIORITY: Record<TabNotificationState, number> = {
   none: 0,
   done: 1,
@@ -155,6 +260,13 @@ function daemonTaskStatus(task: BackgroundPetTask): TabNotificationState {
   return task.alive ? "running" : "done";
 }
 
+function daemonTaskUpdatedAt(task: BackgroundPetTask): number {
+  if (explicitDaemonTaskStatus(task)) {
+    return task.taskUpdatedAtMs ?? task.createdAtMs;
+  }
+  return task.alive ? 0 : task.createdAtMs;
+}
+
 function explicitDaemonTaskStatus(task: BackgroundPetTask | undefined): TabNotificationState | null {
   if (
     task?.taskStatus === "running" ||
@@ -171,17 +283,28 @@ function resolveOpenSessionStatus(
   sessionId: string,
   tabNotifications: Record<string, TabNotificationState>,
   tabStatusDetails: Record<string, TabStatusDetails>,
-  daemonTask: BackgroundPetTask | undefined
+  daemonTask: BackgroundPetTask | undefined,
+  outputActivityAt: number,
+  now: number
 ): { status: TabNotificationState; updatedAt: number } {
   const frontendStatus = tabNotifications[sessionId] ?? "none";
   const frontendUpdatedAt = timestampFromDetails(tabStatusDetails[sessionId]);
   const daemonStatus = explicitDaemonTaskStatus(daemonTask);
   const daemonUpdatedAt = daemonTask?.taskUpdatedAtMs ?? daemonTask?.createdAtMs ?? 0;
 
-  if (daemonStatus && (frontendUpdatedAt === 0 || daemonUpdatedAt >= frontendUpdatedAt)) {
-    return { status: daemonStatus, updatedAt: daemonUpdatedAt };
+  const resolved = daemonStatus && (frontendUpdatedAt === 0 || daemonUpdatedAt >= frontendUpdatedAt)
+    ? { status: daemonStatus, updatedAt: daemonUpdatedAt }
+    : { status: frontendStatus, updatedAt: frontendUpdatedAt };
+  const recentOutput = outputActivityAt > 0
+    && now >= outputActivityAt
+    && now - outputActivityAt <= DESKTOP_PET_OUTPUT_ACTIVITY_TTL_MS;
+  const activityCanOverride = resolved.status === "none"
+    || ((resolved.status === "done" || resolved.status === "failed")
+      && outputActivityAt >= resolved.updatedAt + DESKTOP_PET_OUTPUT_ACTIVITY_FINAL_GRACE_MS);
+  if (recentOutput && activityCanOverride) {
+    return { status: "running", updatedAt: outputActivityAt };
   }
-  return { status: frontendStatus, updatedAt: frontendUpdatedAt };
+  return resolved;
 }
 
 interface DeriveDesktopPetSnapshotInput {
@@ -190,11 +313,50 @@ interface DeriveDesktopPetSnapshotInput {
   activeSessionId: string | null;
   tabNotifications: Record<string, TabNotificationState>;
   tabStatusDetails: Record<string, TabStatusDetails>;
+  ptyOutputActivityAt: Record<string, number>;
   projects: Project[];
   backgroundTasks: BackgroundPetTask[];
 }
 
+function compareDesktopPetTargets(left: DesktopPetTarget, right: DesktopPetTarget): number {
+  const priority = STATUS_PRIORITY[right.status] - STATUS_PRIORITY[left.status];
+  if (priority !== 0) return priority;
+  if (left.active !== right.active) return left.active ? -1 : 1;
+  return right.updatedAt - left.updatedAt;
+}
+
+function snapshotFromTargets(targets: DesktopPetTarget[], now: number): DesktopPetSnapshot {
+  if (targets.length === 0) {
+    return {
+      mood: "sleeping",
+      sessionId: null,
+      daemonOnly: false,
+      sessionTitle: null,
+      projectName: null,
+      runningCount: 0,
+      attentionCount: 0,
+      updatedAt: now,
+      targets: [],
+    };
+  }
+
+  const candidates = [...targets].sort(compareDesktopPetTargets);
+  const selected = candidates[0];
+  return {
+    mood: moodFromStatus(selected.status),
+    sessionId: selected.sessionId,
+    daemonOnly: selected.daemonOnly,
+    sessionTitle: selected.sessionTitle,
+    projectName: selected.projectName,
+    runningCount: candidates.filter((candidate) => candidate.status === "running").length,
+    attentionCount: candidates.filter((candidate) => candidate.status === "attention").length,
+    updatedAt: selected.updatedAt || now,
+    targets: candidates,
+  };
+}
+
 export function deriveDesktopPetSnapshot(input: DeriveDesktopPetSnapshotInput): DesktopPetSnapshot {
+  const now = Date.now();
   const openPtySessions = input.sessions.filter((session) => !session.kind || session.kind === "pty");
   const openIds = new Set(openPtySessions.map((session) => session.id));
   const projectById = new Map(input.projects.map((project) => [project.id, project]));
@@ -205,7 +367,9 @@ export function deriveDesktopPetSnapshot(input: DeriveDesktopPetSnapshotInput): 
       session.id,
       input.tabNotifications,
       input.tabStatusDetails,
-      backgroundById.get(session.id)
+      backgroundById.get(session.id),
+      input.ptyOutputActivityAt[session.id] ?? 0,
+      now
     );
     const project = session.projectId ? projectById.get(session.projectId) : undefined;
     return {
@@ -226,45 +390,14 @@ export function deriveDesktopPetSnapshot(input: DeriveDesktopPetSnapshotInput): 
       sessionId: task.sessionId,
       daemonOnly: true,
       status: daemonTaskStatus(task),
-      updatedAt: task.taskUpdatedAtMs ?? task.createdAtMs,
+      updatedAt: daemonTaskUpdatedAt(task),
       sessionTitle: persisted?.title || task.cwd || null,
       projectName: project?.name ?? null,
       active: false,
     });
   }
 
-  if (candidates.length === 0) {
-    return {
-      mood: "sleeping",
-      sessionId: null,
-      daemonOnly: false,
-      sessionTitle: null,
-      projectName: null,
-      runningCount: 0,
-      attentionCount: 0,
-      updatedAt: Date.now(),
-      targets: [],
-    };
-  }
-
-  candidates.sort((left, right) => {
-    const priority = STATUS_PRIORITY[right.status] - STATUS_PRIORITY[left.status];
-    if (priority !== 0) return priority;
-    if (left.active !== right.active) return left.active ? -1 : 1;
-    return right.updatedAt - left.updatedAt;
-  });
-  const selected = candidates[0];
-  return {
-    mood: moodFromStatus(selected.status),
-    sessionId: selected.sessionId,
-    daemonOnly: selected.daemonOnly,
-    sessionTitle: selected.sessionTitle,
-    projectName: selected.projectName,
-    runningCount: candidates.filter((candidate) => candidate.status === "running").length,
-    attentionCount: candidates.filter((candidate) => candidate.status === "attention").length,
-    updatedAt: selected.updatedAt || Date.now(),
-    targets: candidates,
-  };
+  return snapshotFromTargets(candidates, now);
 }
 
 export function desktopPetScale(size: DesktopPetSettings["size"]): number {

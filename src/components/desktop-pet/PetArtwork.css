@@ -27,6 +27,7 @@
 }
 
 .pet-artwork-sprite {
+  position: absolute;
   display: block;
   width: 192px;
   height: 208px;
@@ -34,7 +35,7 @@
   background-position-x: 0;
   background-repeat: no-repeat;
   image-rendering: pixelated;
-  transform-origin: center;
+  transform-origin: 0 0;
   pointer-events: none;
 }
 
