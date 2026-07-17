@@ -748,6 +748,7 @@ export function DesktopPetSettingsPage() {
               {t("desktopPet.settings.storageDescription", {
                 managedPath: "~/.cli-manager/pets",
                 codexPath: "~/.codex/pets",
+                downloadUrl: "https://codex-pets.net/",
               })}
             </Text>
           </Alert>
