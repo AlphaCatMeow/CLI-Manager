@@ -1,5 +1,6 @@
 use super::{
-    PlatformExitStatus, PlatformPtyChild, PlatformPtyController, PtyLaunchOptions, SpawnedPty,
+    PlatformExitStatus, PlatformPtyChild, PlatformPtyController, PlatformPtyTraits,
+    PtyLaunchOptions, SpawnedPty,
 };
 use std::collections::BTreeMap;
 use std::ffi::c_void;
@@ -7,10 +8,11 @@ use std::fs::File;
 use std::mem::{size_of, zeroed};
 use std::os::windows::io::{FromRawHandle, RawHandle};
 use std::ptr::{null, null_mut};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{
     CloseHandle, FreeLibrary, GetLastError, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT,
-    INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    HMODULE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::Console::{
@@ -27,6 +29,9 @@ use windows_sys::Win32::System::Threading::{
 
 const PSEUDOCONSOLE_RESIZE_QUIRK: u32 = 0x2;
 const PSEUDOCONSOLE_WIN32_INPUT_MODE: u32 = 0x4;
+const CONPTY_KILL_SPAWN_THROTTLE: Duration = Duration::from_millis(250);
+const CONPTY_KILL_SPAWN_SPACING: Duration = Duration::from_millis(50);
+static LAST_NATIVE_CONPTY_KILL_OR_SPAWN: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 
 struct OwnedWindowsHandle(HANDLE);
 
@@ -64,7 +69,13 @@ impl Drop for WindowsPtyController {
 }
 
 impl PlatformPtyController for WindowsPtyController {
-    fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
+    fn resize(
+        &self,
+        cols: u16,
+        rows: u16,
+        _pixel_width: Option<u32>,
+        _pixel_height: Option<u32>,
+    ) -> Result<(), String> {
         let result = unsafe {
             (self.api.resize)(
                 self.pseudo_console,
@@ -88,11 +99,11 @@ type CreatePseudoConsoleFn =
 type ResizePseudoConsoleFn = unsafe extern "system" fn(HPCON, COORD) -> i32;
 type ClosePseudoConsoleFn = unsafe extern "system" fn(HPCON);
 
-#[derive(Clone, Copy)]
 struct ConPtyApi {
     create: CreatePseudoConsoleFn,
     resize: ResizePseudoConsoleFn,
     close: ClosePseudoConsoleFn,
+    module: Option<HMODULE>,
 }
 
 impl ConPtyApi {
@@ -111,6 +122,7 @@ impl ConPtyApi {
                         create: unsafe { std::mem::transmute(create) },
                         resize: unsafe { std::mem::transmute(resize) },
                         close: unsafe { std::mem::transmute(close) },
+                        module: Some(module),
                     };
                 }
                 unsafe {
@@ -122,6 +134,19 @@ impl ConPtyApi {
             create: CreatePseudoConsole,
             resize: ResizePseudoConsole,
             close: ClosePseudoConsole,
+            module: None,
+        }
+    }
+
+    fn uses_dll(&self) -> bool {
+        self.module.is_some()
+    }
+}
+
+impl Drop for ConPtyApi {
+    fn drop(&mut self) {
+        if let Some(module) = self.module.take() {
+            unsafe { FreeLibrary(module) };
         }
     }
 }
@@ -129,6 +154,7 @@ impl ConPtyApi {
 struct WindowsPtyChild {
     process: HANDLE,
     pid: u32,
+    uses_conpty_dll: bool,
 }
 
 unsafe impl Send for WindowsPtyChild {}
@@ -165,6 +191,7 @@ impl PlatformPtyChild for WindowsPtyChild {
     }
 
     fn kill(&self) -> Result<(), String> {
+        throttle_native_conpty(self.uses_conpty_dll);
         if unsafe { TerminateProcess(self.process, 1) } == 0 {
             return Err(last_error("TerminateProcess"));
         }
@@ -198,6 +225,8 @@ pub fn spawn(options: PtyLaunchOptions) -> Result<SpawnedPty, String> {
     }
 
     let api = ConPtyApi::load();
+    let uses_conpty_dll = api.uses_dll();
+    throttle_native_conpty(uses_conpty_dll);
     let mut pseudo_console: HPCON = 0;
     let create_result = unsafe {
         (api.create)(
@@ -292,8 +321,29 @@ pub fn spawn(options: PtyLaunchOptions) -> Result<SpawnedPty, String> {
         child: Arc::new(WindowsPtyChild {
             process: process_info.hProcess,
             pid: process_info.dwProcessId,
+            uses_conpty_dll,
         }),
+        traits: PlatformPtyTraits { uses_conpty_dll },
     })
+}
+
+fn throttle_native_conpty(uses_conpty_dll: bool) {
+    if uses_conpty_dll {
+        return;
+    }
+    let throttle = LAST_NATIVE_CONPTY_KILL_OR_SPAWN.get_or_init(|| Mutex::new(None));
+    let Ok(mut last) = throttle.lock() else {
+        return;
+    };
+    if let Some(previous) = *last {
+        let elapsed = previous.elapsed();
+        if elapsed < CONPTY_KILL_SPAWN_THROTTLE {
+            std::thread::sleep(
+                CONPTY_KILL_SPAWN_THROTTLE - elapsed + CONPTY_KILL_SPAWN_SPACING,
+            );
+        }
+    }
+    *last = Some(Instant::now());
 }
 
 fn conpty_creation_flags() -> u32 {
@@ -314,16 +364,25 @@ fn wide_null(value: &str) -> Vec<u16> {
 }
 
 fn build_environment_block(overrides: &std::collections::HashMap<String, String>) -> Vec<u16> {
-    let mut environment = BTreeMap::<String, String>::new();
-    environment.extend(std::env::vars());
-    environment.extend(overrides.clone());
+    let environment = merge_environment(std::env::vars(), overrides.clone());
     let mut block = Vec::new();
-    for (key, value) in environment {
+    for (_, (key, value)) in environment {
         block.extend(format!("{key}={value}").encode_utf16());
         block.push(0);
     }
     block.push(0);
     block
+}
+
+fn merge_environment(
+    base: impl IntoIterator<Item = (String, String)>,
+    overrides: impl IntoIterator<Item = (String, String)>,
+) -> BTreeMap<String, (String, String)> {
+    let mut environment = BTreeMap::<String, (String, String)>::new();
+    for (key, value) in base.into_iter().chain(overrides) {
+        environment.insert(key.to_ascii_uppercase(), (key, value));
+    }
+    environment
 }
 
 fn build_command_line(exe: &str, args: &[String]) -> String {
@@ -386,6 +445,19 @@ mod tests {
         assert_eq!(
             conpty_creation_flags(),
             PSEUDOCONSOLE_RESIZE_QUIRK | PSEUDOCONSOLE_WIN32_INPUT_MODE
+        );
+    }
+
+    #[test]
+    fn environment_overrides_are_case_insensitive() {
+        let environment = merge_environment(
+            [("Path".to_string(), "base".to_string())],
+            [("PATH".to_string(), "override".to_string())],
+        );
+        assert_eq!(environment.len(), 1);
+        assert_eq!(
+            environment.get("PATH"),
+            Some(&("PATH".to_string(), "override".to_string()))
         );
     }
 }

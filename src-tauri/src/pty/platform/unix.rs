@@ -1,5 +1,6 @@
 use super::{
-    PlatformExitStatus, PlatformPtyChild, PlatformPtyController, PtyLaunchOptions, SpawnedPty,
+    PlatformExitStatus, PlatformPtyChild, PlatformPtyController, PlatformPtyTraits,
+    PtyLaunchOptions, SpawnedPty,
 };
 use nix::pty::{openpty, Winsize};
 use nix::sys::signal::{killpg, Signal};
@@ -15,12 +16,18 @@ struct UnixPtyController {
 }
 
 impl PlatformPtyController for UnixPtyController {
-    fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
+    fn resize(
+        &self,
+        cols: u16,
+        rows: u16,
+        pixel_width: Option<u32>,
+        pixel_height: Option<u32>,
+    ) -> Result<(), String> {
         let size = nix::libc::winsize {
             ws_row: rows,
             ws_col: cols,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
+            ws_xpixel: pixel_width.unwrap_or(0).min(u16::MAX.into()) as u16,
+            ws_ypixel: pixel_height.unwrap_or(0).min(u16::MAX.into()) as u16,
         };
         let result =
             unsafe { nix::libc::ioctl(self.master.as_raw_fd(), nix::libc::TIOCSWINSZ, &size) };
@@ -144,6 +151,9 @@ pub fn spawn(options: PtyLaunchOptions) -> Result<SpawnedPty, String> {
             child: Mutex::new(child),
             pid,
         }),
+        traits: PlatformPtyTraits {
+            uses_conpty_dll: false,
+        },
     })
 }
 

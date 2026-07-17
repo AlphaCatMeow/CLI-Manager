@@ -45,6 +45,7 @@ import { Portal } from "./ui/Portal";
 import { useProjectStore } from "../stores/projectStore";
 import { formatStartupInputForPty, useTerminalStore } from "../stores/terminalStore";
 import { terminalProcessManager } from "../terminal/core/TerminalProcessManager";
+import type { TerminalProcessTraits } from "../terminal/transport/PtyHostSocket";
 import {
   TERMINAL_SCROLLBACK_ROWS_DEFAULT,
   useSettingsStore,
@@ -700,7 +701,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   // Hidden terminals stay attached and continue parsing output. Visibility only
   // controls renderer resources and when pending layout work is flushed.
   useEffect(() => {
-    const wasVisible = isVisibleRef.current;
     isVisibleRef.current = isVisible;
 
     if (!isVisible) {
@@ -718,8 +718,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     }
 
     if (!fitAddonRef.current || !containerRef.current) return;
-    const becameVisible = !wasVisible && isVisible;
-    if (becameVisible || rendererRestored) {
+    if (rendererRestored) {
       beginVisibilityRestoreReveal();
       markViewportRefreshNeeded();
     }
@@ -805,7 +804,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       scrollback: effectiveTerminalScrollbackRows,
       scrollOnEraseInDisplay: true,
       allowProposedApi: true,
-      windowsPty: { backend: "conpty" },
       minimumContrastRatio: getTerminalMinimumContrastRatio(baseTheme, isTransparentRef.current),
       // xterm cannot toggle transparency after construction, so keep it enabled
       // even though WebGL is disabled while a background image is active.
@@ -821,6 +819,34 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     const baseDisposables: TerminalSubsystemDisposable[] = [];
     const displayDisposables: TerminalSubsystemDisposable[] = [];
     const inputDisposables: TerminalSubsystemDisposable[] = [];
+    let processTraitsApplied = false;
+    const applyProcessTraits = (traits: TerminalProcessTraits | null | undefined) => {
+      if (!traits || processTraitsApplied) return;
+      processTraitsApplied = true;
+      if (traits.os === "windows" || traits.os === "macos" || traits.os === "linux") {
+        osPlatformRef.current = traits.os;
+      }
+      const windowsPty = traits.windowsPty;
+      if (!windowsPty) return;
+      terminal.options.windowsPty = {
+        backend: windowsPty.backend,
+        buildNumber: windowsPty.buildNumber ?? undefined,
+      };
+      terminal.options.reflowCursorLine = windowsPty.backend === "conpty"
+        && windowsPty.usesConptyDll === true;
+      if (windowsPty.backend === "conpty") {
+        baseDisposables.push(terminal.parser.registerCsiHandler({ final: "c" }, (params) => {
+          if (params.length === 0 || (params.length === 1 && params[0] === 0)) {
+            terminalProcessManager
+              .write(sessionId, "\x1b[?61;4c")
+              .catch((err) => reportPtyWriteError("conpty_da1", err));
+            return true;
+          }
+          return false;
+        }));
+      }
+    };
+    applyProcessTraits(terminalProcessManager.getProcessTraits(sessionId));
     // Keep Claude Code / other TUIs from overriding the app-wide thin cursor via DECSCUSR.
     baseDisposables.push(terminal.parser.registerCsiHandler({ intermediates: " ", final: "q" }, () => true));
 
@@ -852,7 +878,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       },
     }));
     terminal.loadAddon(fitAddon);
-    terminal.loadAddon(imageAddon);
     terminal.loadAddon(searchAddon);
     terminal.loadAddon(serializeAddon);
     terminal.loadAddon(unicode11Addon);
@@ -860,10 +885,25 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     terminal.loadAddon(webLinksAddon);
     terminal.open(containerRef.current);
     // 注册定时节流落盘的快照来源：让崩溃/强杀也能恢复到最近一次落盘的画面。
-    const unregisterSnapshotSource = registerTerminalSnapshotSource(sessionId, () => serializeAddon.serialize());
+    const serializeAfterWriteBarrier = () => new Promise<string>((resolve) => {
+      terminal.write("", () => resolve(serializeAddon.serialize()));
+    });
+    const unregisterSnapshotSource = registerTerminalSnapshotSource(
+      sessionId,
+      serializeAfterWriteBarrier,
+      async (serialized) => {
+        await terminalProcessManager.checkpoint(
+          sessionId,
+          terminal.cols,
+          terminal.rows,
+          serialized,
+        );
+      },
+    );
     baseDisposables.push(searchAddon.onDidChangeResults(handleSearchResults));
 
-    syncWebglRenderer(terminal, baseTheme);
+    const initialWebglReady = syncWebglRenderer(terminal, baseTheme);
+    if (initialWebglReady) terminal.loadAddon(imageAddon);
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
@@ -1147,6 +1187,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
         if (terminalRef.current !== terminal) return;
         const attach = await terminalProcessManager.attach(sessionId);
         if (terminalRef.current !== terminal) return;
+        applyProcessTraits(attach.processTraits);
         const replayCompleted = await ptyOutput.completeReplay(attach.replay);
         if (!replayCompleted) return;
         useTerminalStore.setState((state) => ({
@@ -1156,6 +1197,8 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
         }));
         if (!attach.attached) {
           toast.error(t("terminal.backgroundTasks.restoreFailed"));
+        } else if (attach.replayTruncated) {
+          toast.warning(t("terminal.backgroundTasks.replayTruncated"));
         }
       }).catch(async (err) => {
         const replayCompleted = await ptyOutput.completeReplay([]);

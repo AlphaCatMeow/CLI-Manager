@@ -3,7 +3,9 @@ use crate::commands::ccswitch::{
     ClaudeProviderLaunchConfig, CodexProviderLaunchConfig,
 };
 use crate::daemon::client::{DaemonBridge, DaemonClient};
-use crate::daemon::protocol::{SessionMeta, BINARY_PROTOCOL_VERSION};
+use crate::daemon::protocol::{
+    ClientFrame, SessionMeta, FEATURE_WS_BINARY_OUTPUT,
+};
 use crate::pty::manager::{PtyOrphanCleanupSummary, PtyProcessStatus};
 use log::{debug, info};
 use serde::Serialize;
@@ -122,9 +124,12 @@ pub async fn pty_daemon_active(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PtyHostEndpoint {
-    pub url: String,
-    pub token: String,
-    pub protocol_version: u8,
+    pub transport_mode: String,
+    pub url: Option<String>,
+    pub token: Option<String>,
+    pub protocol_version: u16,
+    pub binary_protocol_version: u8,
+    pub features: Vec<String>,
     pub daemon_version: String,
 }
 
@@ -137,15 +142,92 @@ pub async fn pty_host_get_endpoint(
         return Ok(None);
     };
     let info = client.info();
-    if info.ws_port == 0 {
-        return Ok(None);
-    }
+    let websocket_available = info.ws_port > 0
+        && info.protocol_version > 0
+        && info
+            .features
+            .iter()
+            .any(|feature| feature == FEATURE_WS_BINARY_OUTPUT);
     Ok(Some(PtyHostEndpoint {
-        url: format!("ws://127.0.0.1:{}/pty", info.ws_port),
-        token: info.token.clone(),
-        protocol_version: BINARY_PROTOCOL_VERSION,
+        transport_mode: if websocket_available {
+            "websocket".to_string()
+        } else {
+            "legacy".to_string()
+        },
+        url: websocket_available.then(|| format!("ws://127.0.0.1:{}/pty", info.ws_port)),
+        token: websocket_available.then(|| info.token.clone()),
+        protocol_version: info.protocol_version,
+        binary_protocol_version: info.binary_protocol_version,
+        features: info.features.clone(),
         daemon_version: info.version.clone(),
     }))
+}
+
+fn client_frame_id(frame: &ClientFrame) -> Option<u64> {
+    match frame {
+        ClientFrame::Auth { .. } => None,
+        ClientFrame::Ping { id }
+        | ClientFrame::List { id }
+        | ClientFrame::Create { id, .. }
+        | ClientFrame::Write { id, .. }
+        | ClientFrame::Ack { id, .. }
+        | ClientFrame::Resize { id, .. }
+        | ClientFrame::Close { id, .. }
+        | ClientFrame::CloseAll { id }
+        | ClientFrame::Attach { id, .. }
+        | ClientFrame::Detach { id }
+        | ClientFrame::Reconcile { id, .. }
+        | ClientFrame::Status { id }
+        | ClientFrame::Shutdown { id } => Some(*id),
+    }
+}
+
+/// 旧 daemon 的兼容 transport。只复用已鉴权的主进程 NDJSON 连接，
+/// WebView 不接触 daemon token，也不能绕过 daemon 自身的参数校验。
+#[tauri::command]
+pub async fn pty_legacy_request(
+    daemon_bridge: tauri::State<'_, DaemonBridge>,
+    frame: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let frame: ClientFrame = serde_json::from_value(frame)
+        .map_err(|err| format!("invalid legacy PtyHost request: {err}"))?;
+    let id = client_frame_id(&frame).ok_or_else(|| "legacy auth is not allowed".to_string())?;
+    let client = wait_for_daemon(&daemon_bridge)
+        .await
+        .ok_or_else(|| "PtyHost daemon unavailable".to_string())?;
+    let reply = client.request(id, &frame)?;
+    serde_json::to_value(reply).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn pty_daemon_upgrade_if_idle(
+    app_handle: AppHandle,
+    daemon_bridge: tauri::State<'_, DaemonBridge>,
+) -> Result<bool, String> {
+    let Some(client) = daemon_bridge.get() else {
+        return Ok(false);
+    };
+    if client
+        .info()
+        .features
+        .iter()
+        .any(|feature| feature == FEATURE_WS_BINARY_OUTPUT)
+    {
+        return Ok(true);
+    }
+    if client.list()?.iter().any(|session| session.alive) {
+        return Ok(false);
+    }
+    client.shutdown_if_idle()?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let data_dir = crate::app_paths::cli_manager_data_dir()?;
+    let client = crate::daemon::client::connect_or_spawn(
+        app_handle,
+        &data_dir,
+        cfg!(debug_assertions),
+    )?;
+    daemon_bridge.set(client);
+    Ok(true)
 }
 
 /// daemon 中的会话列表（启动恢复时优先 attach 的依据）。

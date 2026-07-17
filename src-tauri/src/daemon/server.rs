@@ -6,9 +6,11 @@
 
 use super::discovery::{remove_daemon_info, write_daemon_info_exclusive, DaemonInfo};
 use super::protocol::{
-    decode_client_frame, encode_binary_terminal_frame, encode_frame, ClientFrame, DaemonFrame,
-    ProtocolError, ReplayEntry, SessionMeta, SessionStatusInfo, BINARY_KIND_OUTPUT,
-    BINARY_KIND_REPLAY, MAX_FRAME_BYTES,
+    decode_binary_terminal_frame, decode_client_frame, encode_binary_terminal_frame, encode_frame,
+    supported_features, ClientFrame, DaemonFrame, ProcessTraits, ProtocolError, ReplayEntry,
+    SessionMeta, SessionStatusInfo, BINARY_KIND_CHECKPOINT, BINARY_KIND_INPUT,
+    BINARY_KIND_OUTPUT, BINARY_KIND_REPLAY, BINARY_KIND_REPLAY_RESET,
+    BINARY_PROTOCOL_VERSION, CONTROL_PROTOCOL_VERSION, MAX_FRAME_BYTES,
 };
 use crate::claude_hook::{spawn_hook_listener, HookPayloadSink};
 use crate::pty::manager::{PtyEventSink, PtyManager, PtyProcessStatus};
@@ -18,11 +20,11 @@ use base64::Engine;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{channel, sync_channel, RecvTimeoutError, Sender, SyncSender};
+use std::sync::mpsc::{sync_channel, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -36,16 +38,17 @@ pub const IDLE_EXIT_AFTER: Duration = Duration::from_secs(10 * 60);
 const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// 单会话 ring buffer 字节上限（契约：2 MiB）。
 pub const SESSION_BUFFER_MAX_BYTES: usize = 2 * 1024 * 1024;
+pub const SESSION_SPOOL_MAX_BYTES: usize = 10 * 1024 * 1024;
 /// 全部会话 buffer 总内存上限（契约：128 MiB）。
 pub const TOTAL_BUFFER_MAX_BYTES: usize = 128 * 1024 * 1024;
 /// 会话数上限（契约：64）。
 pub const MAX_SESSIONS: usize = 64;
 /// 无客户端时缓存的 hook 上报条数上限（契约：200，attach 后补发）。
 pub const HOOK_CACHE_MAX: usize = 200;
-pub const FLOW_CONTROL_HIGH_WATERMARK_CHARS: usize = 100_000;
-pub const FLOW_CONTROL_LOW_WATERMARK_CHARS: usize = 5_000;
 const OUTPUT_BUFFERING_DURATION: Duration = Duration::from_millis(5);
 const OUTPUT_BUFFERING_MAX_BYTES: usize = 256 * 1024;
+const CLIENT_OUTPUT_QUEUE_MAX_BYTES: usize = 2 * 1024 * 1024;
+const CLIENT_CONTROL_QUEUE_MAX_FRAMES: usize = 256;
 
 struct ReplayFrame {
     cols: u16,
@@ -60,6 +63,9 @@ struct SessionBuffer {
     frames: VecDeque<ReplayFrame>,
     total_bytes: usize,
     spool_path: Option<PathBuf>,
+    spool_bytes: usize,
+    checkpoint: Option<ReplayFrame>,
+    truncated: bool,
 }
 
 impl SessionBuffer {
@@ -73,6 +79,9 @@ impl SessionBuffer {
             frames: VecDeque::new(),
             total_bytes: 0,
             spool_path,
+            spool_bytes: 0,
+            checkpoint: None,
+            truncated: false,
         }
     }
 
@@ -94,6 +103,7 @@ impl SessionBuffer {
                 break;
             }
             self.total_bytes = self.total_bytes.saturating_sub(front.data.len());
+            self.enforce_spool_cap();
         }
     }
 
@@ -115,8 +125,15 @@ impl SessionBuffer {
     }
 
     fn replay_entries(&self) -> Vec<ReplayEntry> {
-        self.read_spooled_frames()
-            .into_iter()
+        self.checkpoint
+            .iter()
+            .map(|frame| ReplayFrame {
+                cols: frame.cols,
+                rows: frame.rows,
+                sequence: frame.sequence,
+                data: frame.data.clone(),
+            })
+            .chain(self.read_spooled_frames())
             .chain(self.frames.iter().map(|frame| ReplayFrame {
                 cols: frame.cols,
                 rows: frame.rows,
@@ -130,6 +147,67 @@ impl SessionBuffer {
                 data_base64: STANDARD.encode(frame.data),
             })
             .collect()
+    }
+
+    fn replay_entries_after(&self, after_sequence: Option<u64>) -> Vec<ReplayEntry> {
+        let after_sequence = after_sequence.unwrap_or(0);
+        self.replay_entries()
+            .into_iter()
+            .filter(|entry| entry.sequence > after_sequence)
+            .collect()
+    }
+
+    fn oldest_sequence(&self) -> Option<u64> {
+        self.checkpoint
+            .as_ref()
+            .map(|frame| frame.sequence)
+            .or_else(|| {
+                self.read_spooled_frames()
+            .first()
+            .map(|frame| frame.sequence)
+            })
+            .or_else(|| self.frames.front().map(|frame| frame.sequence))
+    }
+
+    fn accept_checkpoint(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        sequence: u64,
+        data: Vec<u8>,
+    ) -> Result<(), String> {
+        if self
+            .checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint.sequence >= sequence)
+        {
+            return Ok(());
+        }
+        self.checkpoint = Some(ReplayFrame {
+            cols,
+            rows,
+            sequence,
+            data,
+        });
+        while self
+            .frames
+            .front()
+            .is_some_and(|frame| frame.sequence <= sequence)
+        {
+            if let Some(frame) = self.frames.pop_front() {
+                self.total_bytes = self.total_bytes.saturating_sub(frame.data.len());
+            }
+        }
+        let retained: Vec<ReplayFrame> = self
+            .read_spooled_frames()
+            .into_iter()
+            .filter(|frame| frame.sequence > sequence)
+            .collect();
+        self.write_spooled_frames(&retained)
+    }
+
+    fn replay_available(&self) -> bool {
+        self.checkpoint.is_some() || self.spool_bytes > 0 || !self.frames.is_empty()
     }
 
     fn append_spooled_frame(&self, frame: &ReplayFrame) -> Result<(), String> {
@@ -149,7 +227,65 @@ impl SessionBuffer {
             .and_then(|_| file.write_all(&frame.sequence.to_be_bytes()))
             .and_then(|_| file.write_all(&(frame.data.len() as u32).to_be_bytes()))
             .and_then(|_| file.write_all(&frame.data))
-            .map_err(|err| err.to_string())
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    fn write_spooled_frames(&mut self, frames: &[ReplayFrame]) -> Result<(), String> {
+        let Some(path) = self.spool_path.as_ref() else {
+            self.spool_bytes = 0;
+            return Ok(());
+        };
+        if frames.is_empty() {
+            let _ = std::fs::remove_file(path);
+            self.spool_bytes = 0;
+            return Ok(());
+        }
+        let temp_path = path.with_extension("tmp");
+        let mut file = File::create(&temp_path).map_err(|err| err.to_string())?;
+        let mut bytes = 0usize;
+        for frame in frames {
+            file.write_all(&frame.cols.to_be_bytes())
+                .and_then(|_| file.write_all(&frame.rows.to_be_bytes()))
+                .and_then(|_| file.write_all(&frame.sequence.to_be_bytes()))
+                .and_then(|_| file.write_all(&(frame.data.len() as u32).to_be_bytes()))
+                .and_then(|_| file.write_all(&frame.data))
+                .map_err(|err| err.to_string())?;
+            bytes = bytes.saturating_add(16 + frame.data.len());
+        }
+        file.flush().map_err(|err| err.to_string())?;
+        if path.exists() {
+            std::fs::remove_file(path).map_err(|err| err.to_string())?;
+        }
+        std::fs::rename(&temp_path, path).map_err(|err| err.to_string())?;
+        self.spool_bytes = bytes;
+        Ok(())
+    }
+
+    fn enforce_spool_cap(&mut self) {
+        let actual = self
+            .spool_path
+            .as_ref()
+            .and_then(|path| std::fs::metadata(path).ok())
+            .map(|meta| meta.len() as usize)
+            .unwrap_or(0);
+        self.spool_bytes = actual;
+        if actual <= SESSION_SPOOL_MAX_BYTES {
+            return;
+        }
+        let mut frames = self.read_spooled_frames();
+        let mut bytes = frames
+            .iter()
+            .map(|frame| 16 + frame.data.len())
+            .sum::<usize>();
+        while bytes > SESSION_SPOOL_MAX_BYTES && !frames.is_empty() {
+            let removed = frames.remove(0);
+            bytes = bytes.saturating_sub(16 + removed.data.len());
+            self.truncated = true;
+        }
+        if let Err(err) = self.write_spooled_frames(&frames) {
+            log::warn!("daemon session spool compaction failed: {err}");
+        }
     }
 
     fn read_spooled_frames(&self) -> Vec<ReplayFrame> {
@@ -248,8 +384,24 @@ impl ClientTransport {
                         replay,
                         latest_sequence,
                         meta,
+                        replay_reset,
+                        replay_truncated,
+                        oldest_sequence,
                         ..
                     } => {
+                        if *replay_reset {
+                            let reset = encode_binary_terminal_frame(
+                                BINARY_KIND_REPLAY_RESET,
+                                session_id,
+                                0,
+                                replay.first().map(|entry| entry.cols).unwrap_or(80),
+                                replay.first().map(|entry| entry.rows).unwrap_or(24),
+                                &[],
+                            )?;
+                            socket
+                                .send(Message::Binary(reset.into()))
+                                .map_err(|err| err.to_string())?;
+                        }
                         for entry in replay {
                             let data = STANDARD
                                 .decode(&entry.data_base64)
@@ -273,6 +425,9 @@ impl ClientTransport {
                             replay: Vec::new(),
                             latest_sequence: *latest_sequence,
                             meta: meta.clone(),
+                            replay_reset: *replay_reset,
+                            replay_truncated: *replay_truncated,
+                            oldest_sequence: *oldest_sequence,
                         };
                         socket
                             .send(Message::Text(
@@ -289,30 +444,143 @@ impl ClientTransport {
             }
         }
     }
+
+    fn close(&self) {
+        match self {
+            Self::Ndjson(stream) => {
+                if let Ok(stream) = stream.lock() {
+                    let _ = stream.shutdown(Shutdown::Both);
+                }
+            }
+            Self::WebSocket(socket) => {
+                if let Ok(mut socket) = socket.lock() {
+                    let _ = socket.close(None);
+                    let _ = socket.get_mut().shutdown(Shutdown::Both);
+                }
+            }
+        }
+    }
+}
+
+struct ClientWriterState {
+    control: VecDeque<DaemonFrame>,
+    output: VecDeque<DaemonFrame>,
+    output_bytes: usize,
+    closed: bool,
+}
+
+impl ClientWriterState {
+    fn pop_next(&mut self) -> Option<DaemonFrame> {
+        if let Some(frame) = self.control.pop_front() {
+            return Some(frame);
+        }
+        let frame = self.output.pop_front()?;
+        self.output_bytes = self.output_bytes.saturating_sub(frame_payload_bytes(&frame));
+        Some(frame)
+    }
 }
 
 struct ClientWriter {
-    sender: Sender<DaemonFrame>,
+    shared: Arc<(Mutex<ClientWriterState>, Condvar)>,
 }
 
 impl ClientWriter {
     fn new(transport: ClientTransport) -> Arc<Self> {
-        let (sender, receiver) = channel::<DaemonFrame>();
+        let shared = Arc::new((
+            Mutex::new(ClientWriterState {
+                control: VecDeque::new(),
+                output: VecDeque::new(),
+                output_bytes: 0,
+                closed: false,
+            }),
+            Condvar::new(),
+        ));
+        let thread_shared = Arc::clone(&shared);
         std::thread::spawn(move || {
-            while let Ok(frame) = receiver.recv() {
+            loop {
+                let frame = {
+                    let (lock, changed) = &*thread_shared;
+                    let Ok(mut state) = lock.lock() else {
+                        break;
+                    };
+                    while !state.closed && state.control.is_empty() && state.output.is_empty() {
+                        let Ok(next) = changed.wait(state) else {
+                            return;
+                        };
+                        state = next;
+                    }
+                    if state.closed {
+                        None
+                    } else {
+                        state.pop_next()
+                    }
+                };
+                let Some(frame) = frame else {
+                    break;
+                };
                 if let Err(err) = transport.send_frame(&frame) {
                     log::debug!("daemon client writer stopped: {err}");
                     break;
                 }
             }
+            transport.close();
         });
-        Arc::new(Self { sender })
+        Arc::new(Self { shared })
     }
 
     fn send_frame(&self, frame: &DaemonFrame) -> Result<(), String> {
-        self.sender
-            .send(frame.clone())
-            .map_err(|_| "client writer closed".to_string())
+        if matches!(frame, DaemonFrame::Output { .. }) {
+            self.send_output(frame)
+        } else {
+            self.send_control(frame)
+        }
+    }
+
+    fn send_control(&self, frame: &DaemonFrame) -> Result<(), String> {
+        let (lock, changed) = &*self.shared;
+        let mut state = lock
+            .lock()
+            .map_err(|_| "client writer unavailable".to_string())?;
+        if state.closed || state.control.len() >= CLIENT_CONTROL_QUEUE_MAX_FRAMES {
+            state.closed = true;
+            changed.notify_all();
+            return Err("client control queue full".to_string());
+        }
+        state.control.push_back(frame.clone());
+        changed.notify_one();
+        Ok(())
+    }
+
+    fn send_output(&self, frame: &DaemonFrame) -> Result<(), String> {
+        let bytes = frame_payload_bytes(frame);
+        let (lock, changed) = &*self.shared;
+        let mut state = lock
+            .lock()
+            .map_err(|_| "client writer unavailable".to_string())?;
+        if state.closed || state.output_bytes.saturating_add(bytes) > CLIENT_OUTPUT_QUEUE_MAX_BYTES {
+            state.closed = true;
+            changed.notify_all();
+            return Err("client output queue full".to_string());
+        }
+        state.output_bytes = state.output_bytes.saturating_add(bytes);
+        state.output.push_back(frame.clone());
+        changed.notify_one();
+        Ok(())
+    }
+
+    fn close(&self) {
+        let (lock, changed) = &*self.shared;
+        if let Ok(mut state) = lock.lock() {
+            state.closed = true;
+            changed.notify_all();
+        }
+    }
+}
+
+fn frame_payload_bytes(frame: &DaemonFrame) -> usize {
+    match frame {
+        DaemonFrame::Output { data_base64, .. } => data_base64.len(),
+        _ => 0,
     }
 }
 
@@ -333,16 +601,16 @@ struct SessionEntry {
     next_sequence: u64,
 }
 
+type SharedSession = Arc<Mutex<SessionEntry>>;
+
 /// daemon 共享宿主：PTY 管理器 + 会话表 + 客户端注册表。
 pub struct DaemonHost {
     pty: PtyManager,
-    sessions: Mutex<HashMap<String, SessionEntry>>,
+    sessions: Mutex<HashMap<String, SharedSession>>,
     clients: Mutex<HashMap<u64, ClientHandle>>,
     last_idle_since: Mutex<Instant>,
     /// 无客户端期间收到的 hook 上报缓存，客户端连上后补发（契约）。
     hook_cache: Mutex<VecDeque<serde_json::Value>>,
-    flow_wait_lock: Mutex<()>,
-    flow_changed: Condvar,
     spool_dir: PathBuf,
 }
 
@@ -362,14 +630,19 @@ impl DaemonHost {
             clients: Mutex::new(HashMap::new()),
             last_idle_since: Mutex::new(Instant::now()),
             hook_cache: Mutex::new(VecDeque::new()),
-            flow_wait_lock: Mutex::new(()),
-            flow_changed: Condvar::new(),
             spool_dir,
         }
     }
 
     fn session_spool_path(&self, session_id: &str) -> PathBuf {
         self.spool_dir.join(format!("{session_id}.bin"))
+    }
+
+    fn get_session(&self, session_id: &str) -> Option<SharedSession> {
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| sessions.get(session_id).cloned())
     }
 
     fn reserve_session(
@@ -390,7 +663,7 @@ impl DaemonHost {
         }
         sessions.insert(
             session_id.to_string(),
-            SessionEntry {
+            Arc::new(Mutex::new(SessionEntry {
                 meta: SessionMeta {
                     session_id: session_id.to_string(),
                     cwd,
@@ -399,12 +672,17 @@ impl DaemonHost {
                     task_status: None,
                     task_updated_at_ms: None,
                     created_at_ms: now_ms(),
+                    process_traits: Some(ProcessTraits::current_platform(
+                        std::env::var_os("CLI_MANAGER_CONPTY_DLL_PATH").is_some(),
+                    )),
+                    replay_available: false,
+                    replay_truncated: false,
                 },
                 buffer: SessionBuffer::with_spool(Some(self.session_spool_path(session_id))),
                 cols: 80,
                 rows: 24,
                 next_sequence: 1,
-            },
+            })),
         );
         Ok(())
     }
@@ -447,8 +725,8 @@ impl DaemonHost {
             return;
         };
         let updated_at_ms = now_ms();
-        if let Ok(mut sessions) = self.sessions.lock() {
-            if let Some(entry) = sessions.get_mut(session_id) {
+        if let Some(session) = self.get_session(session_id) {
+            if let Ok(mut entry) = session.lock() {
                 entry.meta.task_status = Some(task_status.to_string());
                 entry.meta.task_updated_at_ms = Some(updated_at_ms);
                 log::debug!(
@@ -473,10 +751,15 @@ impl DaemonHost {
     }
 
     fn alive_session_count(&self) -> usize {
-        self.sessions
+        let sessions = self
+            .sessions
             .lock()
-            .map(|sessions| sessions.values().filter(|s| s.meta.alive).count())
-            .unwrap_or(0)
+            .map(|sessions| sessions.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        sessions
+            .into_iter()
+            .filter(|session| session.lock().map(|entry| entry.meta.alive).unwrap_or(false))
+            .count()
     }
 
     fn client_count(&self) -> usize {
@@ -488,14 +771,21 @@ impl DaemonHost {
         let Ok(mut sessions) = self.sessions.lock() else {
             return;
         };
-        let mut total: usize = sessions.values().map(|s| s.buffer.total_bytes).sum();
+        let mut total: usize = sessions
+            .values()
+            .filter_map(|session| session.lock().ok().map(|entry| entry.buffer.total_bytes))
+            .sum();
         if total <= TOTAL_BUFFER_MAX_BYTES {
             return;
         }
         let mut exited: Vec<(String, u64, usize)> = sessions
             .iter()
-            .filter(|(_, s)| !s.meta.alive)
-            .map(|(id, s)| (id.clone(), s.meta.created_at_ms, s.buffer.total_bytes))
+            .filter_map(|(id, session)| {
+                let entry = session.lock().ok()?;
+                (!entry.meta.alive).then(|| {
+                    (id.clone(), entry.meta.created_at_ms, entry.buffer.total_bytes)
+                })
+            })
             .collect();
         exited.sort_by_key(|(_, created, _)| *created);
         for (id, _, bytes) in exited {
@@ -521,7 +811,9 @@ impl DaemonHost {
                 buffered.push(frame.clone());
                 continue;
             }
-            let _ = client.writer.send_frame(frame);
+            if client.writer.send_frame(frame).is_err() {
+                client.writer.close();
+            }
         }
     }
 
@@ -548,14 +840,937 @@ impl DaemonHost {
                 .insert(session_id.to_string(), sequence);
             if let Some(buffered) = client.attaching.get_mut(session_id) {
                 buffered.push(frame.clone());
+                let buffered_bytes = buffered.iter().map(frame_payload_bytes).sum::<usize>();
+                if buffered_bytes > CLIENT_OUTPUT_QUEUE_MAX_BYTES {
+                    client.writer.close();
+                    client.attached.remove(session_id);
+                }
                 continue;
             }
-            let _ = client.writer.send_frame(frame);
+            if client.writer.send_frame(frame).is_err() {
+                client.writer.close();
+                client.attached.remove(session_id);
+                client.unacknowledged_chars.remove(session_id);
+                client.last_sent_sequence.remove(session_id);
+                client.last_acknowledged_sequence.remove(session_id);
+            }
         }
     }
 
     fn complete_attach(&self, client_id: u64, session_id: &str) {
-        let Ok(mut clients) = se…8061 tokens truncated…aemonFrame::Reconciled { id, summary },
+        let Ok(mut clients) = self.clients.lock() else {
+            return;
+        };
+        let Some(client) = clients.get_mut(&client_id) else {
+            return;
+        };
+        let Some(buffered) = client.attaching.remove(session_id) else {
+            return;
+        };
+        for frame in buffered {
+            if client.writer.send_frame(&frame).is_err() {
+                client.writer.close();
+                client.attached.remove(session_id);
+                break;
+            }
+        }
+    }
+
+    fn acknowledge_output(
+        &self,
+        client_id: u64,
+        session_id: &str,
+        sequence: u64,
+        char_count: usize,
+    ) {
+        if let Ok(mut clients) = self.clients.lock() {
+            if let Some(client) = clients.get_mut(&client_id) {
+                let last_sent = client
+                    .last_sent_sequence
+                    .get(session_id)
+                    .copied()
+                    .unwrap_or(0);
+                let last_acknowledged = client
+                    .last_acknowledged_sequence
+                    .get(session_id)
+                    .copied()
+                    .unwrap_or(0);
+                if sequence > last_acknowledged && sequence <= last_sent {
+                    let remaining = client
+                        .unacknowledged_chars
+                        .entry(session_id.to_string())
+                        .or_default();
+                    *remaining = remaining.saturating_sub(char_count);
+                    client
+                        .last_acknowledged_sequence
+                        .insert(session_id.to_string(), sequence);
+                }
+            }
+        }
+    }
+
+    fn detach_session_from_clients(&self, session_id: &str) {
+        if let Ok(mut clients) = self.clients.lock() {
+            for client in clients.values_mut() {
+                client.attached.remove(session_id);
+                client.unacknowledged_chars.remove(session_id);
+                client.last_sent_sequence.remove(session_id);
+                client.last_acknowledged_sequence.remove(session_id);
+                client.attaching.remove(session_id);
+            }
+        }
+    }
+
+    fn detach_all_sessions_from_clients(&self) {
+        if let Ok(mut clients) = self.clients.lock() {
+            for client in clients.values_mut() {
+                client.attached.clear();
+                client.unacknowledged_chars.clear();
+                client.last_sent_sequence.clear();
+                client.last_acknowledged_sequence.clear();
+                client.attaching.clear();
+            }
+        }
+    }
+}
+
+/// daemon 侧 [`PtyEventSink`]：输出进 ring buffer 并推送给订阅客户端。
+struct DaemonPtyEventSink {
+    sender: SyncSender<DaemonPtyEvent>,
+}
+
+enum DaemonPtyEvent {
+    Output(Vec<u8>),
+    Status(PtyProcessStatus),
+}
+
+impl DaemonPtyEventSink {
+    fn new(host: Arc<DaemonHost>, session_id: String) -> Self {
+        let (sender, receiver) = sync_channel(1);
+        std::thread::spawn(move || loop {
+            let first = match receiver.recv() {
+                Ok(event) => event,
+                Err(_) => return,
+            };
+            match first {
+                DaemonPtyEvent::Status(status) => {
+                    emit_daemon_status(&host, &session_id, status);
+                    return;
+                }
+                DaemonPtyEvent::Output(data) => {
+                    let mut pending = data;
+                    let deadline = Instant::now() + OUTPUT_BUFFERING_DURATION;
+                    let mut final_status = None;
+                    while pending.len() < OUTPUT_BUFFERING_MAX_BYTES {
+                        let now = Instant::now();
+                        if now >= deadline {
+                            break;
+                        }
+                        match receiver.recv_timeout(deadline.saturating_duration_since(now)) {
+                            Ok(DaemonPtyEvent::Output(data)) => pending.extend_from_slice(&data),
+                            Ok(DaemonPtyEvent::Status(status)) => {
+                                final_status = Some(status);
+                                break;
+                            }
+                            Err(RecvTimeoutError::Timeout) => break,
+                            Err(RecvTimeoutError::Disconnected) => break,
+                        }
+                    }
+                    emit_daemon_output(&host, &session_id, &pending);
+                    if let Some(status) = final_status {
+                        emit_daemon_status(&host, &session_id, status);
+                        return;
+                    }
+                }
+            }
+        });
+        Self { sender }
+    }
+}
+
+impl PtyEventSink for DaemonPtyEventSink {
+    fn on_output(&self, _session_id: &str, data: &[u8]) {
+        let _ = self.sender.send(DaemonPtyEvent::Output(data.to_vec()));
+    }
+
+    fn on_status(&self, _session_id: &str, status: PtyProcessStatus) {
+        let _ = self.sender.send(DaemonPtyEvent::Status(status));
+    }
+}
+
+fn emit_daemon_output(host: &DaemonHost, session_id: &str, data: &[u8]) {
+    let char_count = String::from_utf8_lossy(data).encode_utf16().count();
+    let mut sequence = 0;
+    let mut output_size = (80, 24);
+    if let Some(session) = host.get_session(session_id) {
+        if let Ok(mut entry) = session.lock() {
+            sequence = entry.next_sequence;
+            entry.next_sequence = entry.next_sequence.saturating_add(1);
+            output_size = (entry.cols, entry.rows);
+            entry
+                .buffer
+                .push_output(output_size.0, output_size.1, sequence, data);
+            entry.meta.replay_available = entry.buffer.replay_available();
+            entry.meta.replay_truncated = entry.buffer.truncated;
+        }
+    }
+    if sequence == 0 {
+        return;
+    }
+    host.push_output_to_attached(
+        session_id,
+        sequence,
+        char_count,
+        &DaemonFrame::Output {
+            session_id: session_id.to_string(),
+            sequence,
+            cols: output_size.0,
+            rows: output_size.1,
+            data_base64: STANDARD.encode(data),
+        },
+    );
+}
+
+fn emit_daemon_status(host: &DaemonHost, session_id: &str, status: PtyProcessStatus) {
+    if status.status == "running" {
+        return;
+    }
+    if let Some(session) = host.get_session(session_id) {
+        if let Ok(mut entry) = session.lock() {
+            entry.meta.alive = false;
+            if !matches!(entry.meta.task_status.as_deref(), Some("done" | "failed")) {
+                entry.meta.task_status = Some(if status.status == "error" {
+                    "failed".to_string()
+                } else {
+                    "done".to_string()
+                });
+                entry.meta.task_updated_at_ms = Some(now_ms());
+            }
+        }
+    }
+    host.push_to_attached(
+        session_id,
+        &DaemonFrame::Exit {
+            session_id: session_id.to_string(),
+            exit_code: status.exit_code,
+        },
+    );
+    host.enforce_total_buffer_cap();
+}
+
+pub struct DaemonServer {
+    host: Arc<DaemonHost>,
+    next_client_id: AtomicU64,
+    token: String,
+    version: String,
+    info_path: PathBuf,
+}
+
+pub struct DaemonServerConfig {
+    pub info_path: PathBuf,
+    pub version: String,
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// sessionId 白名单校验：uuid/字母数字与连字符，防注入与异常键（不可信输入契约）。
+fn is_valid_session_id(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && session_id.len() <= 64
+        && session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+fn map_hook_event_to_task_status(event: &str) -> Option<&'static str> {
+    match event {
+        "UserPromptSubmit" => Some("running"),
+        "Notification" | "PermissionRequest" => Some("attention"),
+        "Stop" => Some("done"),
+        "StopFailure" => Some("failed"),
+        _ => None,
+    }
+}
+
+fn websocket_error(status: StatusCode, message: &str) -> ErrorResponse {
+    let mut response = ErrorResponse::new(Some(message.to_string()));
+    *response.status_mut() = status;
+    response
+}
+
+fn is_allowed_webview_origin(origin: &str) -> bool {
+    matches!(
+        origin,
+        "tauri://localhost" | "http://tauri.localhost" | "https://tauri.localhost"
+    ) || origin.starts_with("http://localhost:")
+        || origin.starts_with("https://localhost:")
+        || origin.starts_with("http://127.0.0.1:")
+        || origin.starts_with("https://127.0.0.1:")
+}
+
+fn validate_websocket_request(
+    request: &Request,
+    response: Response,
+) -> Result<Response, ErrorResponse> {
+    if request.uri().path() != "/pty" {
+        return Err(websocket_error(StatusCode::NOT_FOUND, "not found"));
+    }
+    let origin = request
+        .headers()
+        .get("origin")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if !is_allowed_webview_origin(origin) {
+        return Err(websocket_error(StatusCode::FORBIDDEN, "origin rejected"));
+    }
+    Ok(response)
+}
+
+enum WebSocketClientMessage {
+    Text(String),
+    Binary(Vec<u8>),
+}
+
+fn read_websocket_client_message(
+    socket: &mut WebSocket<TcpStream>,
+) -> Option<WebSocketClientMessage> {
+    loop {
+        match socket.read() {
+            Ok(Message::Text(text)) if text.len() <= MAX_FRAME_BYTES => {
+                return Some(WebSocketClientMessage::Text(text.to_string()))
+            }
+            Ok(Message::Text(_)) => return None,
+            Ok(Message::Close(_)) | Err(_) => return None,
+            Ok(Message::Binary(data)) if data.len() <= MAX_FRAME_BYTES => {
+                return Some(WebSocketClientMessage::Binary(data.to_vec()))
+            }
+            Ok(Message::Binary(_)) => return None,
+            Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => continue,
+        }
+    }
+}
+
+impl DaemonServer {
+    /// 绑定 127.0.0.1 随机端口、独占写入发现文件并进入 accept 循环（阻塞）。
+    /// 返回 Err 仅发生在启动阶段（端口/发现文件失败，例如已有实例存活）。
+    pub fn run(config: DaemonServerConfig) -> Result<(), String> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|err| format!("daemon bind failed: {err}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|err| format!("daemon local_addr failed: {err}"))?
+            .port();
+        let ws_listener = TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|err| format!("daemon websocket bind failed: {err}"))?;
+        let ws_port = ws_listener
+            .local_addr()
+            .map_err(|err| format!("daemon websocket local_addr failed: {err}"))?
+            .port();
+        // hook 上报稳定端口：PTY 子进程环境变量指向它，app 重启也不失效（契约★）。
+        let hook_listener = TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|err| format!("daemon hook bind failed: {err}"))?;
+        let hook_port = hook_listener
+            .local_addr()
+            .map_err(|err| format!("daemon hook local_addr failed: {err}"))?
+            .port();
+        let token = uuid::Uuid::new_v4().to_string();
+        let info = DaemonInfo {
+            port,
+            ws_port,
+            hook_port,
+            token: token.clone(),
+            pid: std::process::id(),
+            version: config.version.clone(),
+            protocol_version: CONTROL_PROTOCOL_VERSION,
+            binary_protocol_version: BINARY_PROTOCOL_VERSION,
+            features: supported_features(),
+        };
+        // 独占创建：已存在存活实例时这里失败，新 daemon 立即退出（单实例契约）。
+        write_daemon_info_exclusive(&config.info_path, &info)?;
+        log::info!(
+            "cli-manager-daemon listening on 127.0.0.1:{port}, websocket on {ws_port}, hook on {hook_port}"
+        );
+
+        let spool_dir = config.info_path.with_file_name(format!(
+            "{}.spool",
+            config
+                .info_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("daemon")
+        ));
+        let _ = std::fs::remove_dir_all(&spool_dir);
+        if let Err(err) = std::fs::create_dir_all(&spool_dir) {
+            log::warn!("daemon spool directory unavailable, output will remain in memory: {err}");
+        }
+        let server = Arc::new(DaemonServer {
+            host: Arc::new(DaemonHost::with_spool_dir(spool_dir)),
+            next_client_id: AtomicU64::new(1),
+            token: token.clone(),
+            version: config.version,
+            info_path: config.info_path,
+        });
+
+        let hook_host = Arc::clone(&server.host);
+        let dispatcher = DispatcherHandle::start("daemon");
+        let hook_sink: HookPayloadSink = Arc::new(move |payload| {
+            // 仅当没有已连接的前端客户端时（app 已彻底退到后台，例如托盘退出后
+            // 转入后台继续执行）才拉起 app 处理审批。app 正在运行时，事件会通过
+            // 下方 broadcast_hook 送达前端，由前端决定是否通知/切换，绝不在此
+            // 抢占前台——否则用户在其他应用里工作时会被 PermissionRequest（含
+            // Codex 改代码时的误报）强制切回 CLI-Manager。
+            if hook_host.client_count() == 0 {
+                maybe_activate_app_for_hook(&payload);
+            }
+            dispatcher.try_enqueue(payload.to_notification_job());
+            match serde_json::to_value(&payload) {
+                Ok(value) => {
+                    hook_host.update_task_status_from_hook(&value);
+                    hook_host.broadcast_hook(value);
+                }
+                Err(err) => log::warn!("daemon hook payload serialize failed: {err}"),
+            }
+        });
+        spawn_hook_listener(hook_listener, token, hook_sink);
+
+        server.spawn_idle_watchdog();
+
+        let websocket_server = Arc::clone(&server);
+        std::thread::spawn(move || {
+            for stream in ws_listener.incoming() {
+                match stream {
+                    Ok(stream) => {
+                        let server = Arc::clone(&websocket_server);
+                        std::thread::spawn(move || server.handle_websocket_connection(stream));
+                    }
+                    Err(err) => log::warn!("daemon websocket accept failed: {err}"),
+                }
+            }
+        });
+
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    let server = Arc::clone(&server);
+                    std::thread::spawn(move || server.handle_connection(stream));
+                }
+                Err(err) => log::warn!("daemon accept failed: {err}"),
+            }
+        }
+        Ok(())
+    }
+
+    fn spawn_idle_watchdog(self: &Arc<Self>) {
+        let server = Arc::clone(self);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(IDLE_CHECK_INTERVAL);
+            let busy = server.host.client_count() > 0 || server.host.alive_session_count() > 0;
+            let Ok(mut idle_since) = server.host.last_idle_since.lock() else {
+                continue;
+            };
+            if busy {
+                *idle_since = Instant::now();
+                continue;
+            }
+            if idle_since.elapsed() >= IDLE_EXIT_AFTER {
+                log::info!("daemon idle (no clients, no alive sessions), exiting");
+                remove_daemon_info(&server.info_path);
+                std::process::exit(0);
+            }
+        });
+    }
+
+    fn handle_connection(self: Arc<Self>, stream: TcpStream) {
+        let peer = stream
+            .peer_addr()
+            .map(|addr| addr.to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        let writer = match stream.try_clone() {
+            Ok(writer) => ClientWriter::new(ClientTransport::Ndjson(Mutex::new(writer))),
+            Err(err) => {
+                log::warn!("daemon stream clone failed ({peer}): {err}");
+                return;
+            }
+        };
+        let mut reader = BufReader::new(stream);
+
+        // 首帧必须 Auth，失败立即断连（契约）。
+        match read_line_bounded(&mut reader) {
+            Some(line) => match decode_client_frame(&line) {
+                Ok(ClientFrame::Auth { token, .. }) if token == self.token => {
+                    let _ = writer.send_frame(&DaemonFrame::AuthOk {
+                        daemon_version: self.version.clone(),
+                        pid: std::process::id(),
+                        protocol_version: CONTROL_PROTOCOL_VERSION,
+                        binary_protocol_version: BINARY_PROTOCOL_VERSION,
+                        features: supported_features(),
+                    });
+                }
+                _ => {
+                    log::warn!("daemon auth rejected ({peer})");
+                    let _ = writer.send_frame(&DaemonFrame::AuthErr {
+                        reason: "auth_failed".to_string(),
+                    });
+                    return;
+                }
+            },
+            None => return,
+        }
+
+        let client_id = self.next_client_id.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut clients) = self.host.clients.lock() {
+            clients.insert(
+                client_id,
+                ClientHandle {
+                    writer: Arc::clone(&writer),
+                    attached: HashSet::new(),
+                    unacknowledged_chars: HashMap::new(),
+                    last_sent_sequence: HashMap::new(),
+                    last_acknowledged_sequence: HashMap::new(),
+                    attaching: HashMap::new(),
+                },
+            );
+        }
+        log::info!("daemon client connected ({peer}, id={client_id})");
+
+        while let Some(line) = read_line_bounded(&mut reader) {
+            match decode_client_frame(&line) {
+                Ok(frame) => {
+                    if !self.dispatch(client_id, frame, &writer) {
+                        break;
+                    }
+                }
+                Err(ProtocolError::UnknownType(kind)) => {
+                    // 前向兼容：未知 type 回错误帧但保持连接。
+                    let _ = writer.send_frame(&DaemonFrame::Err {
+                        id: 0,
+                        message: format!("unknown frame type: {kind}"),
+                    });
+                }
+                Err(ProtocolError::Malformed(reason)) => {
+                    log::warn!("daemon malformed frame ({peer}): {reason}");
+                    break; // 非法帧断连（契约）。
+                }
+            }
+        }
+
+        if let Ok(mut clients) = self.host.clients.lock() {
+            if let Some(client) = clients.remove(&client_id) {
+                client.writer.close();
+            }
+        }
+        log::info!("daemon client disconnected ({peer}, id={client_id})");
+    }
+
+    fn handle_websocket_connection(self: Arc<Self>, stream: TcpStream) {
+        let peer = stream
+            .peer_addr()
+            .map(|addr| addr.to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        let mut socket = match accept_hdr(stream, validate_websocket_request) {
+            Ok(socket) => socket,
+            Err(err) => {
+                log::warn!("daemon websocket handshake rejected ({peer}): {err}");
+                return;
+            }
+        };
+        let writer_stream = match socket.get_ref().try_clone() {
+            Ok(stream) => stream,
+            Err(err) => {
+                log::warn!("daemon websocket stream clone failed ({peer}): {err}");
+                return;
+            }
+        };
+        let writer = ClientWriter::new(ClientTransport::WebSocket(Mutex::new(
+            WebSocket::from_raw_socket(writer_stream, Role::Server, None),
+        )));
+
+        match read_websocket_client_message(&mut socket) {
+            Some(WebSocketClientMessage::Text(line)) => match decode_client_frame(&line) {
+                Ok(ClientFrame::Auth { token, .. }) if token == self.token => {
+                    let _ = writer.send_frame(&DaemonFrame::AuthOk {
+                        daemon_version: self.version.clone(),
+                        pid: std::process::id(),
+                        protocol_version: CONTROL_PROTOCOL_VERSION,
+                        binary_protocol_version: BINARY_PROTOCOL_VERSION,
+                        features: supported_features(),
+                    });
+                }
+                _ => {
+                    let _ = writer.send_frame(&DaemonFrame::AuthErr {
+                        reason: "auth_failed".to_string(),
+                    });
+                    return;
+                }
+            },
+            Some(WebSocketClientMessage::Binary(_)) | None => return,
+        }
+
+        let client_id = self.next_client_id.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut clients) = self.host.clients.lock() {
+            clients.insert(
+                client_id,
+                ClientHandle {
+                    writer: Arc::clone(&writer),
+                    attached: HashSet::new(),
+                    unacknowledged_chars: HashMap::new(),
+                    last_sent_sequence: HashMap::new(),
+                    last_acknowledged_sequence: HashMap::new(),
+                    attaching: HashMap::new(),
+                },
+            );
+        }
+        log::info!("daemon websocket client connected ({peer}, id={client_id})");
+
+        while let Some(message) = read_websocket_client_message(&mut socket) {
+            match message {
+                WebSocketClientMessage::Text(line) => match decode_client_frame(&line) {
+                    Ok(frame) => {
+                        if !self.dispatch(client_id, frame, &writer) {
+                            break;
+                        }
+                    }
+                    Err(ProtocolError::UnknownType(kind)) => {
+                        let _ = writer.send_frame(&DaemonFrame::Err {
+                            id: 0,
+                            message: format!("unknown frame type: {kind}"),
+                        });
+                    }
+                    Err(ProtocolError::Malformed(reason)) => {
+                        log::warn!("daemon websocket malformed frame ({peer}): {reason}");
+                        break;
+                    }
+                },
+                WebSocketClientMessage::Binary(data) => {
+                    if !self.handle_binary_frame(client_id, &data, &writer) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Ok(mut clients) = self.host.clients.lock() {
+            if let Some(client) = clients.remove(&client_id) {
+                client.writer.close();
+            }
+        }
+        log::info!("daemon websocket client disconnected ({peer}, id={client_id})");
+    }
+
+    fn handle_binary_frame(
+        &self,
+        client_id: u64,
+        data: &[u8],
+        writer: &Arc<ClientWriter>,
+    ) -> bool {
+        let frame = match decode_binary_terminal_frame(data) {
+            Ok(frame) => frame,
+            Err(message) => {
+                let _ = writer.send_frame(&DaemonFrame::Err { id: 0, message });
+                return false;
+            }
+        };
+        let attached = self
+            .host
+            .clients
+            .lock()
+            .ok()
+            .and_then(|clients| clients.get(&client_id).map(|client| {
+                client.attached.contains(&frame.session_id)
+            }))
+            .unwrap_or(false);
+        if !attached || !is_valid_session_id(&frame.session_id) {
+            let _ = writer.send_frame(&DaemonFrame::Err {
+                id: 0,
+                message: "binary frame session is not attached".to_string(),
+            });
+            return false;
+        }
+        match frame.kind {
+            BINARY_KIND_INPUT => self
+                .host
+                .pty
+                .write_bytes(&frame.session_id, &frame.data)
+                .is_ok(),
+            BINARY_KIND_CHECKPOINT => {
+                let result = self
+                    .host
+                    .get_session(&frame.session_id)
+                    .ok_or_else(|| "session not found".to_string())
+                    .and_then(|session| {
+                        let mut entry = session
+                            .lock()
+                            .map_err(|_| "session state unavailable".to_string())?;
+                        let latest_sequence = entry.next_sequence.saturating_sub(1);
+                        if frame.sequence > latest_sequence {
+                            return Err("checkpoint sequence is ahead of daemon output".to_string());
+                        }
+                        entry.buffer.accept_checkpoint(
+                            frame.cols,
+                            frame.rows,
+                            frame.sequence,
+                            frame.data,
+                        )?;
+                        entry.meta.replay_available = entry.buffer.replay_available();
+                        entry.meta.replay_truncated = entry.buffer.truncated;
+                        Ok(())
+                    });
+                let response = match result {
+                    Ok(()) => DaemonFrame::CheckpointAccepted {
+                        session_id: frame.session_id,
+                        sequence: frame.sequence,
+                    },
+                    Err(message) => DaemonFrame::CheckpointRejected {
+                        session_id: frame.session_id,
+                        sequence: frame.sequence,
+                        message,
+                    },
+                };
+                writer.send_frame(&response).is_ok()
+            }
+            _ => false,
+        }
+    }
+
+    /// 返回 false 表示应结束该连接。
+    fn dispatch(&self, client_id: u64, frame: ClientFrame, writer: &Arc<ClientWriter>) -> bool {
+        // 积压 hook 上报在首次 List 时补发（而非连接瞬间）：此时前端 webview
+        // 的事件监听器已就绪（恢复流程先查会话列表），避免 re-emit 被丢。
+        if matches!(frame, ClientFrame::List { .. }) {
+            self.host.flush_hook_cache_to(writer);
+        }
+        let attach_session_id = match &frame {
+            ClientFrame::Attach { session_id, .. } => Some(session_id.clone()),
+            _ => None,
+        };
+        let reply = self.handle_frame(client_id, frame);
+        let sent = writer.send_frame(&reply).is_ok();
+        if sent && matches!(reply, DaemonFrame::Attached { .. }) {
+            if let Some(session_id) = attach_session_id {
+                self.host.complete_attach(client_id, &session_id);
+            }
+        }
+        sent
+    }
+
+    fn handle_frame(&self, client_id: u64, frame: ClientFrame) -> DaemonFrame {
+        match frame {
+            ClientFrame::Auth { .. } => DaemonFrame::Err {
+                id: 0,
+                message: "already authenticated".to_string(),
+            },
+            ClientFrame::Ping { id } => DaemonFrame::Pong { id },
+            ClientFrame::List { id } => {
+                let session_handles = self
+                    .host
+                    .sessions
+                    .lock()
+                    .map(|sessions| sessions.values().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let sessions = session_handles
+                    .into_iter()
+                    .filter_map(|session| session.lock().ok().map(|entry| entry.meta.clone()))
+                    .collect();
+                DaemonFrame::Sessions { id, sessions }
+            }
+            ClientFrame::Create {
+                id,
+                session_id,
+                cwd,
+                env_vars,
+                shell,
+            } => self.handle_create(client_id, id, session_id, cwd, env_vars, shell),
+            ClientFrame::Write {
+                id,
+                session_id,
+                data,
+            } => {
+                if !is_valid_session_id(&session_id) {
+                    return err_frame(id, "invalid session id");
+                }
+                match self.host.pty.write(&session_id, &data) {
+                    Ok(()) => DaemonFrame::Ok { id },
+                    Err(message) => DaemonFrame::Err { id, message },
+                }
+            }
+            ClientFrame::Ack {
+                id,
+                session_id,
+                sequence,
+                char_count,
+            } => {
+                if !is_valid_session_id(&session_id) {
+                    return err_frame(id, "invalid session id");
+                }
+                self.host
+                    .acknowledge_output(client_id, &session_id, sequence, char_count);
+                DaemonFrame::Ok { id }
+            }
+            ClientFrame::Resize {
+                id,
+                session_id,
+                cols,
+                rows,
+                pixel_width,
+                pixel_height,
+            } => {
+                if !is_valid_session_id(&session_id) {
+                    return err_frame(id, "invalid session id");
+                }
+                match self.host.pty.resize(
+                    &session_id,
+                    cols,
+                    rows,
+                    pixel_width,
+                    pixel_height,
+                ) {
+                    Ok(()) => {
+                        if let Some(session) = self.host.get_session(&session_id) {
+                            if let Ok(mut entry) = session.lock() {
+                                entry.cols = cols;
+                                entry.rows = rows;
+                                let sequence = entry.next_sequence;
+                                entry.next_sequence = entry.next_sequence.saturating_add(1);
+                                entry.buffer.push_resize(cols, rows, sequence);
+                            }
+                        }
+                        DaemonFrame::Ok { id }
+                    }
+                    Err(message) => DaemonFrame::Err { id, message },
+                }
+            }
+            ClientFrame::Close { id, session_id } => {
+                if !is_valid_session_id(&session_id) {
+                    return err_frame(id, "invalid session id");
+                }
+                let result = self.host.pty.close(&session_id);
+                if let Ok(mut sessions) = self.host.sessions.lock() {
+                    sessions.remove(&session_id);
+                }
+                self.host.detach_session_from_clients(&session_id);
+                match result {
+                    Ok(()) => DaemonFrame::Ok { id },
+                    Err(message) => DaemonFrame::Err { id, message },
+                }
+            }
+            ClientFrame::CloseAll { id } => {
+                let result = self.host.pty.close_all();
+                if let Ok(mut sessions) = self.host.sessions.lock() {
+                    sessions.clear();
+                }
+                self.host.detach_all_sessions_from_clients();
+                match result {
+                    Ok(()) => DaemonFrame::Ok { id },
+                    Err(message) => DaemonFrame::Err { id, message },
+                }
+            }
+            ClientFrame::Attach {
+                id,
+                session_id,
+                after_sequence,
+            } => {
+                if !is_valid_session_id(&session_id) {
+                    return err_frame(id, "invalid session id");
+                }
+                // Keep the replay snapshot and subscription registration atomic
+                // relative to on_output (sessions -> clients). Output produced
+                // before this block is replayed; output produced after it is live.
+                let attach_info = self.host.get_session(&session_id).and_then(|session| {
+                    let entry = session.lock().ok()?;
+                    let meta = entry.meta.clone();
+                    let oldest_sequence = entry.buffer.oldest_sequence().unwrap_or(0);
+                    let replay_reset = after_sequence
+                        .map(|sequence| sequence.saturating_add(1) < oldest_sequence)
+                        .unwrap_or(true);
+                    let replay_entries = if replay_reset {
+                        entry.buffer.replay_entries()
+                    } else {
+                        entry.buffer.replay_entries_after(after_sequence)
+                    };
+                    let latest_sequence = entry.next_sequence.saturating_sub(1);
+                    let mut clients = self.host.clients.lock().ok()?;
+                    let client = clients.get_mut(&client_id)?;
+                    client.attached.insert(session_id.clone());
+                    client.unacknowledged_chars.insert(session_id.clone(), 0);
+                    client
+                        .last_sent_sequence
+                        .insert(session_id.clone(), latest_sequence);
+                    client
+                        .last_acknowledged_sequence
+                        .insert(session_id.clone(), latest_sequence);
+                    client.attaching.insert(session_id.clone(), Vec::new());
+                    Some((
+                        meta,
+                        replay_entries,
+                        latest_sequence,
+                        replay_reset,
+                        oldest_sequence,
+                    ))
+                });
+                match attach_info {
+                    Some((
+                        meta,
+                        replay_entries,
+                        latest_sequence,
+                        replay_reset,
+                        oldest_sequence,
+                    )) => DaemonFrame::Attached {
+                        id,
+                        session_id,
+                        replay_base64: String::new(),
+                        replay: replay_entries,
+                        latest_sequence,
+                        meta,
+                        replay_reset,
+                        replay_truncated: false,
+                        oldest_sequence,
+                    },
+                    None => err_frame(id, "session not found"),
+                }
+            }
+            ClientFrame::Detach { id } => {
+                if let Ok(mut clients) = self.host.clients.lock() {
+                    if let Some(client) = clients.get_mut(&client_id) {
+                        client.attached.clear();
+                        client.unacknowledged_chars.clear();
+                        client.last_sent_sequence.clear();
+                        client.last_acknowledged_sequence.clear();
+                        client.attaching.clear();
+                    }
+                }
+                DaemonFrame::Ok { id }
+            }
+            ClientFrame::Reconcile {
+                id,
+                active_session_ids,
+            } => {
+                let active_count = active_session_ids
+                    .iter()
+                    .filter(|session_id| !session_id.trim().is_empty())
+                    .count();
+                let tracked_count = self
+                    .host
+                    .sessions
+                    .lock()
+                    .map(|sessions| sessions.len())
+                    .unwrap_or(0);
+                // daemon 会话可以在没有 UI Tab 的情况下继续运行；UI active list
+                // 只能用于诊断，不能作为孤儿判定依据。
+                let summary = crate::pty::manager::PtyOrphanCleanupSummary {
+                    active_count,
+                    tracked_count,
+                    marked_missing: 0,
+                    protected_count: tracked_count,
+                    cleaned_count: 0,
+                    skipped_empty_active_list: active_count == 0,
+                };
+                match serde_json::to_value(&summary) {
+                    Ok(summary) => DaemonFrame::Reconciled { id, summary },
                     Err(err) => err_frame(id, &err.to_string()),
                 }
             }
@@ -641,7 +1856,19 @@ impl DaemonHost {
             shell.as_deref(),
             sink,
         ) {
-            Ok(()) => DaemonFrame::Ok { id },
+            Ok(process_traits) => self
+                .host
+                .get_session(&session_id)
+                .and_then(|session| {
+                    session.lock().ok().map(|mut entry| {
+                        entry.meta.process_traits = Some(ProcessTraits::current_platform(
+                            process_traits.uses_conpty_dll,
+                        ));
+                        entry.meta.clone()
+                    })
+                })
+                .map(|meta| DaemonFrame::Created { id, meta })
+                .unwrap_or_else(|| err_frame(id, "session state unavailable")),
             Err(message) => {
                 if let Ok(mut sessions) = self.host.sessions.lock() {
                     sessions.remove(&session_id);
@@ -737,6 +1964,27 @@ fn maybe_activate_app_for_hook(payload: &crate::claude_hook::ClaudeHookPayload) 
 mod tests {
     use super::*;
 
+    fn test_session(session_id: &str, buffer: SessionBuffer, next_sequence: u64) -> SharedSession {
+        Arc::new(Mutex::new(SessionEntry {
+            meta: SessionMeta {
+                session_id: session_id.to_string(),
+                cwd: None,
+                shell: None,
+                alive: true,
+                task_status: None,
+                task_updated_at_ms: None,
+                created_at_ms: 1,
+                process_traits: Some(ProcessTraits::current_platform(false)),
+                replay_available: buffer.replay_available(),
+                replay_truncated: buffer.truncated,
+            },
+            buffer,
+            cols: 80,
+            rows: 24,
+            next_sequence,
+        }))
+    }
+
     #[test]
     fn websocket_writer_sends_binary_terminal_output() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -788,21 +2036,7 @@ mod tests {
         buffer.push_output(80, 24, 1, b"replay-before-attach");
         host.sessions.lock().expect("lock sessions").insert(
             session_id.to_string(),
-            SessionEntry {
-                meta: SessionMeta {
-                    session_id: session_id.to_string(),
-                    cwd: None,
-                    shell: None,
-                    alive: true,
-                    task_status: None,
-                    task_updated_at_ms: None,
-                    created_at_ms: 1,
-                },
-                buffer,
-                cols: 80,
-                rows: 24,
-                next_sequence: 2,
-            },
+            test_session(session_id, buffer, 2),
         );
         host.clients.lock().expect("lock clients").insert(
             client_id,
@@ -828,6 +2062,7 @@ mod tests {
             ClientFrame::Attach {
                 id: 11,
                 session_id: session_id.to_string(),
+                after_sequence: None,
             },
         );
 
@@ -866,21 +2101,7 @@ mod tests {
         buffer.push_output(80, 24, 1, b"replay");
         host.sessions.lock().unwrap().insert(
             session_id.to_string(),
-            SessionEntry {
-                meta: SessionMeta {
-                    session_id: session_id.to_string(),
-                    cwd: None,
-                    shell: None,
-                    alive: true,
-                    task_status: None,
-                    task_updated_at_ms: None,
-                    created_at_ms: 1,
-                },
-                buffer,
-                cols: 80,
-                rows: 24,
-                next_sequence: 2,
-            },
+            test_session(session_id, buffer, 2),
         );
         let writer = ClientWriter::new(ClientTransport::Ndjson(Mutex::new(server_stream)));
         host.clients.lock().unwrap().insert(
@@ -907,6 +2128,7 @@ mod tests {
             ClientFrame::Attach {
                 id: 12,
                 session_id: session_id.to_string(),
+                after_sequence: None,
             },
         );
         let live = DaemonFrame::Output {
@@ -1007,21 +2229,7 @@ mod tests {
         let session_id = "0e0f7b0a-1234-4c5d-9e8f-aabbccddeeff";
         host.sessions.lock().unwrap().insert(
             session_id.to_string(),
-            SessionEntry {
-                meta: SessionMeta {
-                    session_id: session_id.to_string(),
-                    cwd: None,
-                    shell: None,
-                    alive: true,
-                    task_status: None,
-                    task_updated_at_ms: None,
-                    created_at_ms: 1,
-                },
-                buffer: SessionBuffer::new(),
-                cols: 80,
-                rows: 24,
-                next_sequence: 1,
-            },
+            test_session(session_id, SessionBuffer::new(), 1),
         );
         let server = DaemonServer {
             host: Arc::clone(&host),

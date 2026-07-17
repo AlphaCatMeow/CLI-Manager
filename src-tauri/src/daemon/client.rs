@@ -12,7 +12,6 @@ use super::protocol::{
     MAX_FRAME_BYTES,
 };
 use crate::pty::manager::PtyProcessStatus;
-use base64::Engine;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -88,7 +87,7 @@ impl DaemonClient {
     }
 
     /// 连接并完成鉴权握手；成功后启动推送分发线程。
-    pub fn connect(info: DaemonInfo, app_handle: AppHandle) -> Result<Arc<Self>, String> {
+    pub fn connect(mut info: DaemonInfo, app_handle: AppHandle) -> Result<Arc<Self>, String> {
         let addr = SocketAddr::from(([127, 0, 0, 1], info.port));
         let stream = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)
             .map_err(|err| format!("daemon connect failed: {err}"))?;
@@ -110,13 +109,22 @@ impl DaemonClient {
         let mut reader = BufReader::new(stream);
         let first = read_line_bounded(&mut reader).ok_or("daemon auth read failed")?;
         match decode_daemon_frame(&first) {
-            Ok(DaemonFrame::AuthOk { daemon_version, .. }) => {
+            Ok(DaemonFrame::AuthOk {
+                daemon_version,
+                protocol_version,
+                binary_protocol_version,
+                features,
+                ..
+            }) => {
                 if daemon_version != env!("CARGO_PKG_VERSION") {
                     log::warn!(
                         "daemon version mismatch: daemon={daemon_version}, app={}",
                         env!("CARGO_PKG_VERSION")
                     );
                 }
+                info.protocol_version = protocol_version;
+                info.binary_protocol_version = binary_protocol_version;
+                info.features = features;
             }
             Ok(DaemonFrame::AuthErr { reason }) => {
                 return Err(format!("daemon auth rejected: {reason}"));
@@ -165,14 +173,20 @@ impl DaemonClient {
             DaemonFrame::Output {
                 session_id,
                 sequence,
+                cols,
+                rows,
                 data_base64,
-                ..
             } => {
-                let char_count = base64::engine::general_purpose::STANDARD
-                    .decode(data_base64.as_bytes())
-                    .map(|data| String::from_utf8_lossy(&data).encode_utf16().count())
-                    .unwrap_or(0);
-                self.send_ack(&session_id, sequence, char_count);
+                let _ = app_handle.emit(
+                    "pty-legacy-output",
+                    serde_json::json!({
+                        "sessionId": session_id,
+                        "sequence": sequence,
+                        "cols": cols,
+                        "rows": rows,
+                        "dataBase64": data_base64,
+                    }),
+                );
             }
             DaemonFrame::Exit {
                 session_id,
@@ -185,12 +199,23 @@ impl DaemonClient {
                         exit_code,
                     },
                 );
+                let _ = app_handle.emit(
+                    "pty-legacy-status",
+                    serde_json::json!({
+                        "sessionId": session_id,
+                        "status": "exited",
+                        "exit_code": exit_code,
+                    }),
+                );
             }
             DaemonFrame::HookReport { payload } => {
                 let _ = app_handle.emit("claude-hook-notification", payload);
             }
+            DaemonFrame::CheckpointAccepted { .. }
+            | DaemonFrame::CheckpointRejected { .. } => {}
             DaemonFrame::Pong { id }
             | DaemonFrame::Ok { id }
+            | DaemonFrame::Created { id, .. }
             | DaemonFrame::Err { id, .. }
             | DaemonFrame::Sessions { id, .. }
             | DaemonFrame::Statuses { id, .. }
@@ -209,25 +234,6 @@ impl DaemonClient {
 
     pub fn next_request_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::SeqCst)
-    }
-
-    fn send_ack(&self, session_id: &str, sequence: u64, char_count: usize) {
-        if !self.is_connected() || char_count == 0 {
-            return;
-        }
-        let id = self.next_request_id();
-        let frame = ClientFrame::Ack {
-            id,
-            session_id: session_id.to_string(),
-            sequence,
-            char_count,
-        };
-        let Ok(mut writer) = self.writer.lock() else {
-            return;
-        };
-        if writer.write_all(encode_frame(&frame).as_bytes()).is_err() {
-            self.connected.store(false, Ordering::SeqCst);
-        }
     }
 
     /// 发请求并等待对应 id 的应答（超时/断连返回 Err）。

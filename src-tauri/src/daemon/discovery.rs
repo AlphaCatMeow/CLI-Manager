@@ -24,6 +24,12 @@ pub struct DaemonInfo {
     pub token: String,
     pub pid: u32,
     pub version: String,
+    #[serde(default)]
+    pub protocol_version: u16,
+    #[serde(default)]
+    pub binary_protocol_version: u8,
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 /// dev 与安装版使用不同发现文件，互不 attach（对齐 sessions.dev.json 隔离规则）。
@@ -100,6 +106,9 @@ mod tests {
             token: "tok".into(),
             pid: 42,
             version: "1.2.7".into(),
+            protocol_version: crate::daemon::protocol::CONTROL_PROTOCOL_VERSION,
+            binary_protocol_version: crate::daemon::protocol::BINARY_PROTOCOL_VERSION,
+            features: crate::daemon::protocol::supported_features(),
         }
     }
 
@@ -130,6 +139,17 @@ mod tests {
             read_daemon_info(&daemon_info_path(dir.path(), true)).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn legacy_info_defaults_protocol_capabilities() {
+        let info: DaemonInfo = serde_json::from_str(
+            r#"{"port":1,"token":"tok","pid":2,"version":"old"}"#,
+        )
+        .unwrap();
+        assert_eq!(info.protocol_version, 0);
+        assert_eq!(info.binary_protocol_version, 0);
+        assert!(info.features.is_empty());
     }
 
     #[test]

@@ -1912,7 +1912,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         "pty_daemon_sessions"
       );
       daemonSessionsById = new Map(
-        daemonSessions.filter((session) => session.alive).map((session) => [session.sessionId, session])
+        daemonSessions.map((session) => [session.sessionId, session])
       );
     } catch (err) {
       logInfo("pty daemon sessions unavailable, restoring via recreate", { err });
@@ -1930,7 +1930,6 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       const daemonSession = daemonSessionsById.get(ps.id);
       if (daemonSession) {
         try {
-          if (daemonSession.alive) {
             const taskStatus = resolveDaemonAttachTaskStatus(daemonSession);
             const taskUpdatedAt = resolveDaemonAttachUpdatedAt(daemonSession);
             const attachedMeta = resolveAttachedDaemonSession(ps, daemonSession);
@@ -1967,12 +1966,11 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
             });
             newIdMap[ps.id] = ps.id;
             restoredSessions.push(attachedSession);
-            restoredStatuses[ps.id] = "running";
+            restoredStatuses[ps.id] = daemonSession.alive ? "running" : "exited";
             restoredListeners[ps.id] = unlisten;
             daemonAttachPendingSessionIds.add(ps.id);
             restoredTabState = buildTabStatusUpdate(restoredTabState, ps.id, "hook", taskStatus, taskUpdatedAt);
             continue;
-          }
         } catch (err) {
           logError("daemon attach failed, falling back to recreate", { sessionId: ps.id, err });
         }

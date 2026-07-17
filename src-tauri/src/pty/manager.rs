@@ -27,6 +27,7 @@ const READER_FLUSH_THRESHOLD: usize = 32 * 1024;
 const READER_BUF_SIZE: usize = 16 * 1024;
 const MIN_PTY_COLS: u16 = 40;
 const MIN_PTY_ROWS: u16 = 8;
+const MAX_PTY_DIMENSION: u16 = i16::MAX as u16;
 const GIT_BASH_INITIAL_OUTPUT_DELAY_MS: u64 = 250;
 const ORPHAN_CREATE_GRACE_SECS: u64 = 30;
 const ORPHAN_MISSING_GRACE_SECS: u64 = 90;
@@ -137,6 +138,11 @@ pub struct PtyOrphanCleanupSummary {
 pub struct PtyManager {
     sessions: RwLock<HashMap<String, Arc<Mutex<PtySession>>>>,
     statuses: Arc<Mutex<HashMap<String, PtyProcessStatus>>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PtyProcessTraits {
+    pub uses_conpty_dll: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -552,7 +558,7 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
         env_vars: Option<HashMap<String, String>>,
         shell: Option<&str>,
         sink: Arc<dyn PtyEventSink>,
-    ) -> Result<(), String> {
+    ) -> Result<PtyProcessTraits, String> {
         let env_count = env_vars.as_ref().map(|vars| vars.len()).unwrap_or(0);
         info!(
             "pty session create: id={}, shell={:?}, cwd={:?}, env_vars={}",
@@ -632,6 +638,9 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
         let mut reader = spawned.reader;
         let controller = spawned.controller;
         let child = spawned.child;
+        let process_traits = PtyProcessTraits {
+            uses_conpty_dll: spawned.traits.uses_conpty_dll,
+        };
         let diagnostics = Arc::new(Mutex::new(PtySessionDiagnostics {
             session_id: session_id.to_string(),
             shell: shell.unwrap_or(default_shell_key).to_string(),
@@ -798,10 +807,14 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
             .unwrap()
             .insert(session_id.to_string(), session);
         info!("pty session ready: id={}", session_id);
-        Ok(())
+        Ok(process_traits)
     }
 
     pub fn write(&self, session_id: &str, data: &str) -> Result<(), String> {
+        self.write_bytes(session_id, data.as_bytes())
+    }
+
+    pub fn write_bytes(&self, session_id: &str, data: &[u8]) -> Result<(), String> {
         let session_arc = {
             let sessions = self.sessions.read().unwrap();
             sessions.get(session_id).cloned()
@@ -812,7 +825,7 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
             msg
         })?;
         let mut session = session_arc.lock().unwrap();
-        session.writer.write_all(data.as_bytes()).map_err(|e| {
+        session.writer.write_all(data).map_err(|e| {
             error!("pty write failed: session_id={}, error={}", session_id, e);
             e.to_string()
         })?;
@@ -823,7 +836,14 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
         Ok(())
     }
 
-    pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
+    pub fn resize(
+        &self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+        pixel_width: Option<u32>,
+        pixel_height: Option<u32>,
+    ) -> Result<(), String> {
         let session_arc = {
             let sessions = self.sessions.read().unwrap();
             sessions.get(session_id).cloned()
@@ -834,8 +854,8 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
             msg
         })?;
         let session = session_arc.lock().unwrap();
-        let cols = cols.max(MIN_PTY_COLS);
-        let rows = rows.max(MIN_PTY_ROWS);
+        let cols = cols.clamp(MIN_PTY_COLS, MAX_PTY_DIMENSION);
+        let rows = rows.clamp(MIN_PTY_ROWS, MAX_PTY_DIMENSION);
         debug!(
             "pty resize: session_id={}, cols={}, rows={}",
             session_id, cols, rows
@@ -844,7 +864,10 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
             diagnostics.last_resize_cols = Some(cols);
             diagnostics.last_resize_rows = Some(rows);
         }
-        session.controller.resize(cols, rows).map_err(|e| {
+        session
+            .controller
+            .resize(cols, rows, pixel_width, pixel_height)
+            .map_err(|e| {
             error!("pty resize failed: session_id={}, error={}", session_id, e);
             e
         })
@@ -1135,7 +1158,9 @@ mod tests {
                 }),
             )
             .unwrap();
-        manager.resize("conpty-test", 120, 30).unwrap();
+        manager
+            .resize("conpty-test", 120, 30, Some(1200), Some(600))
+            .unwrap();
         manager
             .write("conpty-test", "echo CLI_MANAGER_CONPTY_OK\r\n")
             .unwrap();

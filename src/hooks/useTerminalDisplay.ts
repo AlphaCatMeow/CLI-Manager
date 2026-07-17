@@ -35,6 +35,7 @@ interface PendingTerminalWrite {
   replayBatchEnd: boolean;
   cols: number;
   rows: number;
+  reset: boolean;
 }
 
 interface UseTerminalDisplayOptions {
@@ -212,8 +213,12 @@ export function useTerminalDisplay({
       const first = ptyPendingChunksRef.current.shift();
       if (!first) return;
       const pending = [first];
-      if (!first.replay) {
-        while (ptyPendingChunksRef.current[0] && !ptyPendingChunksRef.current[0].replay) {
+      if (!first.replay && !first.reset) {
+        while (
+          ptyPendingChunksRef.current[0]
+          && !ptyPendingChunksRef.current[0].replay
+          && !ptyPendingChunksRef.current[0].reset
+        ) {
           pending.push(ptyPendingChunksRef.current.shift()!);
         }
       } else {
@@ -231,6 +236,12 @@ export function useTerminalDisplay({
         pending.forEach((chunk) => chunk.commit?.(chunk.charCount));
         if (first.replay && first.replayBatchEnd) finishReplayBatch();
       };
+      if (first.reset) {
+        terminal.reset();
+        commitPending();
+        schedulePendingWrite();
+        return;
+      }
       if (!combined) {
         commitPending();
         schedulePendingWrite();
@@ -249,7 +260,7 @@ export function useTerminalDisplay({
       const payload = delivery.frame;
       const rawText = textDecoder.decode(payload.data, { stream: true });
       const text = normalizeOutputRef.current(rawText);
-      if (!text && payload.kind !== "replay") {
+      if (!text && payload.kind !== "replay" && payload.kind !== "reset") {
         delivery.commit(rawText.length);
         return;
       }
@@ -262,6 +273,7 @@ export function useTerminalDisplay({
         replayBatchEnd: payload.replayBatchEnd === true,
         cols: payload.cols,
         rows: payload.rows,
+        reset: payload.kind === "reset",
       });
       schedulePendingWrite();
     };
@@ -337,7 +349,15 @@ export function useTerminalDisplay({
     const resizeDisposable = terminal.onResize(({ cols, rows }) => {
       if (!forwardPtyResizeRef.current) return;
       if (cols < MIN_TERMINAL_COLS || rows < MIN_TERMINAL_ROWS) return;
-      terminalProcessManager.resize(sessionId, cols, rows).catch((err) => {
+      const pixelWidth = terminal.dimensions?.css.canvas.width;
+      const pixelHeight = terminal.dimensions?.css.canvas.height;
+      terminalProcessManager.resize(
+        sessionId,
+        cols,
+        rows,
+        pixelWidth ? Math.round(pixelWidth) : undefined,
+        pixelHeight ? Math.round(pixelHeight) : undefined,
+      ).catch((err) => {
         logError("PTY resize failed in terminal display", { sessionId, cols, rows, err });
       });
     });
@@ -427,7 +447,7 @@ export function useTerminalDisplay({
     const dims = fitAddon.proposeDimensions();
     if (!dims || dims.cols < MIN_TERMINAL_COLS || dims.rows < MIN_TERMINAL_ROWS) return;
     getResizeDebouncer().resize(dims.cols, dims.rows, force);
-    if (force || needsViewportRefreshRef.current) {
+    if (needsViewportRefreshRef.current) {
       refreshTerminalViewport(terminal);
       needsViewportRefreshRef.current = false;
     }

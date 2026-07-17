@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { TerminalCapabilityStore } from "../capabilities/TerminalCapabilityStore";
 import {
   ptyHostSocket,
   type TerminalBinaryFrame,
+  type TerminalProcessTraits,
 } from "../transport/PtyHostSocket";
 
 export interface TerminalClaudeProviderLaunchConfig {
@@ -48,6 +48,8 @@ export interface TerminalAttachResult {
   taskStatus?: string | null;
   taskUpdatedAtMs?: number | null;
   replay: TerminalBinaryFrame[];
+  processTraits?: TerminalProcessTraits | null;
+  replayTruncated?: boolean;
 }
 
 export interface TerminalOutputDelivery {
@@ -80,31 +82,21 @@ interface TerminalOutputState {
  * components and stores.
  */
 export class TerminalProcessManager {
-  private readonly capabilities = new Map<string, TerminalCapabilityStore>();
   private readonly outputStates = new Map<string, TerminalOutputState>();
-
-  getCapabilities(sessionId: string): TerminalCapabilityStore {
-    let store = this.capabilities.get(sessionId);
-    if (!store) {
-      store = new TerminalCapabilityStore();
-      this.capabilities.set(sessionId, store);
-    }
-    return store;
-  }
+  private readonly processTraits = new Map<string, TerminalProcessTraits>();
 
   create(request: TerminalCreateRequest): Promise<string> {
     return invoke<PreparedTerminalCreate>("pty_prepare_create", request).then(async (prepared) => {
       const sessionId = prepared.sessionId;
-      this.getCapabilities(sessionId);
       try {
-        await ptyHostSocket.create(
+        const traits = await ptyHostSocket.create(
           sessionId,
           prepared.cwd,
           prepared.envVars,
           prepared.shell,
         );
+        if (traits) this.processTraits.set(sessionId, traits);
       } catch (error) {
-        this.capabilities.delete(sessionId);
         throw error;
       }
       return sessionId;
@@ -115,28 +107,54 @@ export class TerminalProcessManager {
     return ptyHostSocket.write(sessionId, data);
   }
 
-  resize(sessionId: string, cols: number, rows: number): Promise<void> {
-    return ptyHostSocket.resize(sessionId, cols, rows);
+  writeBinary(sessionId: string, data: string): Promise<void> {
+    return ptyHostSocket.writeBinary(sessionId, data);
+  }
+
+  resize(
+    sessionId: string,
+    cols: number,
+    rows: number,
+    pixelWidth?: number,
+    pixelHeight?: number,
+  ): Promise<void> {
+    return ptyHostSocket.resize(sessionId, cols, rows, pixelWidth, pixelHeight);
+  }
+
+  checkpoint(
+    sessionId: string,
+    cols: number,
+    rows: number,
+    serializedState: string,
+  ): Promise<void> {
+    const sequence = this.outputStates.get(sessionId)?.latestCommittedSequence
+      ?? ptyHostSocket.getLatestCommittedSequence(sessionId);
+    return ptyHostSocket.checkpoint(sessionId, sequence, cols, rows, serializedState);
   }
 
   close(sessionId: string): Promise<void> {
     return ptyHostSocket.close(sessionId).finally(() => {
       this.clearOutputState(sessionId);
-      this.capabilities.get(sessionId)?.clear();
-      this.capabilities.delete(sessionId);
+      this.processTraits.delete(sessionId);
     });
   }
 
   closeAll(): Promise<void> {
     return ptyHostSocket.closeAll().finally(() => {
       [...this.outputStates.keys()].forEach((sessionId) => this.clearOutputState(sessionId));
-      this.capabilities.forEach((store) => store.clear());
-      this.capabilities.clear();
+      this.processTraits.clear();
     });
   }
 
   attach(sessionId: string): Promise<TerminalAttachResult> {
-    return ptyHostSocket.attach(sessionId);
+    return ptyHostSocket.attach(sessionId).then((result) => {
+      if (result.processTraits) this.processTraits.set(sessionId, result.processTraits);
+      return result;
+    });
+  }
+
+  getProcessTraits(sessionId: string): TerminalProcessTraits | null {
+    return this.processTraits.get(sessionId) ?? null;
   }
 
   async subscribeOutput(sessionId: string, listener: (delivery: TerminalOutputDelivery) => void): Promise<UnlistenFn> {
@@ -189,6 +207,20 @@ export class TerminalProcessManager {
 
   private enqueueOutputFrame(sessionId: string, frame: TerminalBinaryFrame): void {
     const state = this.getOutputState(sessionId);
+    if (frame.kind === "reset") {
+      state.frames = [];
+      state.sequences.clear();
+      state.deliveredCount = 0;
+      state.latestCommittedSequence = 0;
+      state.frames.push({ frame, committed: false, charCount: 0 });
+      this.deliverPendingOutput(sessionId, state);
+      return;
+    }
+    if (frame.replayBatchEnd) {
+      state.frames.push({ frame, committed: false, charCount: 0 });
+      this.deliverPendingOutput(sessionId, state);
+      return;
+    }
     if (frame.sequence <= state.latestCommittedSequence || state.sequences.has(frame.sequence)) return;
     state.sequences.add(frame.sequence);
     state.frames.push({ frame, committed: false, charCount: 0 });
@@ -222,13 +254,11 @@ export class TerminalProcessManager {
       state.deliveredCount = Math.max(0, state.deliveredCount - 1);
       state.latestCommittedSequence = Math.max(
         state.latestCommittedSequence,
-        queued.frame.sequence,
+        queued.frame.kind === "reset" ? 0 : queued.frame.sequence,
       );
-      ptyHostSocket.acknowledge(
-        sessionId,
-        queued.frame.sequence,
-        queued.frame.kind === "output" ? queued.charCount : 0,
-      );
+      if (queued.frame.kind !== "reset" && !queued.frame.replayBatchEnd) {
+        ptyHostSocket.acknowledge(sessionId, queued.frame.sequence, queued.charCount);
+      }
     }
   }
 

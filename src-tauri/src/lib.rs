@@ -708,6 +708,8 @@ pub fn run() {
             commands::terminal::pty_status,
             commands::terminal::pty_daemon_active,
             commands::terminal::pty_host_get_endpoint,
+            commands::terminal::pty_legacy_request,
+            commands::terminal::pty_daemon_upgrade_if_idle,
             commands::terminal::pty_daemon_sessions,
             commands::cc_connect::cc_connect_get_status,
             commands::cc_connect::cc_connect_save_profile,

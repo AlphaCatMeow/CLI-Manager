@@ -761,11 +761,17 @@ export function useTerminalInput({
     const onDataDisposable = terminal.onData((data) => {
       forwardTerminalInput(data, "onData");
     });
+    const onBinaryDisposable = terminal.onBinary((data) => {
+      terminalProcessManager
+        .writeBinary(sessionId, data)
+        .catch((err) => reportPtyWriteError("onBinary", err));
+    });
 
     return {
       dispose: () => {
         detachInputSuggestions();
         onDataDisposable.dispose();
+        onBinaryDisposable.dispose();
       },
       forwardTerminalInput,
     };

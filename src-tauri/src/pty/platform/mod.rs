@@ -22,7 +22,18 @@ pub struct PlatformExitStatus {
 }
 
 pub trait PlatformPtyController: Send {
-    fn resize(&self, cols: u16, rows: u16) -> Result<(), String>;
+    fn resize(
+        &self,
+        cols: u16,
+        rows: u16,
+        pixel_width: Option<u32>,
+        pixel_height: Option<u32>,
+    ) -> Result<(), String>;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PlatformPtyTraits {
+    pub uses_conpty_dll: bool,
 }
 
 pub trait PlatformPtyChild: Send + Sync {
@@ -36,6 +47,7 @@ pub struct SpawnedPty {
     pub reader: Box<dyn Read + Send>,
     pub controller: Box<dyn PlatformPtyController>,
     pub child: Arc<dyn PlatformPtyChild>,
+    pub traits: PlatformPtyTraits,
 }
 
 pub fn spawn(options: PtyLaunchOptions) -> Result<SpawnedPty, String> {

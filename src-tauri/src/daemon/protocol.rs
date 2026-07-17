@@ -9,10 +9,33 @@ use std::collections::HashMap;
 
 /// 单帧最大字节数（含换行前的 JSON 文本）。超限视为非法帧，断连。
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+pub const CONTROL_PROTOCOL_VERSION: u16 = 2;
 pub const BINARY_PROTOCOL_VERSION: u8 = 1;
 pub const BINARY_KIND_OUTPUT: u8 = 1;
 pub const BINARY_KIND_REPLAY: u8 = 2;
+pub const BINARY_KIND_INPUT: u8 = 3;
+pub const BINARY_KIND_CHECKPOINT: u8 = 4;
+pub const BINARY_KIND_REPLAY_RESET: u8 = 5;
 const BINARY_HEADER_BYTES: usize = 20;
+
+pub const FEATURE_WS_BINARY_OUTPUT: &str = "ws_binary_output_v1";
+pub const FEATURE_WS_BINARY_INPUT: &str = "ws_binary_input_v1";
+pub const FEATURE_CHECKPOINT_REPLAY: &str = "checkpoint_replay_v1";
+pub const FEATURE_PIXEL_RESIZE: &str = "pixel_resize_v1";
+pub const FEATURE_PROCESS_TRAITS: &str = "process_traits_v1";
+
+pub fn supported_features() -> Vec<String> {
+    [
+        FEATURE_WS_BINARY_OUTPUT,
+        FEATURE_WS_BINARY_INPUT,
+        FEATURE_CHECKPOINT_REPLAY,
+        FEATURE_PIXEL_RESIZE,
+        FEATURE_PROCESS_TRAITS,
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
 
 /// 客户端 → daemon 请求帧。`id` 用于应答关联（Auth 除外，Auth 必须是首帧）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -55,6 +78,10 @@ pub enum ClientFrame {
         session_id: String,
         cols: u16,
         rows: u16,
+        #[serde(default)]
+        pixel_width: Option<u32>,
+        #[serde(default)]
+        pixel_height: Option<u32>,
     },
     Close {
         id: u64,
@@ -67,6 +94,8 @@ pub enum ClientFrame {
     Attach {
         id: u64,
         session_id: String,
+        #[serde(default)]
+        after_sequence: Option<u64>,
     },
     /// 取消本连接的全部订阅（app 转后台/正常退出前调用；断连等效）。
     Detach {
@@ -85,6 +114,66 @@ pub enum ClientFrame {
     },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsPtyTraits {
+    pub backend: String,
+    #[serde(default)]
+    pub build_number: Option<u32>,
+    #[serde(default)]
+    pub uses_conpty_dll: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessTraits {
+    pub os: String,
+    #[serde(default)]
+    pub windows_pty: Option<WindowsPtyTraits>,
+}
+
+impl ProcessTraits {
+    pub fn current_platform(uses_conpty_dll: bool) -> Self {
+        #[cfg(target_os = "windows")]
+        {
+            return Self {
+                os: "windows".to_string(),
+                windows_pty: Some(WindowsPtyTraits {
+                    backend: "conpty".to_string(),
+                    build_number: windows_build_number(),
+                    uses_conpty_dll,
+                }),
+            };
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = uses_conpty_dll;
+            return Self {
+                os: "macos".to_string(),
+                windows_pty: None,
+            };
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let _ = uses_conpty_dll;
+            Self {
+                os: "linux".to_string(),
+                windows_pty: None,
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_build_number() -> Option<u32> {
+    sysinfo::System::long_os_version().and_then(|version| {
+        version
+            .split(|ch: char| !ch.is_ascii_digit())
+            .filter_map(|part| part.parse::<u32>().ok())
+            .find(|number| *number >= 10_000)
+    })
+}
+
 /// daemon 会话元数据（List/Attach 应答用）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -98,6 +187,12 @@ pub struct SessionMeta {
     pub task_status: Option<String>,
     pub task_updated_at_ms: Option<u64>,
     pub created_at_ms: u64,
+    #[serde(default)]
+    pub process_traits: Option<ProcessTraits>,
+    #[serde(default)]
+    pub replay_available: bool,
+    #[serde(default)]
+    pub replay_truncated: bool,
 }
 
 /// 会话进程状态（与主进程 `PtyProcessStatus` 字段一致，daemon 协议自带定义以便反序列化）。
@@ -125,6 +220,12 @@ pub enum DaemonFrame {
     AuthOk {
         daemon_version: String,
         pid: u32,
+        #[serde(default)]
+        protocol_version: u16,
+        #[serde(default)]
+        binary_protocol_version: u8,
+        #[serde(default)]
+        features: Vec<String>,
     },
     AuthErr {
         reason: String,
@@ -134,6 +235,10 @@ pub enum DaemonFrame {
     },
     Ok {
         id: u64,
+    },
+    Created {
+        id: u64,
+        meta: SessionMeta,
     },
     Err {
         id: u64,
@@ -160,6 +265,12 @@ pub enum DaemonFrame {
         replay: Vec<ReplayEntry>,
         latest_sequence: u64,
         meta: SessionMeta,
+        #[serde(default)]
+        replay_reset: bool,
+        #[serde(default)]
+        replay_truncated: bool,
+        #[serde(default)]
+        oldest_sequence: u64,
     },
     /// 主动推送：PTY 输出（base64；daemon 侧 safe_emit_boundary 切帧，转发层禁止再分片）。
     Output {
@@ -178,6 +289,25 @@ pub enum DaemonFrame {
     HookReport {
         payload: serde_json::Value,
     },
+    CheckpointAccepted {
+        session_id: String,
+        sequence: u64,
+    },
+    CheckpointRejected {
+        session_id: String,
+        sequence: u64,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinaryTerminalFrame {
+    pub kind: u8,
+    pub session_id: String,
+    pub sequence: u64,
+    pub cols: u16,
+    pub rows: u16,
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -204,7 +334,14 @@ pub fn encode_binary_terminal_frame(
     rows: u16,
     data: &[u8],
 ) -> Result<Vec<u8>, String> {
-    if !matches!(kind, BINARY_KIND_OUTPUT | BINARY_KIND_REPLAY) {
+    if !matches!(
+        kind,
+        BINARY_KIND_OUTPUT
+            | BINARY_KIND_REPLAY
+            | BINARY_KIND_INPUT
+            | BINARY_KIND_CHECKPOINT
+            | BINARY_KIND_REPLAY_RESET
+    ) {
         return Err("invalid binary frame kind".to_string());
     }
     let session_bytes = session_id.as_bytes();
@@ -227,6 +364,52 @@ pub fn encode_binary_terminal_frame(
     frame.extend_from_slice(session_bytes);
     frame.extend_from_slice(data);
     Ok(frame)
+}
+
+pub fn decode_binary_terminal_frame(frame: &[u8]) -> Result<BinaryTerminalFrame, String> {
+    if frame.len() < BINARY_HEADER_BYTES {
+        return Err("binary frame too short".to_string());
+    }
+    if frame[0] != BINARY_PROTOCOL_VERSION {
+        return Err("unsupported binary protocol version".to_string());
+    }
+    let kind = frame[1];
+    if !matches!(kind, BINARY_KIND_INPUT | BINARY_KIND_CHECKPOINT) {
+        return Err("unsupported client binary frame kind".to_string());
+    }
+    let session_len = u16::from_be_bytes([frame[2], frame[3]]) as usize;
+    let sequence = u64::from_be_bytes(
+        frame[4..12]
+            .try_into()
+            .map_err(|_| "invalid binary sequence".to_string())?,
+    );
+    let cols = u16::from_be_bytes([frame[12], frame[13]]);
+    let rows = u16::from_be_bytes([frame[14], frame[15]]);
+    let data_len = u32::from_be_bytes(
+        frame[16..20]
+            .try_into()
+            .map_err(|_| "invalid binary data length".to_string())?,
+    ) as usize;
+    let expected = BINARY_HEADER_BYTES
+        .checked_add(session_len)
+        .and_then(|value| value.checked_add(data_len))
+        .ok_or_else(|| "binary frame length overflow".to_string())?;
+    if expected != frame.len() || expected > MAX_FRAME_BYTES {
+        return Err("invalid binary frame length".to_string());
+    }
+    let session_start = BINARY_HEADER_BYTES;
+    let data_start = session_start + session_len;
+    let session_id = std::str::from_utf8(&frame[session_start..data_start])
+        .map_err(|_| "binary session id is not utf-8".to_string())?
+        .to_string();
+    Ok(BinaryTerminalFrame {
+        kind,
+        session_id,
+        sequence,
+        cols,
+        rows,
+        data: frame[data_start..].to_vec(),
+    })
 }
 
 fn frame_type_of(value: &serde_json::Value) -> Option<String> {
@@ -272,6 +455,7 @@ const DAEMON_FRAME_TYPES: &[&str] = &[
     "auth_err",
     "pong",
     "ok",
+    "created",
     "err",
     "sessions",
     "statuses",
@@ -280,6 +464,8 @@ const DAEMON_FRAME_TYPES: &[&str] = &[
     "output",
     "exit",
     "hook_report",
+    "checkpoint_accepted",
+    "checkpoint_rejected",
 ];
 
 pub fn decode_client_frame(line: &str) -> Result<ClientFrame, ProtocolError> {
@@ -301,6 +487,8 @@ mod tests {
             session_id: "abc".into(),
             cols: 120,
             rows: 30,
+            pixel_width: Some(1200),
+            pixel_height: Some(600),
         };
         let encoded = encode_frame(&frame);
         assert!(encoded.ends_with('\n'));
