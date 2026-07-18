@@ -9,6 +9,11 @@ import { useProjectStore } from "../stores/projectStore";
 import { useWorktreeStore } from "../stores/worktreeStore";
 import { useExternalSessionSyncStore } from "../stores/externalSessionSyncStore";
 import { useI18n } from "../lib/i18n";
+import { getHistoryPathArgs } from "../lib/historyPathArgs";
+import {
+  HISTORY_SOURCE_DESCRIPTOR_BY_ID,
+  type HistorySourceId,
+} from "../lib/historySources";
 import { findWorktreeByPath, projectWithWorktreeProviderOverrides } from "../lib/terminalProject";
 import { appendResumeCliArgs } from "../lib/projectStartupCommand";
 import { getProviderSwitchAppType } from "../lib/providerSwitching";
@@ -157,7 +162,7 @@ type DeleteIntent =
   | { type: "single"; session: HistorySessionView }
   | { type: "bulk"; sessionKeys: string[] };
 
-type HistoryTargetSource = "claude" | "codex";
+type HistoryTargetSource = HistorySourceId;
 
 type ResumeIntent = {
   session: HistorySessionView | HistorySessionDetail;
@@ -179,11 +184,20 @@ interface HistoryConversionResult {
   summary: unknown;
 }
 
-function oppositeHistorySource(source: string): HistoryTargetSource | null {
+function conversionTargetForSource(source: string): HistoryTargetSource | null {
   const normalized = source.trim().toLowerCase();
-  if (normalized === "claude") return "codex";
-  if (normalized === "codex") return "claude";
-  return null;
+  const sourceDescriptor = HISTORY_SOURCE_DESCRIPTOR_BY_ID.get(normalized as HistorySourceId);
+  if (sourceDescriptor?.capabilities.convertFrom !== "supported") return null;
+  return (
+    Array.from(HISTORY_SOURCE_DESCRIPTOR_BY_ID.values()).find(
+      (descriptor) =>
+        descriptor.id !== normalized && descriptor.capabilities.convertTo === "supported"
+    )?.id ?? null
+  );
+}
+
+function historySourceLabel(source: string): string {
+  return HISTORY_SOURCE_DESCRIPTOR_BY_ID.get(source.trim().toLowerCase() as HistorySourceId)?.defaultLabel ?? source;
 }
 
 function makeConvertedSessionKey(result: HistoryConversionResult): string {
@@ -232,8 +246,6 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
   const deleteMessages = useHistoryStore((s) => s.deleteMessages);
   const insertMessage = useHistoryStore((s) => s.insertMessage);
   const storedHistorySidebarWidth = useSettingsStore((s) => s.historySidebarWidth);
-  const claudeConfigDir = useSettingsStore((s) => s.claudeHookConfigDir);
-  const codexConfigDir = useSettingsStore((s) => s.codexHookConfigDir);
   const historySidebarWidth = normalizeHistorySidebarWidth(storedHistorySidebarWidth);
   const updateSetting = useSettingsStore((s) => s.update);
   const projects = useProjectStore((s) => s.projects);
@@ -966,13 +978,26 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
     [requestResume]
   );
 
+  const canConvertSession = useCallback(
+    (session: HistorySessionView | HistorySessionDetail) =>
+      conversionTargetForSource(session.source) !== null,
+    []
+  );
+
   const convertSession = useCallback(
     async (session: HistorySessionView | HistorySessionDetail, targetSource?: HistoryTargetSource | null) => {
-      const target = targetSource ?? oppositeHistorySource(session.source);
+      const target = targetSource ?? conversionTargetForSource(session.source);
       if (!target) {
         toast.error(t("history.toast.convertFailed"), { description: t("history.toast.convertUnsupported") });
         return;
       }
+      const confirmed = window.confirm(
+        t("history.convert.lossyConfirm", {
+          source: historySourceLabel(session.source),
+          target: historySourceLabel(target),
+        })
+      );
+      if (!confirmed) return;
 
       try {
         const result = await invoke<HistoryConversionResult>("history_convert_session", {
@@ -980,15 +1005,14 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
           source: session.source,
           projectKey: session.project_key,
           targetSource: target,
-          claudeConfigDir: claudeConfigDir?.trim() || null,
-          codexConfigDir: codexConfigDir?.trim() || null,
+          ...(await getHistoryPathArgs()),
         });
 
         const sessionKey = addConvertedSession(result.summary);
         await openSession(sessionKey || makeConvertedSessionKey(result));
         toast.success(t("history.toast.convertSuccess", {
-          source: session.source === "claude" ? "Claude" : "Codex",
-          target: result.targetSource === "claude" ? "Claude" : "Codex",
+          source: historySourceLabel(session.source),
+          target: historySourceLabel(result.targetSource),
         }), {
           description: result.resumeCommand,
         });
@@ -996,7 +1020,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
         toast.error(t("history.toast.convertFailed"), { description: String(err) });
       }
     },
-    [addConvertedSession, claudeConfigDir, codexConfigDir, openSession, t]
+    [addConvertedSession, openSession, t]
   );
 
   const jumpToMessage = async (messageIndex: number) => {
@@ -1066,6 +1090,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
           onToggleSessionSelection={handleToggleSessionSelection}
           onOpenSession={openSessionSafe}
           onResumeSession={resumeSessionInTerminal}
+          canConvertSession={canConvertSession}
           onConvertSession={(session) => {
             void convertSession(session);
           }}
@@ -1124,6 +1149,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
             onResumeSession={() => {
               void resumeConversation();
             }}
+            canConvertSession={activeSession ? canConvertSession(activeSession) : false}
             onConvertSession={() => {
               if (activeSession) void convertSession(activeSession);
             }}
