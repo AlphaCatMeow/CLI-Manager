@@ -58,8 +58,19 @@ function normalizeRelativePath(relativePath: string): string {
     .replace(/^\/+|\/+$/gu, "");
 }
 
-export function createIgnoreMatcher(content: string): FileExplorerIgnoreMatcher {
-  const matcher = ignore().add(content);
+export function isFileExplorerIgnoreCaseInsensitive(projectPath: string): boolean {
+  const normalized = projectPath.trim().replace(/\//g, "\\").toLowerCase();
+  if (normalized.startsWith("\\\\wsl.localhost\\") || normalized.startsWith("\\\\wsl$\\")) {
+    return false;
+  }
+  return /^[a-z]:\\/u.test(normalized) || normalized.startsWith("\\\\");
+}
+
+export function createIgnoreMatcher(
+  content: string,
+  ignoreCase = false
+): FileExplorerIgnoreMatcher {
+  const matcher = ignore({ ignorecase: ignoreCase }).add(content);
   return {
     ignores(relativePath, isDirectory) {
       const normalizedPath = normalizeRelativePath(relativePath);
@@ -69,8 +80,8 @@ export function createIgnoreMatcher(content: string): FileExplorerIgnoreMatcher 
   };
 }
 
-export function createDefaultIgnoreMatcher(): FileExplorerIgnoreMatcher {
-  return createIgnoreMatcher(DEFAULT_FILE_EXPLORER_IGNORE_PATTERNS.join("\n"));
+export function createDefaultIgnoreMatcher(ignoreCase = false): FileExplorerIgnoreMatcher {
+  return createIgnoreMatcher(DEFAULT_FILE_EXPLORER_IGNORE_PATTERNS.join("\n"), ignoreCase);
 }
 
 export function includesProjectGitIgnoreChange(

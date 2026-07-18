@@ -29,6 +29,7 @@ import {
   createDefaultIgnoreMatcher,
   createIgnoreMatcher,
   includesProjectGitIgnoreChange,
+  isFileExplorerIgnoreCaseInsensitive,
   type FileExplorerIgnoreMatcher,
 } from "../../lib/fileExplorerIgnore";
 import type { GitFileChange, ProjectFileContentMatch, ProjectFileEntry, ProjectFileSearchMode } from "../../lib/types";
@@ -826,6 +827,10 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
   const [projectGitIgnoreMatcher, setProjectGitIgnoreMatcher] = useState<FileExplorerIgnoreMatcher | null>(null);
   const [gitIgnoreLoadState, setGitIgnoreLoadState] = useState<"idle" | "loaded" | "missing">("idle");
   const [gitIgnoreRefreshSeq, setGitIgnoreRefreshSeq] = useState(0);
+  const gitIgnoreCaseInsensitive = useMemo(
+    () => isFileExplorerIgnoreCaseInsensitive(project?.path ?? ""),
+    [project?.path]
+  );
   const [searchControlsVisible, setSearchControlsVisible] = useState(false);
   const [dragPreview, setDragPreview] = useState<FileDragPreviewState | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -864,7 +869,7 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
           relativePath: ".gitignore",
         });
         if (cancelled) return;
-        setProjectGitIgnoreMatcher(createIgnoreMatcher(payload.content ?? ""));
+        setProjectGitIgnoreMatcher(createIgnoreMatcher(payload.content ?? "", gitIgnoreCaseInsensitive));
         setGitIgnoreLoadState("loaded");
       } catch {
         if (cancelled) return;
@@ -875,7 +880,7 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
     return () => {
       cancelled = true;
     };
-  }, [project?.path, gitIgnoreRefreshSeq]);
+  }, [project?.path, gitIgnoreCaseInsensitive, gitIgnoreRefreshSeq]);
 
   useEffect(() => {
     if (searchQuery.trim()) setSearchControlsVisible(true);
@@ -1020,8 +1025,8 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
     if (gitIgnoreLoadState === "loaded" && projectGitIgnoreMatcher) {
       return projectGitIgnoreMatcher;
     }
-    return createDefaultIgnoreMatcher();
-  }, [gitIgnoreLoadState, projectGitIgnoreMatcher]);
+    return createDefaultIgnoreMatcher(gitIgnoreCaseInsensitive);
+  }, [gitIgnoreCaseInsensitive, gitIgnoreLoadState, projectGitIgnoreMatcher]);
 
   const autoCollapseGroups = useMemo<AutoCollapseGroupState>(() => ({
     expandedGroupPaths: expandedAutoCollapseGroups,

@@ -4,6 +4,7 @@ import {
   createDefaultIgnoreMatcher,
   createIgnoreMatcher,
   includesProjectGitIgnoreChange,
+  isFileExplorerIgnoreCaseInsensitive,
 } from "../src/lib/fileExplorerIgnore.ts";
 
 test("bare directory rules match at any depth", () => {
@@ -57,4 +58,20 @@ test("gitignore watcher path detection accepts normalized relative paths", () =>
   assert.equal(includesProjectGitIgnoreChange([".\\.gitignore"]), true);
   assert.equal(includesProjectGitIgnoreChange(["nested/.gitignore"]), false);
   assert.equal(includesProjectGitIgnoreChange(undefined), false);
+});
+
+test("gitignore case sensitivity follows the project path environment", () => {
+  assert.equal(isFileExplorerIgnoreCaseInsensitive("D:\\repo\\app"), true);
+  assert.equal(isFileExplorerIgnoreCaseInsensitive("\\\\server\\share\\repo"), true);
+  assert.equal(isFileExplorerIgnoreCaseInsensitive("\\\\wsl.localhost\\Ubuntu\\home\\repo"), false);
+  assert.equal(isFileExplorerIgnoreCaseInsensitive("\\\\wsl$\\Ubuntu\\home\\repo"), false);
+  assert.equal(isFileExplorerIgnoreCaseInsensitive("/home/user/repo"), false);
+});
+
+test("case-distinct paths are hidden only in case-insensitive projects", () => {
+  const sensitiveMatcher = createIgnoreMatcher("build/", false);
+  const insensitiveMatcher = createIgnoreMatcher("build/", true);
+
+  assert.equal(sensitiveMatcher.ignores("Build", true), false);
+  assert.equal(insensitiveMatcher.ignores("Build", true), true);
 });
