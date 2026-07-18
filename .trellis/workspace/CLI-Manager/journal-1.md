@@ -726,3 +726,36 @@ Claude 启动阶段提前订阅子任务 transcript，Codex rollout 增加有界
 ### Next Steps
 
 - None - task complete
+
+
+## Session 22: 修复终端 OSC 颜色响应泄漏
+
+**Date**: 2026-07-18
+**Task**: 修复终端 OSC 颜色响应泄漏
+**Branch**: `master`
+
+### Summary
+
+区分 live 与 replay 的 OSC 10/11 处理，合并实时颜色回复并补充回归测试与前端契约。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5c5d55f` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
