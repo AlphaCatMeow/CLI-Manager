@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getDb } from "../lib/db";
 import { createPerfMarker, logInfo, logWarn } from "../lib/logger";
+import { normalizeHistoryProjectPaths } from "../lib/historyProjectPaths";
 import { useSettingsStore } from "./settingsStore";
 import type {
   HistoryBackupStatus,
@@ -819,16 +820,21 @@ export async function fetchDiscoveredModels(): Promise<string[]> {
 export async function fetchTodayProjectStats(
   projectKey: string,
   source?: HistorySource | null,
-  projectPath?: string | null
+  projectPath?: string | null,
+  projectPaths?: string[]
 ): Promise<TodayProjectStats | null> {
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
+  const normalizedProjectPath = normalizeHistoryProjectPaths(projectPath ? [projectPath] : [])[0] ?? null;
+  const normalizedProjectPaths = normalizeHistoryProjectPaths(projectPaths ?? []);
+  const hasProjectPaths = normalizedProjectPaths.length > 0;
   try {
     const raw = await invoke<unknown>("history_get_stats", {
       source: source ?? null,
       ...getHistoryPathArgs(),
-      projectKey: projectPath ? null : projectKey,
-      projectPath: projectPath ?? null,
+      projectKey: normalizedProjectPath || hasProjectPaths ? null : projectKey,
+      projectPath: hasProjectPaths ? null : normalizedProjectPath,
+      projectPaths: hasProjectPaths ? normalizedProjectPaths : null,
       rangeDays: null,
       startAt: todayStart.getTime(),
       endAt: Date.now(),
@@ -854,58 +860,19 @@ export async function fetchTodayProjectStats(
   }
 }
 
-/** 将多路径「今日用量」合并（父项目 + 各 worktree 目录各自查一次再相加）。 */
-export function mergeTodayProjectStats(
-  parts: Array<TodayProjectStats | null | undefined>
-): TodayProjectStats | null {
-  let merged: TodayProjectStats | null = null;
-  for (const part of parts) {
-    if (!part) continue;
-    if (!merged) {
-      merged = { ...part };
-      continue;
-    }
-    merged = {
-      sessions: merged.sessions + part.sessions,
-      totalTokens: merged.totalTokens + part.totalTokens,
-      totalCostUsd: merged.totalCostUsd + part.totalCostUsd,
-      inputTokens: merged.inputTokens + part.inputTokens,
-      outputTokens: merged.outputTokens + part.outputTokens,
-      cacheReadTokens: merged.cacheReadTokens + part.cacheReadTokens,
-      cacheCreationTokens: merged.cacheCreationTokens + part.cacheCreationTokens,
-      unpricedTokens: merged.unpricedTokens + part.unpricedTokens,
-    };
-  }
-  return merged;
-}
-
 /**
- * 今日项目用量：按多个项目/ worktree 路径聚合。
- * Issue #137：worktree 与主仓库路径不同，历史按目录拆分；此处把同一项目下
- * 主路径 + 全部 worktree 路径的今日统计并入一条。
+ * 今日项目用量：由后端按多个项目/Worktree 路径一次过滤并按唯一会话聚合。
  */
 export async function fetchTodayProjectStatsMerged(
   projectKey: string,
   source: HistorySource | null | undefined,
   projectPaths: string[]
 ): Promise<TodayProjectStats | null> {
-  const uniquePaths = Array.from(
-    new Set(
-      projectPaths
-        .map((path) => path.trim().replace(/\\/g, "/").replace(/\/+$/g, ""))
-        .filter((path) => path.length > 0)
-    )
-  );
+  const uniquePaths = normalizeHistoryProjectPaths(projectPaths);
   if (uniquePaths.length === 0) {
     return fetchTodayProjectStats(projectKey, source, null);
   }
-  if (uniquePaths.length === 1) {
-    return fetchTodayProjectStats(projectKey, source, uniquePaths[0]);
-  }
-  const results = await Promise.all(
-    uniquePaths.map((path) => fetchTodayProjectStats(projectKey, source, path))
-  );
-  return mergeTodayProjectStats(results);
+  return fetchTodayProjectStats(projectKey, source, null, uniquePaths);
 }
 
 function getHistoryPathCacheKey(): string {

@@ -41,6 +41,10 @@ import { useI18n } from "../../lib/i18n";
 import { DiffViewerModal } from "../git/DiffViewerModal";
 import { parseDiffBlocksFromMessages } from "../../lib/diffParser";
 import { resolveTerminalProjectPath } from "../../lib/terminalOscPath";
+import {
+  normalizeHistoryProjectPaths,
+  resolveTodayProjectStatsScope,
+} from "../../lib/historyProjectPaths";
 import { TerminalSquare } from "../icons";
 
 interface TerminalStatsPanelProps {
@@ -422,6 +426,7 @@ export function TerminalStatsPanel({ activeSessionId, open, visible = true, embe
   const todayUsageProjectPaths = useMemo(() => {
     const paths: string[] = [];
     if (project?.path?.trim()) paths.push(project.path.trim());
+    if (lookupProjectPath) paths.push(lookupProjectPath);
     if (project?.id) {
       for (const worktree of worktrees) {
         if (worktree.project_id !== project.id) continue;
@@ -429,11 +434,7 @@ export function TerminalStatsPanel({ activeSessionId, open, visible = true, embe
         if (worktree.path?.trim()) paths.push(worktree.path.trim());
       }
     }
-    // 无绑定项目时回退到当前 lookup 路径（与原先单路径行为一致）
-    if (paths.length === 0 && lookupProjectPath) paths.push(lookupProjectPath);
-    return Array.from(
-      new Set(paths.map((path) => path.replace(/\\/g, "/").replace(/\/+$/g, "")).filter(Boolean))
-    );
+    return normalizeHistoryProjectPaths(paths);
   }, [lookupProjectPath, project?.id, project?.path, worktrees]);
 
   // 终端运行的 CLI 工具（claude/codex），来自项目设置；推断不出则不过滤
@@ -443,6 +444,13 @@ export function TerminalStatsPanel({ activeSessionId, open, visible = true, embe
         `${terminalSession?.startupCmd ?? ""} ${terminalSession?.title ?? ""} ${project?.cli_tool ?? ""}`
       ),
     [terminalSession?.startupCmd, terminalSession?.title, project?.cli_tool]
+  );
+  const todayUsageScope = useMemo(
+    () => resolveTodayProjectStatsScope(
+      todayUsageProjectPaths,
+      [latestSession?.project_key]
+    ),
+    [latestSession?.project_key, todayUsageProjectPaths]
   );
 
   // 4 张「会话级」卡片（Token 用量/趋势/模型上下文/工具）只认 hook 绑定的 CLI 会话：
@@ -520,16 +528,16 @@ export function TerminalStatsPanel({ activeSessionId, open, visible = true, embe
   // 今日项目用量：会话数据变化时同步刷新（与终端 CLI 来源保持一致）
   // Issue #137：聚合主项目 + worktree 路径，主仓库 Tab 与 worktree Tab 看到同一套「今日项目」合计。
   useEffect(() => {
-    if (!panelActive || !latestSession) {
+    if (!panelActive || !todayUsageScope) {
       setTodayStats(null);
       return;
     }
     let cancelled = false;
     setLoadingToday(true);
     void fetchTodayProjectStatsMerged(
-      latestSession.project_key,
+      todayUsageScope.projectKey,
       sourceFilter,
-      todayUsageProjectPaths
+      todayUsageScope.projectPaths
     ).then((result) => {
       if (cancelled) return;
       setTodayStats(result);
@@ -538,7 +546,7 @@ export function TerminalStatsPanel({ activeSessionId, open, visible = true, embe
     return () => {
       cancelled = true;
     };
-  }, [panelActive, latestSession, sourceFilter, todayUsageProjectPaths]);
+  }, [panelActive, sourceFilter, todayUsageScope]);
 
   // 空闲时数据轮询返回 unchanged 不会触发重渲染，需独立 tick 让头部相对时间文案随时间走字
   useEffect(() => {
