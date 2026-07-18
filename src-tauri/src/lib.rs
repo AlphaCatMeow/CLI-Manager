@@ -6,6 +6,7 @@ mod claude_hook;
 pub mod codex_statusline;
 mod commands;
 mod conpty_sideload;
+mod crash_reporter;
 mod credential_store;
 // daemon 二进制（src/bin/cli-manager-daemon.rs）经 lib 复用以下模块，
 // 因此 app_paths 与 daemon 需 pub。
@@ -105,6 +106,11 @@ pub fn run_daemon_and_exit() -> ! {
             std::process::exit(1);
         }
     };
+    if let Err(err) = crash_reporter::initialize(data_dir.join("logs"), "pty-daemon") {
+        eprintln!("cli-manager-daemon: crash reporter unavailable: {err}");
+    } else if let Err(err) = crash_reporter::start_runtime() {
+        eprintln!("cli-manager-daemon: crash runtime marker unavailable: {err}");
+    }
     let info_path = daemon_info_path(&data_dir, cfg!(debug_assertions));
     let config = DaemonServerConfig {
         info_path,
@@ -114,6 +120,7 @@ pub fn run_daemon_and_exit() -> ! {
         eprintln!("cli-manager-daemon: {err}");
         std::process::exit(1);
     }
+    crash_reporter::mark_graceful_exit();
     std::process::exit(0);
 }
 
@@ -632,6 +639,9 @@ pub fn run() {
     let data_db_url = app_paths::db_url().expect("failed to resolve CLI-Manager database path");
     let log_dir = app_paths::logs_dir().expect("failed to resolve CLI-Manager log directory");
     std::fs::create_dir_all(&log_dir).expect("failed to create CLI-Manager log directory");
+    if let Err(err) = crash_reporter::initialize(log_dir.clone(), "app") {
+        eprintln!("failed to initialize CLI-Manager crash reporter: {err}");
+    }
     let mut context = tauri::generate_context!();
     if load_disable_hardware_acceleration_setting() {
         apply_webview_disable_gpu_config(context.config_mut());
@@ -666,6 +676,9 @@ pub fn run() {
                 .build()
         })
         .setup(move |app| {
+            if let Err(err) = crash_reporter::start_runtime() {
+                log::warn!("failed to start CLI-Manager crash runtime marker: {err}");
+            }
             let startup_args: Vec<String> = std::env::args().collect();
             if let Some(session_id) = background_session_arg(&startup_args) {
                 if let Ok(mut pending) = app.state::<PendingBackgroundSession>().0.lock() {
@@ -678,45 +691,31 @@ pub fn run() {
             conpty_sideload::initialize(app.handle());
             // 保留应用自身调试日志，但压掉 sqlx 的逐条 SQL 输出。
             log::set_max_level(log_level);
-            app.manage(claude_hook::ClaudeHookBridge::start(app.handle().clone()));
-            // Issue #123 Phase 2：后台线程发现/拉起 PTY daemon，成功后写入 bridge；
-            // 失败只记日志，命令层自动降级进程内 PTY，不阻塞启动。
-            // 逃生舱：CLI_MANAGER_DISABLE_DAEMON=1 强制进程内 PTY（排障用）。
+            // PtyHost 是唯一生产终端路径。后台线程发现/拉起 daemon，成功后写入 bridge；
+            // 失败只记日志并让终端创建明确失败，不恢复已删除的进程内 PTY 路径。
             {
-                let daemon_disabled = std::env::var("CLI_MANAGER_DISABLE_DAEMON")
-                    .map(|value| {
-                        let value = value.trim();
-                        value == "1" || value.eq_ignore_ascii_case("true")
-                    })
-                    .unwrap_or(false);
-                if daemon_disabled {
-                    log::info!("pty daemon disabled via CLI_MANAGER_DISABLE_DAEMON");
-                } else {
-                    let handle = app.handle().clone();
-                    std::thread::spawn(move || match app_paths::cli_manager_data_dir() {
-                        Ok(data_dir) => {
-                            match daemon::client::connect_or_spawn(
-                                handle.clone(),
-                                &data_dir,
-                                cfg!(debug_assertions),
-                            ) {
-                                Ok(client) => {
-                                    log::info!(
-                                        "pty daemon connected: 127.0.0.1:{}",
-                                        client.info().port
-                                    );
-                                    handle.state::<daemon::client::DaemonBridge>().set(client);
-                                }
-                                Err(err) => {
-                                    log::warn!(
-                                        "pty daemon unavailable, falling back in-process: {err}"
-                                    )
-                                }
+                let handle = app.handle().clone();
+                std::thread::spawn(move || match app_paths::cli_manager_data_dir() {
+                    Ok(data_dir) => {
+                        match daemon::client::connect_or_spawn(
+                            handle.clone(),
+                            &data_dir,
+                            cfg!(debug_assertions),
+                        ) {
+                            Ok(client) => {
+                                log::info!(
+                                    "pty daemon connected: 127.0.0.1:{}",
+                                    client.info().port
+                                );
+                                handle.state::<daemon::client::DaemonBridge>().set(client);
                             }
+                            Err(err) => log::warn!(
+                                "pty daemon unavailable; terminal creation disabled: {err}"
+                            ),
                         }
-                        Err(err) => log::warn!("pty daemon skipped (no data dir): {err}"),
-                    });
-                }
+                    }
+                    Err(err) => log::warn!("pty daemon skipped (no data dir): {err}"),
+                });
             }
             // 注入 appLocalData 目录用于历史索引磁盘缓存（加速冷启动加载）。
             {
@@ -740,7 +739,7 @@ pub fn run() {
                 },
                 log_file_name
             );
-            log::info!("Linux graphics diagnostics: {:?}", linux_graphics);
+            log::debug!("Linux graphics diagnostics: {:?}", linux_graphics);
 
             let show_item = MenuItem::with_id(app, "tray_show", "显示", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "tray_quit", "退出", true, None::<&str>)?;
@@ -788,7 +787,6 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
-        .manage(pty::manager::PtyManager::new())
         .manage(PendingBackgroundSession::default())
         .manage(daemon::client::DaemonBridge::new())
         .manage(file_watcher::FileWatcherBridge::new())
@@ -803,16 +801,14 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            commands::terminal::pty_create,
-            commands::terminal::pty_write,
-            commands::terminal::pty_resize,
-            commands::terminal::pty_close,
-            commands::terminal::pty_close_all,
+            commands::terminal::pty_prepare_create,
             commands::terminal::pty_reconcile_active_sessions,
             commands::terminal::pty_status,
             commands::terminal::pty_daemon_active,
+            commands::terminal::pty_host_get_endpoint,
+            commands::terminal::pty_legacy_request,
+            commands::terminal::pty_daemon_upgrade_if_idle,
             commands::terminal::pty_daemon_sessions,
-            commands::terminal::pty_attach,
             commands::cc_connect::cc_connect_get_status,
             commands::cc_connect::cc_connect_save_profile,
             commands::cc_connect::cc_connect_clear_credentials,
@@ -992,6 +988,8 @@ pub fn run() {
             statusline_profiles::statusline_profiles_export,
             statusline_profiles::statusline_profiles_analyze_import,
             statusline_profiles::statusline_profiles_commit_import,
+            crash_reporter::crash_context_update,
+            crash_reporter::frontend_crash_report,
             app_show_main_window,
         ])
         .build(context)
@@ -1000,6 +998,7 @@ pub fn run() {
             if let tauri::RunEvent::Exit = &event {
                 app.state::<commands::cc_connect::CcConnectManager>()
                     .shutdown();
+                crash_reporter::mark_graceful_exit();
             }
 
             #[cfg(target_os = "macos")]

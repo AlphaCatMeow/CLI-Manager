@@ -1,5 +1,4 @@
 import { useRef, type RefObject } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { parseOsc7Cwd } from "../lib/terminalOscPath";
 import {
   LEGACY_RUNTIME_OSC_PREFIX,
@@ -12,6 +11,7 @@ import {
 } from "../lib/terminalOscParse";
 import { useTerminalStore, type ShellRuntimeEventName } from "../stores/terminalStore";
 import type { OsPlatform } from "../lib/shell";
+import { terminalProcessManager } from "../terminal/core/TerminalProcessManager";
 
 const OSC_CARRY_BUFFER_MAX = 8192;
 const SSH_CONNECTED_MARKER = "\x1b]777;cli-manager-ssh=connected\x07";
@@ -28,8 +28,12 @@ interface UseTerminalOscOptions {
   onPtyWriteError: (stage: string, err: unknown) => void;
 }
 
+export interface TerminalOutputNormalizationOptions {
+  replyToColorQueries?: boolean;
+}
+
 export interface UseTerminalOscResult {
-  normalizeTerminalOutput: (text: string) => string;
+  normalizeTerminalOutput: (text: string, options?: TerminalOutputNormalizationOptions) => string;
   updateSessionCwdIfChanged: (cwd: string | null) => void;
   updateTerminalColorReplies: (colors: TerminalColors) => void;
 }
@@ -159,10 +163,11 @@ export function useTerminalOsc({
     return output;
   };
 
-  const processSpecialOscQueries = (text: string) => {
+  const processSpecialOscQueries = (text: string, replyToColorQueries: boolean) => {
     const combined = specialOscBufferRef.current + text;
     specialOscBufferRef.current = "";
     let output = "";
+    let colorReplies = "";
     let cursor = 0;
 
     while (cursor < combined.length) {
@@ -192,11 +197,11 @@ export function useTerminalOsc({
       const body = combined.slice(start + OSC_PREFIX.length, terminator.index);
       const queryId = parseSpecialColorQuery(body);
       if (queryId === 10 || queryId === 11) {
-        const reply =
-          queryId === 10
+        if (replyToColorQueries) {
+          colorReplies += queryId === 10
             ? terminalColorRepliesRef.current.foreground
             : terminalColorRepliesRef.current.background;
-        invoke("pty_write", { sessionId, data: reply }).catch((err) => onPtyWriteError("osc_color_reply", err));
+        }
       } else {
         output += combined.slice(start, terminator.index + terminator.length);
       }
@@ -205,6 +210,10 @@ export function useTerminalOsc({
 
     if (specialOscBufferRef.current.length > OSC_CARRY_BUFFER_MAX) {
       specialOscBufferRef.current = "";
+    }
+
+    if (colorReplies) {
+      terminalProcessManager.write(sessionId, colorReplies).catch((err) => onPtyWriteError("osc_color_reply", err));
     }
 
     return output;
@@ -249,8 +258,14 @@ export function useTerminalOsc({
     return combined;
   };
 
-  const normalizeTerminalOutput = (text: string) => (
-    processShellIntegrationOsc(processSpecialOscQueries(processSshConnectionMarker(text)))
+  const normalizeTerminalOutput = (
+    text: string,
+    options: TerminalOutputNormalizationOptions = {},
+  ) => processShellIntegrationOsc(
+    processSpecialOscQueries(
+      processSshConnectionMarker(text),
+      options.replyToColorQueries !== false,
+    ),
   );
 
   const updateTerminalColorReplies = (colors: TerminalColors) => {
