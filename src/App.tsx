@@ -50,6 +50,7 @@ import { getOsPlatform } from "./lib/shell";
 import { normalizeFontFamilyStack } from "./lib/systemFonts";
 import { ALL_TERMINALS_SCOPE } from "./lib/terminalScope";
 import { shouldIncludeDaemonExitTask } from "./lib/terminalExitTask";
+import { requestSidebarToggle } from "./lib/sidebarCommands";
 import { getTerminalTheme, isLightTerminalTheme } from "./lib/terminalThemes";
 import { resolveProjectForSession } from "./lib/terminalProject";
 import { terminalProcessManager } from "./terminal/core/TerminalProcessManager";
@@ -679,6 +680,14 @@ function App() {
     })();
   }, [terminalFullscreen, t]);
 
+  const handleToggleSidebarShortcut = useCallback(() => {
+    if (terminalFullscreen) {
+      handleToggleTerminalFullscreen();
+      return;
+    }
+    requestSidebarToggle();
+  }, [handleToggleTerminalFullscreen, terminalFullscreen]);
+
   const handleActivateHookNotificationTarget = useCallback(async (tabId: string) => {
     const terminalStore = useTerminalStore.getState();
     const targetSession = terminalStore.sessions.find((session) => session.id === tabId);
@@ -723,7 +732,10 @@ function App() {
     onActivateSession: handleActivateHookNotificationTarget,
   });
 
-  useKeyboardShortcuts({ onToggleTerminalFullscreen: handleToggleTerminalFullscreen });
+  useKeyboardShortcuts({
+    onToggleSidebar: handleToggleSidebarShortcut,
+    onToggleTerminalFullscreen: handleToggleTerminalFullscreen,
+  });
 
   useEffect(() => {
     if (!IN_TAURI) return;
