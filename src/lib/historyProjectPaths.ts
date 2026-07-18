@@ -13,6 +13,18 @@ export function normalizeHistoryProjectPaths(paths: string[]): string[] {
   ).sort();
 }
 
+export function resolveTodayUsageProjectPaths(
+  projectPath: string | null | undefined,
+  lookupProjectPath: string | null | undefined,
+  worktreePaths: string[]
+): string[] {
+  const normalizedProjectPath = normalizeHistoryProjectPaths(projectPath ? [projectPath] : [])[0];
+  if (normalizedProjectPath) {
+    return normalizeHistoryProjectPaths([normalizedProjectPath, ...worktreePaths]);
+  }
+  return normalizeHistoryProjectPaths(lookupProjectPath ? [lookupProjectPath] : []);
+}
+
 export function resolveTodayProjectStatsScope(
   projectPaths: string[],
   projectKeys: Array<string | null | undefined>

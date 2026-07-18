@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   normalizeHistoryProjectPaths,
   resolveTodayProjectStatsScope,
+  resolveTodayUsageProjectPaths,
 } from "../src/lib/historyProjectPaths.ts";
 
 test("normalizes, sorts, and deduplicates project paths", () => {
@@ -30,4 +31,24 @@ test("falls back to project key when no project path is available", () => {
     projectPaths: [],
   });
   assert.equal(resolveTodayProjectStatsScope([], [null, " "]), null);
+});
+
+test("project-bound today usage excludes an unrelated live cwd", () => {
+  assert.deepEqual(resolveTodayUsageProjectPaths(
+    "D:/repo/main",
+    "D:/other-project",
+    ["D:/repo/main-worktrees/task-a", "D:/repo/main-worktrees/task-b"]
+  ), [
+    "D:/repo/main",
+    "D:/repo/main-worktrees/task-a",
+    "D:/repo/main-worktrees/task-b",
+  ]);
+});
+
+test("unbound today usage falls back to the terminal lookup path", () => {
+  assert.deepEqual(resolveTodayUsageProjectPaths(
+    null,
+    "D:/scratch/session",
+    ["D:/ignored-worktree"]
+  ), ["D:/scratch/session"]);
 });

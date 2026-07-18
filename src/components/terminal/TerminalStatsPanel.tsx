@@ -42,8 +42,8 @@ import { DiffViewerModal } from "../git/DiffViewerModal";
 import { parseDiffBlocksFromMessages } from "../../lib/diffParser";
 import { resolveTerminalProjectPath } from "../../lib/terminalOscPath";
 import {
-  normalizeHistoryProjectPaths,
   resolveTodayProjectStatsScope,
+  resolveTodayUsageProjectPaths,
 } from "../../lib/historyProjectPaths";
 import { TerminalSquare } from "../icons";
 
@@ -424,17 +424,15 @@ export function TerminalStatsPanel({ activeSessionId, open, visible = true, embe
   const displayProjectPath = activeWorktree?.path || terminalProjectPath;
   // Issue #137：今日项目用量按「主项目路径 + 该项目下全部 worktree」聚合，避免 worktree 被当成独立目录。
   const todayUsageProjectPaths = useMemo(() => {
-    const paths: string[] = [];
-    if (project?.path?.trim()) paths.push(project.path.trim());
-    if (lookupProjectPath) paths.push(lookupProjectPath);
+    const worktreePaths: string[] = [];
     if (project?.id) {
       for (const worktree of worktrees) {
         if (worktree.project_id !== project.id) continue;
         if (worktree.status === "missing") continue;
-        if (worktree.path?.trim()) paths.push(worktree.path.trim());
+        if (worktree.path?.trim()) worktreePaths.push(worktree.path.trim());
       }
     }
-    return normalizeHistoryProjectPaths(paths);
+    return resolveTodayUsageProjectPaths(project?.path, lookupProjectPath, worktreePaths);
   }, [lookupProjectPath, project?.id, project?.path, worktrees]);
 
   // 终端运行的 CLI 工具（claude/codex），来自项目设置；推断不出则不过滤
