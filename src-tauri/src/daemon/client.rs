@@ -1,15 +1,15 @@
 //! 主进程侧 daemon 客户端：发现/拉起 daemon、鉴权连接、请求-应答关联、
-//! 推送帧 re-emit（`pty-output-{id}`/`pty-status-{id}`/`claude-hook-notification`）。
+//! 低频请求代理与 hook 通知转发；终端输出由 WebView 直连 WebSocket 接收。
 //!
-//! 契约：daemon 不可用必须降级进程内 PTY，应用照常可用——因此本模块所有
-//! 失败路径都只返回 Err/None，绝不 panic、不阻塞启动主链路。
+//! PtyHost daemon 是唯一生产终端路径；本模块失败时返回 Err/None，绝不 panic，
+//! 由命令层向前端明确报告终端暂不可用。
 
 use super::discovery::{
     daemon_info_path, is_pid_alive, read_daemon_info, remove_daemon_info, DaemonInfo,
 };
 use super::protocol::{
     decode_daemon_frame, encode_frame, ClientFrame, DaemonFrame, ProtocolError, SessionMeta,
-    CAPABILITY_PTY_RESIZE_2X1, MAX_FRAME_BYTES,
+    MAX_FRAME_BYTES,
 };
 use crate::pty::manager::PtyProcessStatus;
 use std::collections::HashMap;
@@ -38,74 +38,38 @@ fn windows_daemon_creation_flags() -> u32 {
 
 pub struct DaemonClient {
     info: DaemonInfo,
-    daemon_version: String,
-    protocol_revision: u32,
-    capabilities: Vec<String>,
     writer: Mutex<TcpStream>,
     pending: Mutex<HashMap<u64, SyncSender<DaemonFrame>>>,
     next_id: AtomicU64,
     connected: Arc<AtomicBool>,
 }
 
-struct DaemonBridgeState {
-    client: Option<Arc<DaemonClient>>,
-    ready: bool,
-}
-
 /// Tauri managed state：daemon 客户端插槽。
-/// None = daemon 不可用（降级进程内 PTY）。
+/// None = daemon 尚未就绪或连接已失效。
 pub struct DaemonBridge {
-    inner: Mutex<DaemonBridgeState>,
+    inner: Mutex<Option<Arc<DaemonClient>>>,
 }
 
 impl DaemonBridge {
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(DaemonBridgeState {
-                client: None,
-                ready: false,
-            }),
+            inner: Mutex::new(None),
         }
     }
 
     pub fn set(&self, client: Arc<DaemonClient>) {
         if let Ok(mut inner) = self.inner.lock() {
-            inner.client = Some(client);
-            inner.ready = true;
+            *inner = Some(client);
         }
     }
 
-    pub fn mark_unavailable(&self) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.client = None;
-            inner.ready = true;
-        }
-    }
-
-    /// None means startup discovery is still running. Some(true) means the
-    /// selected PTY host supports 2x1; Some(false) is a legacy daemon at 40x8.
-    pub fn compact_resize_state(&self) -> Option<bool> {
-        let mut inner = self.inner.lock().ok()?;
-        if !inner.ready {
-            return None;
-        }
-        match inner.client.as_ref() {
-            Some(client) if client.is_connected() => Some(client.supports_compact_resize()),
-            Some(_) => {
-                inner.client = None;
-                Some(true)
-            }
-            None => Some(true),
-        }
-    }
-
-    /// 取存活的客户端；连接已断则清槽返回 None（后续命令自动降级）。
+    /// 取存活的客户端；连接已断则清槽返回 None。
     pub fn get(&self) -> Option<Arc<DaemonClient>> {
         let mut inner = self.inner.lock().ok()?;
-        match inner.client.as_ref() {
+        match inner.as_ref() {
             Some(client) if client.is_connected() => Some(Arc::clone(client)),
             Some(_) => {
-                inner.client = None;
+                *inner = None;
                 None
             }
             None => None,
@@ -123,7 +87,7 @@ impl DaemonClient {
     }
 
     /// 连接并完成鉴权握手；成功后启动推送分发线程。
-    pub fn connect(info: DaemonInfo, app_handle: AppHandle) -> Result<Arc<Self>, String> {
+    pub fn connect(mut info: DaemonInfo, app_handle: AppHandle) -> Result<Arc<Self>, String> {
         let addr = SocketAddr::from(([127, 0, 0, 1], info.port));
         let stream = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)
             .map_err(|err| format!("daemon connect failed: {err}"))?;
@@ -144,11 +108,12 @@ impl DaemonClient {
         let _ = stream.set_read_timeout(Some(AUTH_READ_TIMEOUT));
         let mut reader = BufReader::new(stream);
         let first = read_line_bounded(&mut reader).ok_or("daemon auth read failed")?;
-        let (daemon_version, protocol_revision, capabilities) = match decode_daemon_frame(&first) {
+        match decode_daemon_frame(&first) {
             Ok(DaemonFrame::AuthOk {
                 daemon_version,
-                protocol_revision,
-                capabilities,
+                protocol_version,
+                binary_protocol_version,
+                features,
                 ..
             }) => {
                 if daemon_version != env!("CARGO_PKG_VERSION") {
@@ -157,20 +122,19 @@ impl DaemonClient {
                         env!("CARGO_PKG_VERSION")
                     );
                 }
-                (daemon_version, protocol_revision, capabilities)
+                info.protocol_version = protocol_version;
+                info.binary_protocol_version = binary_protocol_version;
+                info.features = features;
             }
             Ok(DaemonFrame::AuthErr { reason }) => {
                 return Err(format!("daemon auth rejected: {reason}"));
             }
             other => return Err(format!("daemon auth unexpected reply: {other:?}")),
-        };
+        }
         let _ = reader.get_ref().set_read_timeout(None);
 
         let client = Arc::new(DaemonClient {
             info,
-            daemon_version,
-            protocol_revision,
-            capabilities,
             writer: Mutex::new(writer),
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
@@ -208,10 +172,21 @@ impl DaemonClient {
         match frame {
             DaemonFrame::Output {
                 session_id,
+                sequence,
+                cols,
+                rows,
                 data_base64,
             } => {
-                // 与 TauriPtyEventSink 完全一致的事件与载荷，前端零感知。
-                let _ = app_handle.emit(&format!("pty-output-{session_id}"), data_base64);
+                let _ = app_handle.emit(
+                    "pty-legacy-output",
+                    serde_json::json!({
+                        "sessionId": session_id,
+                        "sequence": sequence,
+                        "cols": cols,
+                        "rows": rows,
+                        "dataBase64": data_base64,
+                    }),
+                );
             }
             DaemonFrame::Exit {
                 session_id,
@@ -224,12 +199,23 @@ impl DaemonClient {
                         exit_code,
                     },
                 );
+                let _ = app_handle.emit(
+                    "pty-legacy-status",
+                    serde_json::json!({
+                        "sessionId": session_id,
+                        "status": "exited",
+                        "exit_code": exit_code,
+                    }),
+                );
             }
             DaemonFrame::HookReport { payload } => {
                 let _ = app_handle.emit("claude-hook-notification", payload);
             }
+            DaemonFrame::CheckpointAccepted { .. }
+            | DaemonFrame::CheckpointRejected { .. } => {}
             DaemonFrame::Pong { id }
             | DaemonFrame::Ok { id }
+            | DaemonFrame::Created { id, .. }
             | DaemonFrame::Err { id, .. }
             | DaemonFrame::Sessions { id, .. }
             | DaemonFrame::Statuses { id, .. }
@@ -290,91 +276,10 @@ impl DaemonClient {
         }
     }
 
-    pub fn create(
-        &self,
-        session_id: &str,
-        cwd: Option<String>,
-        env_vars: Option<HashMap<String, String>>,
-        shell: Option<String>,
-    ) -> Result<(), String> {
-        let id = self.next_request_id();
-        self.expect_ok(
-            &ClientFrame::Create {
-                id,
-                session_id: session_id.to_string(),
-                cwd,
-                env_vars,
-                shell,
-            },
-            id,
-        )
-    }
-
-    pub fn write(&self, session_id: &str, data: &str) -> Result<(), String> {
-        let id = self.next_request_id();
-        self.expect_ok(
-            &ClientFrame::Write {
-                id,
-                session_id: session_id.to_string(),
-                data: data.to_string(),
-            },
-            id,
-        )
-    }
-
-    pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let id = self.next_request_id();
-        self.expect_ok(
-            &ClientFrame::Resize {
-                id,
-                session_id: session_id.to_string(),
-                cols,
-                rows,
-            },
-            id,
-        )
-    }
-
-    pub fn close(&self, session_id: &str) -> Result<(), String> {
-        let id = self.next_request_id();
-        self.expect_ok(
-            &ClientFrame::Close {
-                id,
-                session_id: session_id.to_string(),
-            },
-            id,
-        )
-    }
-
-    pub fn close_all(&self) -> Result<(), String> {
-        let id = self.next_request_id();
-        self.expect_ok(&ClientFrame::CloseAll { id }, id)
-    }
-
     pub fn list(&self) -> Result<Vec<SessionMeta>, String> {
         let id = self.next_request_id();
         match self.request(id, &ClientFrame::List { id })? {
             DaemonFrame::Sessions { sessions, .. } => Ok(sessions),
-            DaemonFrame::Err { message, .. } => Err(message),
-            other => Err(format!("daemon unexpected reply: {other:?}")),
-        }
-    }
-
-    /// attach 会话：订阅输出推送并取得 ring buffer 回放（base64）。
-    pub fn attach(&self, session_id: &str) -> Result<(String, SessionMeta), String> {
-        let id = self.next_request_id();
-        match self.request(
-            id,
-            &ClientFrame::Attach {
-                id,
-                session_id: session_id.to_string(),
-            },
-        )? {
-            DaemonFrame::Attached {
-                replay_base64,
-                meta,
-                ..
-            } => Ok((replay_base64, meta)),
             DaemonFrame::Err { message, .. } => Err(message),
             other => Err(format!("daemon unexpected reply: {other:?}")),
         }
@@ -419,26 +324,9 @@ impl DaemonClient {
         let id = self.next_request_id();
         self.expect_ok(&ClientFrame::Shutdown { id }, id)
     }
-
-    fn is_runtime_compatible(&self) -> bool {
-        daemon_runtime_is_compatible(&self.daemon_version, &self.capabilities)
-    }
-
-    pub fn supports_compact_resize(&self) -> bool {
-        self.capabilities
-            .iter()
-            .any(|capability| capability == CAPABILITY_PTY_RESIZE_2X1)
-    }
 }
 
-fn daemon_runtime_is_compatible(daemon_version: &str, capabilities: &[String]) -> bool {
-    daemon_version == env!("CARGO_PKG_VERSION")
-        && capabilities
-            .iter()
-            .any(|capability| capability == CAPABILITY_PTY_RESIZE_2X1)
-}
-
-/// 发现或拉起 daemon 并建立连接。失败返回 Err（调用方降级进程内 PTY）。
+/// 发现或拉起 daemon 并建立连接。失败返回 Err，由调用方向前端报告不可用。
 pub fn connect_or_spawn(
     app_handle: AppHandle,
     data_dir: &Path,
@@ -451,9 +339,8 @@ pub fn connect_or_spawn(
         if is_pid_alive(info.pid) {
             match DaemonClient::connect(info.clone(), app_handle.clone()) {
                 Ok(client) => {
-                    // Incompatible runtime and no live sessions: safely replace
-                    // the daemon. Active sessions are never killed or migrated.
-                    if !client.is_runtime_compatible() {
+                    // 版本不匹配且无存活会话 → 让旧 daemon 自杀后重拉（契约升级路径）。
+                    if client.info().version != env!("CARGO_PKG_VERSION") {
                         let no_alive = client
                             .list()
                             .map(|sessions| sessions.iter().all(|s| !s.alive))
@@ -463,10 +350,7 @@ pub fn connect_or_spawn(
                             return spawn_and_connect(app_handle, &info_path);
                         }
                         log::warn!(
-                            "incompatible daemon with active sessions, keeping it: version={}, protocol_revision={}, capabilities={:?}",
-                            client.daemon_version,
-                            client.protocol_revision,
-                            client.capabilities,
+                            "daemon version mismatch with active sessions, keeping old daemon"
                         );
                     }
                     return Ok(client);
@@ -559,39 +443,10 @@ fn read_line_bounded(reader: &mut BufReader<TcpStream>) -> Option<String> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
 
-    #[test]
-    fn matching_version_requires_compact_resize_capability() {
-        assert!(!daemon_runtime_is_compatible(
-            env!("CARGO_PKG_VERSION"),
-            &[],
-        ));
-        assert!(daemon_runtime_is_compatible(
-            env!("CARGO_PKG_VERSION"),
-            &[CAPABILITY_PTY_RESIZE_2X1.to_string()],
-        ));
-    }
-
-    #[test]
-    fn capability_does_not_hide_product_version_mismatch() {
-        assert!(!daemon_runtime_is_compatible(
-            "0.0.0",
-            &[CAPABILITY_PTY_RESIZE_2X1.to_string()],
-        ));
-    }
-
-    #[test]
-    fn daemon_bridge_distinguishes_startup_from_in_process_fallback() {
-        let bridge = DaemonBridge::new();
-        assert_eq!(bridge.compact_resize_state(), None);
-        bridge.mark_unavailable();
-        assert_eq!(bridge.compact_resize_state(), Some(true));
-    }
-
-    #[cfg(target_os = "windows")]
     #[test]
     fn windows_daemon_keeps_conpty_ctrl_c_process_group_compatible() {
         const DETACHED_PROCESS: u32 = 0x0000_0008;

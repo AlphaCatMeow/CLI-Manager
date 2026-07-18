@@ -7,6 +7,7 @@ import { SerializeAddon } from "@xterm/addon-serialize";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke } from "@tauri-apps/api/core";
+import { readText as readClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useShallow } from "zustand/shallow";
 import {
@@ -32,15 +33,7 @@ import { normalizeTerminalTuiComposerBackground } from "../lib/terminalTuiDispla
 import { hexToRgba, normalizeHexColor } from "../lib/terminalColor";
 import { wrapTerminalPasteTextForCtrlShiftV } from "../lib/terminalKeyboard";
 import {
-  LEGACY_TERMINAL_MIN_COLS,
-  LEGACY_TERMINAL_MIN_ROWS,
-  TERMINAL_MIN_COLS,
-  TERMINAL_MIN_ROWS,
-  type TerminalGridSize,
-} from "../lib/terminalResizeCoordinator";
-import {
   didRenderFullTerminalViewport,
-  planTerminalVisibilityRestore,
   refreshTerminalViewport,
 } from "../lib/terminalVisibility";
 import {
@@ -51,7 +44,9 @@ import {
 import { getOsPlatform, normalizeShellKey, type OsPlatform } from "../lib/shell";
 import { Portal } from "./ui/Portal";
 import { useProjectStore } from "../stores/projectStore";
-import { formatStartupInputForPty, useTerminalStore, type PtyAttachResult } from "../stores/terminalStore";
+import { formatStartupInputForPty, useTerminalStore } from "../stores/terminalStore";
+import { terminalProcessManager } from "../terminal/core/TerminalProcessManager";
+import type { TerminalProcessTraits } from "../terminal/transport/PtyHostSocket";
 import {
   TERMINAL_SCROLLBACK_ROWS_DEFAULT,
   useSettingsStore,
@@ -169,8 +164,6 @@ const copyTextToClipboard = async (text: string) => {
   }
 };
 
-const readClipboardText = async () => navigator.clipboard.readText();
-
 const lineHasVisibleTextAfterColumn = (line: IBufferLine, column: number, cols: number) => {
   const width = Math.min(cols, line.length);
   for (let index = Math.max(0, column); index < width; index += 1) {
@@ -194,22 +187,6 @@ const canShowSuggestionAtCurrentInputEnd = (terminal: Terminal, input: string) =
   const beforeCursor = line.translateToString(false, 0, Math.min(buffer.cursorX, line.length));
   return beforeCursor.endsWith(input);
 };
-
-const isLikelyMacPlatform = (os: OsPlatform) => (
-  os === "macos" || (
-    os === "unknown"
-    && typeof navigator !== "undefined"
-    && /mac/i.test(`${navigator.platform} ${navigator.userAgent}`)
-  )
-);
-
-const isLikelyWindowsPlatform = (os: OsPlatform) => (
-  os === "windows" || (
-    os === "unknown"
-    && typeof navigator !== "undefined"
-    && /win/i.test(`${navigator.platform} ${navigator.userAgent}`)
-  )
-);
 
 // When search is active, SearchAddon calls terminal.select() on each match to
 // position it. A visible selection color would then cover the yellow match
@@ -303,20 +280,12 @@ interface Props extends TerminalContextMenuActions {
   darkThemePalette?: DarkThemePalette;
 }
 
-interface PtyMinimumGridSize extends TerminalGridSize {
-  ready: boolean;
-}
-
 export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fontSize = 14, fontFamily = "Cascadia Code, Consolas, monospace", resolvedTheme = "dark", terminalThemeName = "auto", lightThemePalette = "warm-paper", darkThemePalette = "night-indigo", onNewTab, onCloseSession, onCloseOthers, onCloseToLeft, onCloseToRight, onSplitRight, onSplitDown }: Props) {
   const { t } = useI18n();
   const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const minimumGridRef = useRef<TerminalGridSize>({
-    cols: LEGACY_TERMINAL_MIN_COLS,
-    rows: LEGACY_TERMINAL_MIN_ROWS,
-  });
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const isActiveRef = useRef(isActive);
   // The orchestrator mirrors the visibility prop; display/viewport code reads it only.
@@ -324,9 +293,9 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const visibilityRestorePendingRef = useRef(false);
   const visibilityRestoreRevealTimerRef = useRef<number | null>(null);
   const visibilityRestoreRevealRafRef = useRef<number | null>(null);
+  const visibilityRestoreFallbackRafRef = useRef<number | null>(null);
   const cursorShowTimerRef = useRef<number | null>(null);
   const tuiComposerNormalizeRafRef = useRef<number | null>(null);
-  const tuiComposerNormalizeMicrotaskPendingRef = useRef(false);
   const displayNormalizeOutputRef = useRef<(text: string) => string>((text) => text);
   const displayTransformOutputRef = useRef<(text: string) => string>((text) => text);
   const displayAfterWriteRef = useRef<((terminal: Terminal) => void) | null>(null);
@@ -355,12 +324,10 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const hiddenForThisSession = useTerminalStore((s) => s.hiddenBackgroundSessionIds.has(sessionId));
 
   const [assetUrl, setAssetUrl] = useState<string | null>(null);
-  const [inactiveReplayPending, setInactiveReplayPending] = useState(false);
   const [visibilityRestorePending, setVisibilityRestorePending] = useState(false);
   const [suggestionGhost, setSuggestionGhost] = useState<TerminalSuggestionGhostState | null>(null);
   const [linuxGraphicsConstrained, setLinuxGraphicsConstrained] = useState(false);
   const [linuxGraphicsDisableWebgl, setLinuxGraphicsDisableWebgl] = useState(false);
-  const [preferDomRenderer, setPreferDomRenderer] = useState(() => isLikelyMacPlatform("unknown"));
   const { menuState, menuRef, openMenu, closeContextMenu } = useTerminalContextMenu();
   const osPlatformRef = useRef<OsPlatform>("unknown");
   const codexImeDebugRef = useRef<CodexImeDebugState>({
@@ -391,7 +358,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     void getOsPlatform().then((platform) => {
       if (!cancelled) {
         osPlatformRef.current = platform;
-        setPreferDomRenderer(isLikelyMacPlatform(platform));
       }
     });
     return () => {
@@ -491,39 +457,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     clearSuggestionGhost();
   }, [terminalInputSuggestionProvider]);
 
-  const getSessionToolContext = () => {
-    const session = useTerminalStore.getState().sessions.find((item) => item.id === sessionId);
-    const project = session?.projectId
-      ? useProjectStore.getState().projects.find((item) => item.id === session.projectId)
-      : null;
-    return {
-      projectTool: project?.cli_tool.trim().toLowerCase() ?? "",
-      startupCmd: session?.startupCmd ?? "",
-      titleTool: session?.title.match(/\(([^()]*)\)\s*$/)?.[1]?.trim().toLowerCase() ?? "",
-    };
-  };
-
-  const isCodexSession = (context = getSessionToolContext()) => (
-    context.projectTool === "codex"
-    || context.titleTool === "codex"
-    || CODEX_COMMAND_PATTERN.test(context.startupCmd)
-  );
-
-  const isClaudeSession = (context = getSessionToolContext()) => (
-    context.projectTool.includes("claude")
-    || context.titleTool.includes("claude")
-    || CLAUDE_COMMAND_PATTERN.test(context.startupCmd)
-  );
-
-  const isClaudeOrCodexSession = (context = getSessionToolContext()) => (
-    context.projectTool === "codex"
-    || context.projectTool.includes("claude")
-    || context.titleTool === "codex"
-    || context.titleTool.includes("claude")
-    || CODEX_COMMAND_PATTERN.test(context.startupCmd)
-    || CLAUDE_COMMAND_PATTERN.test(context.startupCmd)
-  );
-
   const {
     syncWebglRenderer,
     scheduleHiddenWebglDispose,
@@ -533,79 +466,27 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     scheduleFit,
     scheduleViewportRefresh,
     markViewportRefreshNeeded,
-    getOutputRestorePlanState,
-    flushInactiveBufferForReplay,
-    resumeActiveWriteQueue,
-    getPendingOutputSnapshot,
     attachPtyOutput,
     attachViewport,
     resetOutputState,
     cancelScheduledFit,
-    resumeDeferredFitAfterWrite,
     resetViewportRefreshState,
   } = useTerminalDisplay({
     sessionId,
     containerRef,
     terminalRef,
     fitAddonRef,
-    minimumGridRef,
     isVisibleRef,
     isComposingRef,
     lowMemoryMode,
-    terminalScrollbackRows: effectiveTerminalScrollbackRows,
-    preferDomRenderer,
-    shouldCoordinateTuiResize: (terminal) => (
-      terminal.buffer.active.type === "alternate" || isClaudeOrCodexSession()
-    ),
     disableHardwareAcceleration,
     linuxGraphicsDisableWebgl,
     isTransparentRef,
     normalizeOutputRef: displayNormalizeOutputRef,
     transformOutputRef: displayTransformOutputRef,
     afterTerminalWriteRef: displayAfterWriteRef,
-    onInactiveReplayPendingChange: setInactiveReplayPending,
     onPtyOutputListenError: (err) => logError("Failed to listen PTY output", { sessionId, err }),
   });
-
-  useEffect(() => {
-    let cancelled = false;
-    let retryTimer: number | null = null;
-    let attempts = 0;
-    const resolveMinimumGrid = () => {
-      attempts += 1;
-      invoke<PtyMinimumGridSize>("pty_minimum_grid_size")
-        .then((minimum) => {
-          if (cancelled) return;
-          if (!minimum.ready) {
-            if (attempts < 60) {
-              retryTimer = window.setTimeout(resolveMinimumGrid, 100);
-            } else {
-              logWarn("PTY minimum grid discovery timed out; keeping legacy-safe geometry", { sessionId });
-            }
-            return;
-          }
-          if (!Number.isSafeInteger(minimum.cols) || !Number.isSafeInteger(minimum.rows)) return;
-          minimumGridRef.current = {
-            cols: Math.max(TERMINAL_MIN_COLS, minimum.cols),
-            rows: Math.max(TERMINAL_MIN_ROWS, minimum.rows),
-          };
-          scheduleFit(true);
-        })
-        .catch((err) => {
-          if (cancelled) return;
-          if (attempts < 60) {
-            retryTimer = window.setTimeout(resolveMinimumGrid, 100);
-            return;
-          }
-          logError("Failed to resolve PTY minimum grid size", { sessionId, err });
-        });
-    };
-    resolveMinimumGrid();
-    return () => {
-      cancelled = true;
-      if (retryTimer !== null) window.clearTimeout(retryTimer);
-    };
-  }, [sessionId]);
 
   useEffect(() => {
     const session = useTerminalStore.getState().sessions.find((item) => item.id === sessionId);
@@ -646,6 +527,44 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   });
   displayNormalizeOutputRef.current = normalizeTerminalOutput;
 
+  const getSessionToolContext = () => {
+    const session = useTerminalStore.getState().sessions.find((item) => item.id === sessionId);
+    const project = session?.projectId
+      ? useProjectStore.getState().projects.find((item) => item.id === session.projectId)
+      : null;
+    return {
+      projectTool: project?.cli_tool.trim().toLowerCase() ?? "",
+      startupCmd: session?.startupCmd ?? "",
+      titleTool: session?.title.match(/\(([^()]*)\)\s*$/)?.[1]?.trim().toLowerCase() ?? "",
+    };
+  };
+
+  const isCodexSession = (context = getSessionToolContext()) => {
+    return (
+      context.projectTool === "codex"
+      || context.titleTool === "codex"
+      || CODEX_COMMAND_PATTERN.test(context.startupCmd)
+    );
+  };
+
+  const isClaudeSession = (context = getSessionToolContext()) => {
+    return (
+      context.projectTool.includes("claude")
+      || context.titleTool.includes("claude")
+      || CLAUDE_COMMAND_PATTERN.test(context.startupCmd)
+    );
+  };
+
+  const isClaudeOrCodexSession = (context = getSessionToolContext()) => {
+    return (
+      context.projectTool === "codex"
+      || context.projectTool.includes("claude")
+      || context.titleTool === "codex"
+      || context.titleTool.includes("claude")
+      || CODEX_COMMAND_PATTERN.test(context.startupCmd)
+      || CLAUDE_COMMAND_PATTERN.test(context.startupCmd)
+    );
+  };
   const normalizeTuiComposerBackground = (terminal: Terminal) => {
     const context = getSessionToolContext();
     normalizeTerminalTuiComposerBackground(terminal, {
@@ -664,19 +583,9 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       normalizeTuiComposerBackground(terminal);
     });
   };
-  const scheduleTuiComposerBackgroundNormalizationBeforePaint = (
-    terminal: Terminal | null = terminalRef.current,
-  ) => {
-    if (!terminal || tuiComposerNormalizeMicrotaskPendingRef.current) return;
-    tuiComposerNormalizeMicrotaskPendingRef.current = true;
-    queueMicrotask(() => {
-      tuiComposerNormalizeMicrotaskPendingRef.current = false;
-      if (terminalRef.current !== terminal) return;
-      normalizeTuiComposerBackground(terminal);
-    });
-  };
   displayAfterWriteRef.current = (terminal) => {
-    scheduleTuiComposerBackgroundNormalizationBeforePaint(terminal);
+    normalizeTuiComposerBackground(terminal);
+    scheduleTuiComposerBackgroundNormalization(terminal);
   };
 
   const processCursorVisibility = (text: string) => {
@@ -710,6 +619,10 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       window.cancelAnimationFrame(visibilityRestoreRevealRafRef.current);
       visibilityRestoreRevealRafRef.current = null;
     }
+    if (visibilityRestoreFallbackRafRef.current !== null) {
+      window.cancelAnimationFrame(visibilityRestoreFallbackRafRef.current);
+      visibilityRestoreFallbackRafRef.current = null;
+    }
   };
 
   const finishVisibilityRestoreReveal = () => {
@@ -719,11 +632,25 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     setVisibilityRestorePending(false);
   };
 
-  const beginVisibilityRestoreReveal = () => {
+  const scheduleVisibilityRestoreFallbackRefresh = () => {
+    visibilityRestoreFallbackRafRef.current = window.requestAnimationFrame(() => {
+      visibilityRestoreFallbackRafRef.current = window.requestAnimationFrame(() => {
+        visibilityRestoreFallbackRafRef.current = null;
+        if (!visibilityRestorePendingRef.current || !isVisibleRef.current) return;
+        markViewportRefreshNeeded();
+        scheduleFit(true, true);
+      });
+    });
+  };
+
+  const beginVisibilityRestoreReveal = (deferViewportRefresh = false) => {
     clearVisibilityRestoreRevealSchedule();
     if (!visibilityRestorePendingRef.current) {
       visibilityRestorePendingRef.current = true;
       setVisibilityRestorePending(true);
+    }
+    if (deferViewportRefresh) {
+      scheduleVisibilityRestoreFallbackRefresh();
     }
     visibilityRestoreRevealTimerRef.current = window.setTimeout(() => {
       visibilityRestoreRevealTimerRef.current = null;
@@ -741,10 +668,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     ) {
       return;
     }
-    if (visibilityRestoreRevealTimerRef.current !== null) {
-      window.clearTimeout(visibilityRestoreRevealTimerRef.current);
-      visibilityRestoreRevealTimerRef.current = null;
-    }
+    clearVisibilityRestoreRevealSchedule();
     visibilityRestoreRevealRafRef.current = window.requestAnimationFrame(() => {
       visibilityRestoreRevealRafRef.current = null;
       finishVisibilityRestoreReveal();
@@ -787,13 +711,10 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     }
     normalizeTuiComposerBackground(terminal);
     scheduleTuiComposerBackgroundNormalization(terminal);
-  }, [fontSize, effectiveFontFamily, effectiveTerminalScrollbackRows, resolvedTheme, terminalThemeName, lightThemePalette, darkThemePalette, isTransparent, background.overlayDarken, lowMemoryMode, preferDomRenderer, disableHardwareAcceleration, linuxGraphicsDisableWebgl, searchOpen]);
+  }, [fontSize, effectiveFontFamily, effectiveTerminalScrollbackRows, resolvedTheme, terminalThemeName, lightThemePalette, darkThemePalette, isTransparent, background.overlayDarken, lowMemoryMode, disableHardwareAcceleration, linuxGraphicsDisableWebgl, searchOpen]);
 
-  // Visibility drives live rendering. A pane tab is "visible" when it is the
-  // shown tab in its own pane — which, in a split, includes panes that are not
-  // the globally focused one. When a tab becomes visible, flush any output
-  // stashed while it was hidden and refit to its current size. This keeps a
-  // split's unfocused half rendering live instead of freezing until clicked.
+  // Hidden terminals stay attached and continue parsing output. Visibility only
+  // controls renderer resources and when pending layout work is flushed.
   useEffect(() => {
     const wasVisible = isVisibleRef.current;
     isVisibleRef.current = isVisible;
@@ -808,46 +729,21 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     const terminal = terminalRef.current;
     const baseTheme = getTerminalTheme(terminalThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
     const rendererRestored = terminal ? syncWebglRenderer(terminal, baseTheme) : false;
+    const becameVisible = !wasVisible;
+
+    if (!fitAddonRef.current || !containerRef.current) return;
+    if (becameVisible || rendererRestored) {
+      beginVisibilityRestoreReveal(becameVisible && !rendererRestored);
+    }
     if (rendererRestored) {
       markViewportRefreshNeeded();
     }
-
-    if (!fitAddonRef.current || !containerRef.current) return;
-    const outputRestoreState = getOutputRestorePlanState();
-    const restorePlan = planTerminalVisibilityRestore({
-      wasVisible,
-      isVisible,
-      inactiveBufferLength: outputRestoreState.inactiveBufferLength,
-      activeWriteQueueLength: outputRestoreState.activeWriteQueueLength,
-      activeWriteRafScheduled: outputRestoreState.activeWriteRafScheduled,
-    });
-    // Flush data stashed while this tab was hidden
-    if (restorePlan.shouldFlushInactiveBuffer) {
-      flushInactiveBufferForReplay();
-    }
-    if (restorePlan.shouldResumeActiveWriteQueue) {
-      if (useSettingsStore.getState().debugMode) {
-        logInfo("[terminal-visibility] resuming queued active writes after visibility restore", {
-          sessionId,
-          queuedChunks: outputRestoreState.activeWriteQueueLength,
-        });
-      }
-      resumeActiveWriteQueue();
-    }
-    if (restorePlan.shouldRefreshViewport || rendererRestored) {
-      beginVisibilityRestoreReveal();
-    }
-    if (restorePlan.shouldRefreshViewport) {
-      markViewportRefreshNeeded();
-    }
-    // Wait for display:block to take effect and the layout to stabilize.
-    // Display refresh is gated by explicit viewport-refresh state, not by every fit.
-    scheduleFit(true);
+    scheduleFit(true, rendererRestored);
     if (terminalRef.current) {
       normalizeTuiComposerBackground(terminalRef.current);
       scheduleTuiComposerBackgroundNormalization(terminalRef.current);
     }
-  }, [isVisible, lowMemoryMode, preferDomRenderer, disableHardwareAcceleration, linuxGraphicsConstrained, linuxGraphicsDisableWebgl, resolvedTheme, terminalThemeName, lightThemePalette, darkThemePalette]);
+  }, [isVisible, lowMemoryMode, disableHardwareAcceleration, linuxGraphicsConstrained, linuxGraphicsDisableWebgl, resolvedTheme, terminalThemeName, lightThemePalette, darkThemePalette]);
 
   // The WebGL glyph atlas can be silently corrupted while the GPU sleeps
   // (display sleep, lock screen, driver reset) without ever firing
@@ -924,9 +820,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       scrollback: effectiveTerminalScrollbackRows,
       scrollOnEraseInDisplay: true,
       allowProposedApi: true,
-      ...(isLikelyWindowsPlatform(osPlatformRef.current)
-        ? { windowsPty: { backend: "conpty" as const } }
-        : {}),
       minimumContrastRatio: getTerminalMinimumContrastRatio(baseTheme, isTransparentRef.current),
       // xterm cannot toggle transparency after construction, so keep it enabled
       // even though WebGL is disabled while a background image is active.
@@ -942,6 +835,34 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     const baseDisposables: TerminalSubsystemDisposable[] = [];
     const displayDisposables: TerminalSubsystemDisposable[] = [];
     const inputDisposables: TerminalSubsystemDisposable[] = [];
+    let processTraitsApplied = false;
+    const applyProcessTraits = (traits: TerminalProcessTraits | null | undefined) => {
+      if (!traits || processTraitsApplied) return;
+      processTraitsApplied = true;
+      if (traits.os === "windows" || traits.os === "macos" || traits.os === "linux") {
+        osPlatformRef.current = traits.os;
+      }
+      const windowsPty = traits.windowsPty;
+      if (!windowsPty) return;
+      terminal.options.windowsPty = {
+        backend: windowsPty.backend,
+        buildNumber: windowsPty.buildNumber ?? undefined,
+      };
+      terminal.options.reflowCursorLine = windowsPty.backend === "conpty"
+        && windowsPty.usesConptyDll === true;
+      if (windowsPty.backend === "conpty") {
+        baseDisposables.push(terminal.parser.registerCsiHandler({ final: "c" }, (params) => {
+          if (params.length === 0 || (params.length === 1 && params[0] === 0)) {
+            terminalProcessManager
+              .write(sessionId, "\x1b[?61;4c")
+              .catch((err) => reportPtyWriteError("conpty_da1", err));
+            return true;
+          }
+          return false;
+        }));
+      }
+    };
+    applyProcessTraits(terminalProcessManager.getProcessTraits(sessionId));
     // Keep Claude Code / other TUIs from overriding the app-wide thin cursor via DECSCUSR.
     baseDisposables.push(terminal.parser.registerCsiHandler({ intermediates: " ", final: "q" }, () => true));
 
@@ -973,7 +894,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       },
     }));
     terminal.loadAddon(fitAddon);
-    terminal.loadAddon(imageAddon);
     terminal.loadAddon(searchAddon);
     terminal.loadAddon(serializeAddon);
     terminal.loadAddon(unicode11Addon);
@@ -981,10 +901,25 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     terminal.loadAddon(webLinksAddon);
     terminal.open(containerRef.current);
     // 注册定时节流落盘的快照来源：让崩溃/强杀也能恢复到最近一次落盘的画面。
-    const unregisterSnapshotSource = registerTerminalSnapshotSource(sessionId, () => serializeAddon.serialize());
+    const serializeAfterWriteBarrier = () => new Promise<string>((resolve) => {
+      terminal.write("", () => resolve(serializeAddon.serialize()));
+    });
+    const unregisterSnapshotSource = registerTerminalSnapshotSource(
+      sessionId,
+      serializeAfterWriteBarrier,
+      async (serialized) => {
+        await terminalProcessManager.checkpoint(
+          sessionId,
+          terminal.cols,
+          terminal.rows,
+          serialized,
+        );
+      },
+    );
     baseDisposables.push(searchAddon.onDidChangeResults(handleSearchResults));
 
-    syncWebglRenderer(terminal, baseTheme);
+    const initialWebglReady = syncWebglRenderer(terminal, baseTheme);
+    if (initialWebglReady) terminal.loadAddon(imageAddon);
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
@@ -994,10 +929,10 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     const initialTerminalOutput = sessionSnapshot?.initialTerminalOutput;
     const writeDeferredStartup = () => {
       if (!sessionSnapshot?.deferStartupUntilInitialOutput || !sessionSnapshot.startupCmd) return;
-      invoke("pty_write", {
+      terminalProcessManager.write(
         sessionId,
-        data: formatStartupInputForPty(sessionSnapshot.startupCmd, normalizeShellKey(sessionSnapshot.shell) ?? null),
-      }).catch((err) => reportPtyWriteError("deferredStartup", err));
+        formatStartupInputForPty(sessionSnapshot.startupCmd, normalizeShellKey(sessionSnapshot.shell) ?? null),
+      ).catch((err) => reportPtyWriteError("deferredStartup", err));
     };
     if (initialTerminalOutput) {
       terminal.write(initialTerminalOutput, () => {
@@ -1113,7 +1048,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
           if (matched) {
             markAttentionInputHandled();
             const newlineData = isCodexSession() ? "\x1b\r" : "\n";
-            invoke("pty_write", { sessionId, data: newlineData }).catch((err) => reportPtyWriteError("newline", err));
+            terminalProcessManager.write(sessionId, newlineData).catch((err) => reportPtyWriteError("newline", err));
           }
           return false;
         }
@@ -1177,7 +1112,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
         const sendInterrupt = () => {
           markAttentionInputHandled();
           inputSelection.clearInputSelectionState();
-          invoke("pty_write", { sessionId, data: "\x03" }).catch((err) => reportPtyWriteError("interrupt", err));
+          terminalProcessManager.write(sessionId, "\x03").catch((err) => reportPtyWriteError("interrupt", err));
         };
         const isMacCopy = isMacSelectAll && e.metaKey && !e.ctrlKey;
         const isPlainCtrlC = e.ctrlKey && !e.metaKey;
@@ -1266,9 +1201,11 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     if (useTerminalStore.getState().daemonAttachPendingSessionIds.has(sessionId)) {
       void ptyOutput.ready.then(async () => {
         if (terminalRef.current !== terminal) return;
-        const attach = await invoke<PtyAttachResult>("pty_attach", { sessionId });
+        const attach = await terminalProcessManager.attach(sessionId);
         if (terminalRef.current !== terminal) return;
-        ptyOutput.completeReplay(attach.replayBase64);
+        applyProcessTraits(attach.processTraits);
+        const replayCompleted = await ptyOutput.completeReplay(attach.replay);
+        if (!replayCompleted) return;
         useTerminalStore.setState((state) => ({
           daemonAttachPendingSessionIds: new Set(
             [...state.daemonAttachPendingSessionIds].filter((id) => id !== sessionId)
@@ -1276,9 +1213,12 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
         }));
         if (!attach.attached) {
           toast.error(t("terminal.backgroundTasks.restoreFailed"));
+        } else if (attach.replayTruncated) {
+          toast.warning(t("terminal.backgroundTasks.replayTruncated"));
         }
-      }).catch((err) => {
-        ptyOutput.completeReplay("");
+      }).catch(async (err) => {
+        const replayCompleted = await ptyOutput.completeReplay([]);
+        if (!replayCompleted) return;
         useTerminalStore.setState((state) => ({
           daemonAttachPendingSessionIds: new Set(
             [...state.daemonAttachPendingSessionIds].filter((id) => id !== sessionId)
@@ -1292,10 +1232,8 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     displayDisposables.push({ dispose: detachViewport });
     displayDisposables.push(terminal.onRender((range) => {
       handleVisibilityRestoreRender(terminal, range);
-      resumeDeferredFitAfterWrite();
       scheduleTuiComposerBackgroundNormalization(terminal);
     }));
-    displayDisposables.push(terminal.onWriteParsed(resumeDeferredFitAfterWrite));
     const detachIme = attachIme(terminal, {
       forwarding: inputForwarding,
       osPlatformRef,
@@ -1320,8 +1258,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       cancelScheduledFit();
       try {
         const serializedOutput = serializeAddon.serialize();
-        const pendingOutput = getPendingOutputSnapshot();
-        useTerminalStore.getState().updateSessionTerminalSnapshot(sessionId, `${serializedOutput}${pendingOutput}`);
+        useTerminalStore.getState().updateSessionTerminalSnapshot(sessionId, serializedOutput);
       } catch (err) {
         logError("Failed to snapshot terminal buffer before dispose", { sessionId, err });
       }
@@ -1426,7 +1363,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     closeContextMenu();
     if (!terminal) return;
     useTerminalStore.getState().markAttentionInputHandled(sessionId);
-    invoke("pty_write", { sessionId, data: "\x0c" }).catch((err) => reportPtyWriteError("clear", err));
+    terminalProcessManager.write(sessionId, "\x0c").catch((err) => reportPtyWriteError("clear", err));
     terminal.focus();
   };
 
@@ -1458,7 +1395,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       } as CSSProperties)
     : ({ "--terminal-font-family": effectiveFontFamily, backgroundColor } as CSSProperties);
   const visibilityRestoreStarting = isVisible && !isVisibleRef.current;
-  const terminalContainerStyle: CSSProperties | undefined = inactiveReplayPending || visibilityRestorePending || visibilityRestoreStarting
+  const terminalContainerStyle: CSSProperties | undefined = visibilityRestorePending || visibilityRestoreStarting
     ? { visibility: "hidden" }
     : undefined;
 

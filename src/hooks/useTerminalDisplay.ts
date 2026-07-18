@@ -1,21 +1,18 @@
 import { useRef, type RefObject } from "react";
-import type { ITheme, Terminal } from "@xterm/xterm";
+import type { IMarker, ITheme, Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { refreshTerminalViewport } from "../lib/terminalVisibility";
 import { isLightTerminalTheme } from "../lib/terminalThemes";
-import { debugConsoleWarn } from "../lib/debugConsole";
-import { logError, logInfo, logWarn } from "../lib/logger";
+import { logError, logWarn } from "../lib/logger";
 import { markTerminalSnapshotDirty } from "../lib/sessionSnapshotPersistence";
+import { TerminalResizeDebouncer } from "../terminal/browser/TerminalResizeDebouncer";
 import {
-  clampTerminalGridSize,
-  LatestTerminalGridResizeScheduler,
-  LatestTerminalPtyResizeQueue,
-  TerminalFitTaskScheduler,
-  type TerminalGridSize,
-} from "../lib/terminalResizeCoordinator";
+  terminalProcessManager,
+  type TerminalOutputDelivery,
+} from "../terminal/core/TerminalProcessManager";
+import type { TerminalBinaryFrame } from "../terminal/transport/PtyHostSocket";
 import {
   TERMINAL_FONT_SIZE_MAX,
   TERMINAL_FONT_SIZE_MIN,
@@ -23,58 +20,44 @@ import {
 } from "../stores/settingsStore";
 import { useTerminalStore } from "../stores/terminalStore";
 
+const MIN_TERMINAL_COLS = 40;
+const MIN_TERMINAL_ROWS = 8;
 const HIDDEN_WEBGL_DISPOSE_DELAY_MS = 10_000;
-const TUI_GRID_RESIZE_INTERVAL_MS = 34;
-const TUI_RESIZE_URGENT_OUTPUT_WINDOW_MS = 120;
-const TUI_ATOMIC_WRITE_BUDGET = 256 * 1024;
-const TUI_RESIZE_SNAPSHOT_SAFETY_MS = 240;
-const ACTIVE_WRITE_FRAME_BUDGET = 64 * 1024;
-const ACTIVE_WRITE_QUEUE_MAX_CHARS = 16 * 1024 * 1024;
-const ACTIVE_WRITE_QUEUE_LOG_INTERVAL_MS = 2000;
-const INACTIVE_BUFFER_MIN_CHARS = 256 * 1024;
-const INACTIVE_BUFFER_MAX_CHARS = 8 * 1024 * 1024;
-const INACTIVE_BUFFER_CHARS_PER_SCROLLBACK_ROW = 256;
 
 type NormalizeTerminalOutput = (text: string) => string;
 type TransformTerminalOutput = (text: string) => string;
 type AfterTerminalWrite = (terminal: Terminal) => void;
 
-interface ActiveWriteQueueItem {
+interface PendingTerminalWrite {
   text: string;
-  inactiveReplay: boolean;
+  charCount: number;
+  commit: ((charCount: number) => void) | null;
+  replay: boolean;
+  replayBatchEnd: boolean;
+  cols: number;
+  rows: number;
+  reset: boolean;
 }
 
-interface TuiResizeSnapshotState {
+interface PendingViewportRestore {
+  marker: IMarker;
   terminal: Terminal;
-  screen: HTMLElement;
-  previousVisibility: string;
-  overlay: HTMLElement;
 }
-
-const getInactiveBufferLimit = (scrollbackRows: number) => Math.min(
-  INACTIVE_BUFFER_MAX_CHARS,
-  Math.max(INACTIVE_BUFFER_MIN_CHARS, scrollbackRows * INACTIVE_BUFFER_CHARS_PER_SCROLLBACK_ROW)
-);
 
 interface UseTerminalDisplayOptions {
   sessionId: string;
   containerRef: RefObject<HTMLDivElement | null>;
   terminalRef: RefObject<Terminal | null>;
   fitAddonRef: RefObject<FitAddon | null>;
-  minimumGridRef: RefObject<TerminalGridSize>;
   isVisibleRef: RefObject<boolean>;
   isComposingRef: RefObject<boolean>;
   lowMemoryMode: boolean;
-  terminalScrollbackRows: number;
-  preferDomRenderer: boolean;
-  shouldCoordinateTuiResize: (terminal: Terminal) => boolean;
   disableHardwareAcceleration: boolean;
   linuxGraphicsDisableWebgl: boolean;
   isTransparentRef: RefObject<boolean>;
   normalizeOutputRef: RefObject<NormalizeTerminalOutput>;
   transformOutputRef: RefObject<TransformTerminalOutput>;
   afterTerminalWriteRef: RefObject<AfterTerminalWrite | null>;
-  onInactiveReplayPendingChange: (pending: boolean) => void;
   onPtyOutputListenError: (err: unknown) => void;
   onViewportRefreshNeeded?: () => void;
 }
@@ -85,27 +68,18 @@ export interface UseTerminalDisplayResult {
   clearHiddenWebglDisposeTimer: () => void;
   clearWebglTextureAtlas: () => void;
   disposeWebglRenderer: () => boolean;
-  scheduleFit: (force?: boolean) => void;
+  scheduleFit: (immediateResize?: boolean, forceViewportRefresh?: boolean) => void;
   scheduleViewportRefresh: () => void;
   markViewportRefreshNeeded: () => void;
-  enqueueActiveWrite: (text: string, inactiveReplay?: boolean) => void;
-  getOutputRestorePlanState: () => {
-    inactiveBufferLength: number;
-    activeWriteQueueLength: number;
-    activeWriteRafScheduled: boolean;
-  };
-  flushInactiveBufferForReplay: () => void;
-  resumeActiveWriteQueue: () => void;
-  getPendingOutputSnapshot: () => string;
+  enqueueActiveWrite: (text: string, onCommitted?: () => void) => void;
   attachPtyOutput: (options?: { waitForReplay?: boolean }) => {
     ready: Promise<void>;
-    completeReplay: (replayBase64: string) => void;
+    completeReplay: (replay: TerminalBinaryFrame[]) => Promise<boolean>;
     dispose: () => void;
   };
   attachViewport: (terminal: Terminal) => () => void;
   resetOutputState: () => void;
   cancelScheduledFit: () => void;
-  resumeDeferredFitAfterWrite: () => void;
   resetViewportRefreshState: () => void;
 }
 
@@ -114,56 +88,62 @@ export function useTerminalDisplay({
   containerRef,
   terminalRef,
   fitAddonRef,
-  minimumGridRef,
   isVisibleRef,
   isComposingRef,
   lowMemoryMode,
-  terminalScrollbackRows,
-  preferDomRenderer,
-  shouldCoordinateTuiResize,
   disableHardwareAcceleration,
   linuxGraphicsDisableWebgl,
   isTransparentRef,
   normalizeOutputRef,
   transformOutputRef,
   afterTerminalWriteRef,
-  onInactiveReplayPendingChange,
   onPtyOutputListenError,
   onViewportRefreshNeeded,
 }: UseTerminalDisplayOptions): UseTerminalDisplayResult {
   const webglAddonRef = useRef<WebglAddon | null>(null);
   const webglDisposeTimerRef = useRef<number | null>(null);
   const webglContextLostRef = useRef(false);
-  const fitRunnerRef = useRef<(force: boolean) => void>(() => {});
-  const fitSchedulerRef = useRef<TerminalFitTaskScheduler | null>(null);
-  const fitMicrotaskSequenceRef = useRef(0);
-  const cancelledFitMicrotasksRef = useRef<Set<number>>(new Set());
-  const tuiGridResizeSchedulerRef = useRef<LatestTerminalGridResizeScheduler | null>(null);
-  const tuiResizeUrgentOutputUntilRef = useRef(0);
-  const tuiResizeSnapshotRef = useRef<TuiResizeSnapshotState | null>(null);
-  const tuiResizeSnapshotRevealRafRef = useRef<number | null>(null);
-  const tuiResizeSnapshotSafetyTimerRef = useRef<number | null>(null);
-  const lastFitContainerHeightRef = useRef<number | null>(null);
-  const synchronizedOutputFitDeferredRef = useRef(false);
-  const synchronizedOutputForcePendingRef = useRef(false);
+  const fitRafRef = useRef<number | null>(null);
   const needsViewportRefreshRef = useRef(false);
-  const inactiveBufferLimitRef = useRef(getInactiveBufferLimit(terminalScrollbackRows));
-  const inactiveBufferRef = useRef<string[]>([]);
-  const inactiveBufferSizeRef = useRef(0);
-  const activeWriteQueueRef = useRef<ActiveWriteQueueItem[]>([]);
-  const activeWriteQueueSizeRef = useRef(0);
-  const activeWriteQueueLastDropLogAtRef = useRef(0);
-  const activeWriteRafRef = useRef<number | null>(null);
-  const activeWritePendingCallbacksRef = useRef(0);
-  const inactiveReplayStickToBottomRef = useRef(false);
-  const inactiveReplayPendingWritesRef = useRef(0);
-  const inactiveReplayPendingRef = useRef(false);
-  const ptyPendingChunksRef = useRef<string[]>([]);
+  const ptyPendingChunksRef = useRef<PendingTerminalWrite[]>([]);
   const ptyWriteRafIdRef = useRef<number | null>(null);
+  const ptyWriteInProgressRef = useRef(false);
   const ptyUnlistenRef = useRef<UnlistenFn | null>(null);
   const lastObservedSizeRef = useRef<{ width: number; height: number } | null>(null);
+  const resizeDebouncerRef = useRef<TerminalResizeDebouncer | null>(null);
+  const viewportRestoreRafRef = useRef<number | null>(null);
+  const pendingViewportRestoreRef = useRef<PendingViewportRestore | null>(null);
+  const forwardPtyResizeRef = useRef(true);
 
-  inactiveBufferLimitRef.current = getInactiveBufferLimit(terminalScrollbackRows);
+  const cancelPendingViewportRestore = () => {
+    if (viewportRestoreRafRef.current !== null) {
+      cancelAnimationFrame(viewportRestoreRafRef.current);
+      viewportRestoreRafRef.current = null;
+    }
+    const pending = pendingViewportRestoreRef.current;
+    pendingViewportRestoreRef.current = null;
+    if (pending && !pending.marker.isDisposed) pending.marker.dispose();
+  };
+
+  const scheduleViewportRestore = (terminal: Terminal, marker: IMarker) => {
+    const pending = { terminal, marker };
+    pendingViewportRestoreRef.current = pending;
+    viewportRestoreRafRef.current = requestAnimationFrame(() => {
+      if (pendingViewportRestoreRef.current !== pending) return;
+      viewportRestoreRafRef.current = requestAnimationFrame(() => {
+        viewportRestoreRafRef.current = null;
+        if (pendingViewportRestoreRef.current !== pending) return;
+        pendingViewportRestoreRef.current = null;
+        try {
+          if (terminalRef.current === terminal && !marker.isDisposed) {
+            terminal.scrollToLine(marker.line);
+          }
+        } finally {
+          if (!marker.isDisposed) marker.dispose();
+        }
+      });
+    });
+  };
 
   const clearHiddenWebglDisposeTimer = () => {
     if (webglDisposeTimerRef.current === null) return;
@@ -179,8 +159,7 @@ export function useTerminalDisplay({
   };
 
   const canUseWebglRenderer = (theme: ITheme) => (
-    !preferDomRenderer
-    && !disableHardwareAcceleration
+    !disableHardwareAcceleration
     && !linuxGraphicsDisableWebgl
     && !webglContextLostRef.current
     && !isTransparentRef.current
@@ -233,357 +212,119 @@ export function useTerminalDisplay({
     webglAddonRef.current?.clearTextureAtlas();
   };
 
-  const clearTuiResizeSnapshotRevealSchedule = () => {
-    if (tuiResizeSnapshotRevealRafRef.current !== null) {
-      cancelAnimationFrame(tuiResizeSnapshotRevealRafRef.current);
-      tuiResizeSnapshotRevealRafRef.current = null;
-    }
-    if (tuiResizeSnapshotSafetyTimerRef.current !== null) {
-      window.clearTimeout(tuiResizeSnapshotSafetyTimerRef.current);
-      tuiResizeSnapshotSafetyTimerRef.current = null;
-    }
-  };
-
-  const revealTuiResizeSnapshot = () => {
-    clearTuiResizeSnapshotRevealSchedule();
-    const snapshot = tuiResizeSnapshotRef.current;
-    tuiResizeSnapshotRef.current = null;
-    if (!snapshot) return;
-    snapshot.screen.style.visibility = snapshot.previousVisibility;
-    snapshot.overlay.remove();
-  };
-
-  const scheduleTuiResizeSnapshotReveal = () => {
-    if (!tuiResizeSnapshotRef.current || tuiResizeSnapshotRevealRafRef.current !== null) return;
-    tuiResizeSnapshotRevealRafRef.current = requestAnimationFrame(() => {
-      tuiResizeSnapshotRevealRafRef.current = null;
-      revealTuiResizeSnapshot();
-    });
-  };
-
-  const beginTuiResizeSnapshot = (terminal: Terminal) => {
-    const existing = tuiResizeSnapshotRef.current;
-    if (existing?.terminal === terminal) {
-      clearTuiResizeSnapshotRevealSchedule();
-      tuiResizeSnapshotSafetyTimerRef.current = window.setTimeout(
-        revealTuiResizeSnapshot,
-        TUI_RESIZE_SNAPSHOT_SAFETY_MS,
-      );
-      return;
-    }
-    if (existing) revealTuiResizeSnapshot();
-
-    const root = terminal.element;
-    const screen = root?.querySelector<HTMLElement>(".xterm-screen");
-    if (!root || !screen) return;
-    const rootRect = root.getBoundingClientRect();
-    const screenRect = screen.getBoundingClientRect();
-    const overlay = screen.cloneNode(true) as HTMLElement;
-    overlay.classList.add("ui-terminal-resize-snapshot");
-    overlay.setAttribute("aria-hidden", "true");
-    Object.assign(overlay.style, {
-      position: "absolute",
-      left: `${screenRect.left - rootRect.left}px`,
-      top: `${screenRect.top - rootRect.top}px`,
-      width: `${screenRect.width}px`,
-      height: `${screenRect.height}px`,
-      overflow: "hidden",
-      pointerEvents: "none",
-      zIndex: "20",
-    });
-    const previousVisibility = screen.style.visibility;
-    screen.style.visibility = "hidden";
-    root.appendChild(overlay);
-    tuiResizeSnapshotRef.current = { terminal, screen, previousVisibility, overlay };
-    tuiResizeSnapshotSafetyTimerRef.current = window.setTimeout(
-      revealTuiResizeSnapshot,
-      TUI_RESIZE_SNAPSHOT_SAFETY_MS,
-    );
-  };
-
-  const setInactiveReplayPendingVisible = (pending: boolean) => {
-    if (inactiveReplayPendingRef.current === pending) return;
-    inactiveReplayPendingRef.current = pending;
-    onInactiveReplayPendingChange(pending);
-  };
-
-  const hasQueuedInactiveReplay = () => activeWriteQueueRef.current.some((item) => item.inactiveReplay);
-
-  const finishInactiveReplayIfReady = (terminal: Terminal) => {
-    if (!inactiveReplayStickToBottomRef.current) return;
-    if (
-      hasQueuedInactiveReplay()
-      || inactiveReplayPendingWritesRef.current > 0
-    ) {
-      return;
-    }
-    inactiveReplayStickToBottomRef.current = false;
-    terminal.scrollToBottom();
-    setInactiveReplayPendingVisible(false);
-  };
-
-  const flushActiveWriteQueue = () => {
-    activeWriteRafRef.current = null;
-    if (!isVisibleRef.current || activeWriteQueueRef.current.length === 0) {
-      if (!isVisibleRef.current && activeWriteQueueRef.current.length > 0 && useSettingsStore.getState().debugMode) {
-        logInfo("[terminal-visibility] active write flush deferred while hidden", {
-          sessionId,
-          queuedChars: activeWriteQueueSizeRef.current,
-          queuedChunks: activeWriteQueueRef.current.length,
-        });
-      }
-      return;
-    }
+  const enqueueActiveWrite = (text: string, onCommitted?: () => void) => {
+    if (!text) return;
     const terminal = terminalRef.current;
     if (!terminal) return;
-
-    const writeTerminalChunk = (chunk: string, inactiveReplay: boolean) => {
-      activeWritePendingCallbacksRef.current += 1;
-      if (inactiveReplay) inactiveReplayPendingWritesRef.current += 1;
-      terminal.write(chunk, () => {
-        activeWritePendingCallbacksRef.current = Math.max(0, activeWritePendingCallbacksRef.current - 1);
-        if (inactiveReplay) {
-          inactiveReplayPendingWritesRef.current = Math.max(0, inactiveReplayPendingWritesRef.current - 1);
-        }
-        if (terminalRef.current !== terminal) return;
-        if (inactiveReplay) terminal.scrollToBottom();
-        afterTerminalWriteRef.current?.(terminal);
-        if (inactiveReplay) finishInactiveReplayIfReady(terminal);
-        if (
-          activeWritePendingCallbacksRef.current === 0
-          && activeWriteQueueRef.current.length === 0
-        ) {
-          scheduleTuiResizeSnapshotReveal();
-        }
-      });
-    };
-
-    let budget = ACTIVE_WRITE_FRAME_BUDGET;
-    while (budget > 0 && activeWriteQueueRef.current.length > 0) {
-      const item = activeWriteQueueRef.current[0];
-      const chunk = item.text;
-      if (chunk.length <= budget) {
-        writeTerminalChunk(chunk, item.inactiveReplay);
-        activeWriteQueueRef.current.shift();
-        activeWriteQueueSizeRef.current = Math.max(0, activeWriteQueueSizeRef.current - chunk.length);
-        budget -= chunk.length;
-        continue;
-      }
-      writeTerminalChunk(chunk.slice(0, budget), item.inactiveReplay);
-      activeWriteQueueRef.current[0] = { ...item, text: chunk.slice(budget) };
-      activeWriteQueueSizeRef.current = Math.max(0, activeWriteQueueSizeRef.current - budget);
-      budget = 0;
-    }
-
-    if (activeWriteQueueRef.current.length > 0) {
-      activeWriteRafRef.current = requestAnimationFrame(flushActiveWriteQueue);
-    } else {
-      finishInactiveReplayIfReady(terminal);
-    }
-  };
-
-  const flushActiveWriteQueueSynchronously = () => {
-    if (!isVisibleRef.current || activeWriteQueueRef.current.length === 0) return false;
-    const terminal = terminalRef.current;
-    const core = (
-      terminal as typeof terminal & {
-        _core?: {
-          writeSync?: (data: string | Uint8Array, maxSubsequentCalls?: number) => void;
-        };
-      }
-    )?._core;
-    if (!terminal || !core?.writeSync) return false;
-
-    if (activeWriteRafRef.current !== null) {
-      cancelAnimationFrame(activeWriteRafRef.current);
-      activeWriteRafRef.current = null;
-    }
-
-    let budget = TUI_ATOMIC_WRITE_BUDGET;
-    while (budget > 0 && activeWriteQueueRef.current.length > 0) {
-      const item = activeWriteQueueRef.current[0];
-      const chunk = item.text.length <= budget ? item.text : item.text.slice(0, budget);
-      if (item.inactiveReplay) inactiveReplayPendingWritesRef.current += 1;
-      core.writeSync.call(core, chunk);
-      activeWriteQueueSizeRef.current = Math.max(0, activeWriteQueueSizeRef.current - chunk.length);
-      if (item.text.length <= budget) {
-        activeWriteQueueRef.current.shift();
-      } else {
-        activeWriteQueueRef.current[0] = { ...item, text: item.text.slice(budget) };
-      }
-      if (item.inactiveReplay) {
-        inactiveReplayPendingWritesRef.current = Math.max(0, inactiveReplayPendingWritesRef.current - 1);
-        terminal.scrollToBottom();
-      }
+    terminal.write(transformOutputRef.current(text), () => {
+      if (terminalRef.current !== terminal) return;
       afterTerminalWriteRef.current?.(terminal);
-      budget -= chunk.length;
-    }
-
-    if (activeWriteQueueRef.current.length > 0) {
-      activeWriteRafRef.current = requestAnimationFrame(flushActiveWriteQueue);
-    } else {
-      finishInactiveReplayIfReady(terminal);
-      if (activeWritePendingCallbacksRef.current === 0) {
-        scheduleTuiResizeSnapshotReveal();
-      }
-    }
-    return true;
+      onCommitted?.();
+    });
   };
-
-  const enqueueActiveWrite = (text: string, inactiveReplay = false, synchronous = false) => {
-    if (!text) return;
-    let nextText = transformOutputRef.current(text);
-    let droppedChars = 0;
-    if (nextText.length >= ACTIVE_WRITE_QUEUE_MAX_CHARS) {
-      droppedChars += activeWriteQueueSizeRef.current + nextText.length - ACTIVE_WRITE_QUEUE_MAX_CHARS;
-      nextText = nextText.slice(-ACTIVE_WRITE_QUEUE_MAX_CHARS);
-      activeWriteQueueRef.current = [];
-      activeWriteQueueSizeRef.current = 0;
-    }
-    activeWriteQueueRef.current.push({ text: nextText, inactiveReplay });
-    activeWriteQueueSizeRef.current += nextText.length;
-    while (activeWriteQueueSizeRef.current > ACTIVE_WRITE_QUEUE_MAX_CHARS && activeWriteQueueRef.current.length > 0) {
-      const overflow = activeWriteQueueSizeRef.current - ACTIVE_WRITE_QUEUE_MAX_CHARS;
-      const head = activeWriteQueueRef.current[0];
-      if (!head || head.text.length <= overflow) {
-        const removed = activeWriteQueueRef.current.shift();
-        const removedLength = removed?.text.length ?? 0;
-        activeWriteQueueSizeRef.current -= removedLength;
-        droppedChars += removedLength;
-        continue;
-      }
-      activeWriteQueueRef.current[0] = { ...head, text: head.text.slice(overflow) };
-      activeWriteQueueSizeRef.current -= overflow;
-      droppedChars += overflow;
-    }
-    if (droppedChars > 0) {
-      const now = Date.now();
-      if (now - activeWriteQueueLastDropLogAtRef.current >= ACTIVE_WRITE_QUEUE_LOG_INTERVAL_MS) {
-        activeWriteQueueLastDropLogAtRef.current = now;
-        debugConsoleWarn("[oom-diagnostics:webview]", {
-          area: "xterm",
-          phase: "activeWriteQueueTrim",
-          sessionId,
-          droppedChars,
-          queuedChars: activeWriteQueueSizeRef.current,
-          maxQueuedChars: ACTIVE_WRITE_QUEUE_MAX_CHARS,
-          thresholdExceeded: true,
-        });
-      }
-    }
-    if (synchronous && flushActiveWriteQueueSynchronously()) return;
-    if (activeWriteRafRef.current === null) {
-      activeWriteRafRef.current = requestAnimationFrame(flushActiveWriteQueue);
-    }
-  };
-
-  const stashInactiveText = (text: string) => {
-    if (!text) return;
-    const maxBufferChars = inactiveBufferLimitRef.current;
-    if (text.length >= maxBufferChars) {
-      const suffix = text.slice(-maxBufferChars);
-      inactiveBufferRef.current = [suffix];
-      inactiveBufferSizeRef.current = suffix.length;
-      return;
-    }
-
-    inactiveBufferRef.current.push(text);
-    inactiveBufferSizeRef.current += text.length;
-    while (inactiveBufferSizeRef.current > maxBufferChars && inactiveBufferRef.current.length > 0) {
-      const overflow = inactiveBufferSizeRef.current - maxBufferChars;
-      const head = inactiveBufferRef.current[0];
-      if (!head || head.length <= overflow) {
-        const removed = inactiveBufferRef.current.shift();
-        if (removed) inactiveBufferSizeRef.current -= removed.length;
-        continue;
-      }
-      inactiveBufferRef.current[0] = head.slice(overflow);
-      inactiveBufferSizeRef.current -= overflow;
-    }
-  };
-
-  const getOutputRestorePlanState = () => ({
-    inactiveBufferLength: inactiveBufferRef.current.length,
-    activeWriteQueueLength: activeWriteQueueRef.current.length,
-    activeWriteRafScheduled: activeWriteRafRef.current !== null,
-  });
-
-  const flushInactiveBufferForReplay = () => {
-    const terminal = terminalRef.current;
-    if (!terminal || inactiveBufferRef.current.length === 0) return;
-    const combined = inactiveBufferRef.current.join("");
-    inactiveBufferRef.current = [];
-    inactiveBufferSizeRef.current = 0;
-    inactiveReplayStickToBottomRef.current = true;
-    inactiveReplayPendingWritesRef.current = 0;
-    setInactiveReplayPendingVisible(true);
-    terminal.scrollToBottom();
-    enqueueActiveWrite(combined, true);
-  };
-
-  const resumeActiveWriteQueue = () => {
-    if (activeWriteRafRef.current !== null) return;
-    activeWriteRafRef.current = requestAnimationFrame(flushActiveWriteQueue);
-  };
-
-  const getPendingOutputSnapshot = () => [
-    ...activeWriteQueueRef.current.map((item) => item.text),
-    ...ptyPendingChunksRef.current,
-    ...inactiveBufferRef.current,
-  ].join("");
 
   const attachPtyOutput = (options: { waitForReplay?: boolean } = {}) => {
     const textDecoder = new TextDecoder("utf-8");
     let cancelled = false;
     let waitingForReplay = options.waitForReplay === true;
-    const bufferedLivePayloads: string[] = [];
-    const flushPendingWrites = (synchronous = false) => {
-      ptyWriteRafIdRef.current = null;
-      if (cancelled || ptyPendingChunksRef.current.length === 0) return;
-      const combined = ptyPendingChunksRef.current.length === 1 ? ptyPendingChunksRef.current[0] : ptyPendingChunksRef.current.join("");
-      ptyPendingChunksRef.current = [];
-      if (isVisibleRef.current) {
-        enqueueActiveWrite(combined, false, synchronous);
-      } else {
-        stashInactiveText(combined);
-      }
+    const bufferedLivePayloads: TerminalOutputDelivery[] = [];
+    const finishReplayBatch = () => {
+      forwardPtyResizeRef.current = true;
+      fitWhenStable(true);
     };
-    const queuePayload = (payload: string, markSnapshotDirty: boolean) => {
-      const binaryString = atob(payload);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i += 1) {
-        bytes[i] = binaryString.charCodeAt(i);
+    const schedulePendingWrite = () => {
+      if (
+        cancelled
+        || ptyWriteInProgressRef.current
+        || ptyWriteRafIdRef.current !== null
+        || ptyPendingChunksRef.current.length === 0
+      ) {
+        return;
       }
-      const text = normalizeOutputRef.current(textDecoder.decode(bytes, { stream: true }));
-      if (!text) return;
+      ptyWriteRafIdRef.current = requestAnimationFrame(flushPendingWrites);
+    };
+    const flushPendingWrites = () => {
+      ptyWriteRafIdRef.current = null;
+      if (cancelled || ptyWriteInProgressRef.current) return;
+      const terminal = terminalRef.current;
+      if (!terminal) return;
+      const first = ptyPendingChunksRef.current.shift();
+      if (!first) return;
+      const pending = [first];
+      if (!first.replay && !first.reset) {
+        while (
+          ptyPendingChunksRef.current[0]
+          && !ptyPendingChunksRef.current[0].replay
+          && !ptyPendingChunksRef.current[0].reset
+        ) {
+          pending.push(ptyPendingChunksRef.current.shift()!);
+        }
+      } else {
+        forwardPtyResizeRef.current = false;
+        if (
+          first.cols > 0
+          && first.rows > 0
+          && (terminal.cols !== first.cols || terminal.rows !== first.rows)
+        ) {
+          terminal.resize(first.cols, first.rows);
+        }
+      }
+      const combined = pending.map((chunk) => chunk.text).join("");
+      const commitPending = () => {
+        pending.forEach((chunk) => chunk.commit?.(chunk.charCount));
+        if (first.replay && first.replayBatchEnd) finishReplayBatch();
+      };
+      if (first.reset) {
+        terminal.reset();
+        commitPending();
+        schedulePendingWrite();
+        return;
+      }
+      if (!combined) {
+        commitPending();
+        schedulePendingWrite();
+        return;
+      }
+      ptyWriteInProgressRef.current = true;
+      terminal.write(transformOutputRef.current(combined), () => {
+        ptyWriteInProgressRef.current = false;
+        if (cancelled || terminalRef.current !== terminal) return;
+        afterTerminalWriteRef.current?.(terminal);
+        commitPending();
+        schedulePendingWrite();
+      });
+    };
+    const queuePayload = (delivery: TerminalOutputDelivery, markSnapshotDirty: boolean) => {
+      const payload = delivery.frame;
+      const rawText = textDecoder.decode(payload.data, { stream: true });
+      const text = normalizeOutputRef.current(rawText);
+      if (!text && payload.kind !== "replay" && payload.kind !== "reset") {
+        delivery.commit(rawText.length);
+        return;
+      }
       if (markSnapshotDirty) {
         markTerminalSnapshotDirty(sessionId);
         useTerminalStore.getState().recordPtyOutputActivity(sessionId);
       }
-      if (isVisibleRef.current) {
-        ptyPendingChunksRef.current.push(text);
-        if (performance.now() <= tuiResizeUrgentOutputUntilRef.current) {
-          if (ptyWriteRafIdRef.current !== null) {
-            cancelAnimationFrame(ptyWriteRafIdRef.current);
-            ptyWriteRafIdRef.current = null;
-          }
-          flushPendingWrites(true);
-          return;
-        }
-        if (ptyWriteRafIdRef.current === null) {
-          ptyWriteRafIdRef.current = requestAnimationFrame(() => flushPendingWrites());
-        }
-      } else {
-        stashInactiveText(text);
-      }
+      ptyPendingChunksRef.current.push({
+        text,
+        charCount: rawText.length,
+        commit: delivery.commit,
+        replay: payload.kind === "replay",
+        replayBatchEnd: payload.replayBatchEnd === true,
+        cols: payload.cols,
+        rows: payload.rows,
+        reset: payload.kind === "reset",
+      });
+      schedulePendingWrite();
     };
-    const ready = listen<string>(`pty-output-${sessionId}`, (event) => {
+    const ready = terminalProcessManager.subscribeOutput(sessionId, (delivery) => {
       if (cancelled) return;
       if (waitingForReplay) {
-        bufferedLivePayloads.push(event.payload);
+        bufferedLivePayloads.push(delivery);
         return;
       }
-      queuePayload(event.payload, true);
+      queuePayload(delivery, true);
     }).then((fn) => {
       if (cancelled) {
         fn();
@@ -593,20 +334,50 @@ export function useTerminalDisplay({
     });
     void ready.catch(onPtyOutputListenError);
 
-    const completeReplay = (replayBase64: string) => {
-      if (cancelled || !waitingForReplay) return;
-      if (replayBase64) queuePayload(replayBase64, false);
+    const completeReplay = async (replay: TerminalBinaryFrame[]) => {
+      if (cancelled || !waitingForReplay) return false;
+      const terminal = terminalRef.current;
+      if (!terminal) return false;
+      forwardPtyResizeRef.current = false;
+      try {
+        for (const entry of replay) {
+          if (cancelled || terminalRef.current !== terminal) return false;
+          if (entry.cols > 0 && entry.rows > 0 && (terminal.cols !== entry.cols || terminal.rows !== entry.rows)) {
+            terminal.resize(entry.cols, entry.rows);
+          }
+          const text = normalizeOutputRef.current(textDecoder.decode(entry.data, { stream: true }));
+          if (!text) {
+            terminalProcessManager.acknowledgeOutput(sessionId, entry.sequence, 0);
+            continue;
+          }
+          await new Promise<void>((resolve) => {
+            terminal.write(transformOutputRef.current(text), () => {
+              if (terminalRef.current === terminal) {
+                afterTerminalWriteRef.current?.(terminal);
+                terminalProcessManager.acknowledgeOutput(sessionId, entry.sequence, 0);
+              }
+              resolve();
+            });
+          });
+        }
+      } finally {
+        forwardPtyResizeRef.current = true;
+      }
+      fitWhenStable(true);
       waitingForReplay = false;
-      bufferedLivePayloads.splice(0).forEach((payload) => queuePayload(payload, true));
+      bufferedLivePayloads.splice(0).forEach((delivery) => queuePayload(delivery, true));
+      return true;
     };
     const dispose = () => {
       cancelled = true;
       bufferedLivePayloads.length = 0;
+      forwardPtyResizeRef.current = true;
       if (ptyWriteRafIdRef.current !== null) {
         cancelAnimationFrame(ptyWriteRafIdRef.current);
         ptyWriteRafIdRef.current = null;
       }
       ptyPendingChunksRef.current = [];
+      ptyWriteInProgressRef.current = false;
       ptyUnlistenRef.current?.();
       ptyUnlistenRef.current = null;
     };
@@ -616,15 +387,20 @@ export function useTerminalDisplay({
   const attachViewport = (terminal: Terminal) => {
     const container = containerRef.current;
     if (!container) return () => {};
-    const ptyResizeQueue = new LatestTerminalPtyResizeQueue(
-      ({ cols, rows }) => invoke("pty_resize", { sessionId, cols, rows }),
-      (err, { cols, rows }) => {
-        logError("PTY resize failed in terminal display", { sessionId, cols, rows, err });
-      },
-    );
     const resizeDisposable = terminal.onResize(({ cols, rows }) => {
-      if (cols < minimumGridRef.current.cols || rows < minimumGridRef.current.rows) return;
-      ptyResizeQueue.enqueue({ cols, rows });
+      if (!forwardPtyResizeRef.current) return;
+      if (cols < MIN_TERMINAL_COLS || rows < MIN_TERMINAL_ROWS) return;
+      const pixelWidth = terminal.dimensions?.css.canvas.width;
+      const pixelHeight = terminal.dimensions?.css.canvas.height;
+      terminalProcessManager.resize(
+        sessionId,
+        cols,
+        rows,
+        pixelWidth ? Math.round(pixelWidth) : undefined,
+        pixelHeight ? Math.round(pixelHeight) : undefined,
+      ).catch((err) => {
+        logError("PTY resize failed in terminal display", { sessionId, cols, rows, err });
+      });
     });
     const wheelListenerOptions = { passive: false, capture: true } as const;
     const onWheel = (event: WheelEvent) => {
@@ -656,145 +432,99 @@ export function useTerminalDisplay({
     resizeObserver.observe(container);
     return () => {
       resizeDisposable.dispose();
-      ptyResizeQueue.dispose();
       container.removeEventListener("wheel", onWheel, wheelListenerOptions);
       resizeObserver.disconnect();
+      resizeDebouncerRef.current?.dispose();
+      resizeDebouncerRef.current = null;
+      cancelPendingViewportRestore();
     };
   };
 
   const resetOutputState = () => {
-    if (activeWriteRafRef.current !== null) {
-      cancelAnimationFrame(activeWriteRafRef.current);
-      activeWriteRafRef.current = null;
-    }
     if (ptyWriteRafIdRef.current !== null) {
       cancelAnimationFrame(ptyWriteRafIdRef.current);
       ptyWriteRafIdRef.current = null;
     }
     ptyPendingChunksRef.current = [];
-    activeWriteQueueRef.current = [];
-    activeWriteQueueSizeRef.current = 0;
-    activeWritePendingCallbacksRef.current = 0;
-    inactiveReplayStickToBottomRef.current = false;
-    inactiveReplayPendingWritesRef.current = 0;
-    inactiveReplayPendingRef.current = false;
-    inactiveBufferRef.current = [];
-    inactiveBufferSizeRef.current = 0;
-    onInactiveReplayPendingChange(false);
+    ptyWriteInProgressRef.current = false;
+    forwardPtyResizeRef.current = true;
   };
 
-  const getTuiGridResizeScheduler = () => {
-    if (!tuiGridResizeSchedulerRef.current) {
-      tuiGridResizeSchedulerRef.current = new LatestTerminalGridResizeScheduler((size) => {
+  const resizeTerminal = (terminal: Terminal, cols: number, rows: number) => {
+    if (terminal.cols === cols && terminal.rows === rows) return;
+    cancelPendingViewportRestore();
+    const buffer = terminal.buffer.active;
+    // Horizontal reflow changes physical row indexes; a marker follows the logical viewport line.
+    const viewportMarker = (
+      cols !== terminal.cols
+      && buffer.type === "normal"
+      && buffer.viewportY < buffer.baseY
+    )
+      ? terminal.registerMarker(buffer.viewportY - buffer.baseY - buffer.cursorY)
+      : undefined;
+    terminal.resize(cols, rows);
+    if (viewportMarker) scheduleViewportRestore(terminal, viewportMarker);
+  };
+
+  const getResizeDebouncer = () => {
+    let debouncer = resizeDebouncerRef.current;
+    if (debouncer) return debouncer;
+    debouncer = new TerminalResizeDebouncer(
+      () => isVisibleRef.current,
+      () => terminalRef.current,
+      (cols, rows) => {
         const terminal = terminalRef.current;
-        if (!terminal || (terminal.cols === size.cols && terminal.rows === size.rows)) return;
-        if (shouldCoordinateTuiResize(terminal)) {
-          tuiResizeUrgentOutputUntilRef.current = performance.now() + TUI_RESIZE_URGENT_OUTPUT_WINDOW_MS;
-          if (size.cols < terminal.cols) beginTuiResizeSnapshot(terminal);
-        }
-        terminal.resize(size.cols, size.rows);
-      });
-    }
-    return tuiGridResizeSchedulerRef.current;
+        if (terminal) resizeTerminal(terminal, cols, rows);
+      },
+      (cols) => {
+        const terminal = terminalRef.current;
+        if (terminal) resizeTerminal(terminal, cols, terminal.rows);
+      },
+      (rows) => {
+        const terminal = terminalRef.current;
+        if (terminal) resizeTerminal(terminal, terminal.cols, rows);
+      },
+    );
+    resizeDebouncerRef.current = debouncer;
+    return debouncer;
   };
 
-  const fitWhenStable = (force = false) => {
+  const fitWhenStable = (immediateResize = false, forceViewportRefresh = immediateResize) => {
     const container = containerRef.current;
     const fitAddon = fitAddonRef.current;
     const terminal = terminalRef.current;
     if (!container || !fitAddon || !terminal) return;
-    if (!force && (!isVisibleRef.current || isComposingRef.current)) return;
+    if (!immediateResize && (!isVisibleRef.current || isComposingRef.current)) return;
     if (container.offsetWidth <= 0 || container.offsetHeight <= 0) return;
-    if (terminal.modes.synchronizedOutputMode) {
-      synchronizedOutputFitDeferredRef.current = true;
-      synchronizedOutputForcePendingRef.current ||= force;
-      return;
-    }
 
-    const containerHeight = container.getBoundingClientRect().height;
-    const previousContainerHeight = lastFitContainerHeightRef.current;
-    const containerHeightChanged = previousContainerHeight === null
-      || Math.abs(previousContainerHeight - containerHeight) >= 1;
-    lastFitContainerHeightRef.current = containerHeight;
-    const proposed = fitAddon.proposeDimensions();
-    if (!proposed) return;
-    const beforeRows = terminal.rows;
-    const clamped = clampTerminalGridSize(proposed, minimumGridRef.current);
-    const dims = {
-      cols: clamped.cols,
-      rows: !force && !containerHeightChanged
-        ? Math.max(minimumGridRef.current.rows, beforeRows)
-        : clamped.rows,
-    };
-    getTuiGridResizeScheduler().schedule(
-      dims,
-      !force && shouldCoordinateTuiResize(terminal) ? TUI_GRID_RESIZE_INTERVAL_MS : 0,
-    );
-    if (force || needsViewportRefreshRef.current) {
+    const dims = fitAddon.proposeDimensions();
+    if (!dims || dims.cols < MIN_TERMINAL_COLS || dims.rows < MIN_TERMINAL_ROWS) return;
+    getResizeDebouncer().resize(dims.cols, dims.rows, immediateResize);
+    if (forceViewportRefresh || needsViewportRefreshRef.current) {
       refreshTerminalViewport(terminal);
       needsViewportRefreshRef.current = false;
     }
   };
-  fitRunnerRef.current = fitWhenStable;
 
-  const getFitScheduler = () => {
-    if (!fitSchedulerRef.current) {
-      fitSchedulerRef.current = new TerminalFitTaskScheduler(
-        (force) => fitRunnerRef.current(force),
-        (callback) => {
-          const terminal = terminalRef.current;
-          if (webglAddonRef.current || (terminal && shouldCoordinateTuiResize(terminal))) {
-            return window.setTimeout(callback, 0);
-          }
-
-          const taskId = -(fitMicrotaskSequenceRef.current + 1);
-          fitMicrotaskSequenceRef.current += 1;
-          queueMicrotask(() => {
-            if (cancelledFitMicrotasksRef.current.delete(taskId)) return;
-            callback();
-          });
-          return taskId;
-        },
-        (taskId) => {
-          if (taskId < 0) {
-            cancelledFitMicrotasksRef.current.add(taskId);
-          } else {
-            window.clearTimeout(taskId);
-          }
-        },
-      );
+  const cancelFitRequest = () => {
+    if (fitRafRef.current !== null) {
+      cancelAnimationFrame(fitRafRef.current);
+      fitRafRef.current = null;
     }
-    return fitSchedulerRef.current;
+    resizeDebouncerRef.current?.cancel();
   };
 
   const cancelScheduledFit = () => {
-    fitSchedulerRef.current?.cancel();
-    tuiGridResizeSchedulerRef.current?.dispose();
-    tuiGridResizeSchedulerRef.current = null;
-    lastFitContainerHeightRef.current = null;
-    synchronizedOutputFitDeferredRef.current = false;
-    synchronizedOutputForcePendingRef.current = false;
-    tuiResizeUrgentOutputUntilRef.current = 0;
-    revealTuiResizeSnapshot();
+    cancelFitRequest();
+    cancelPendingViewportRestore();
   };
 
-  const scheduleFit = (force = false) => {
-    getFitScheduler().schedule(force);
-  };
-
-  const resumeDeferredFitAfterWrite = () => {
-    const terminal = terminalRef.current;
-    if (
-      !terminal
-      || !synchronizedOutputFitDeferredRef.current
-      || terminal.modes.synchronizedOutputMode
-    ) {
-      return;
-    }
-    const force = synchronizedOutputForcePendingRef.current;
-    synchronizedOutputFitDeferredRef.current = false;
-    synchronizedOutputForcePendingRef.current = false;
-    scheduleFit(force);
+  const scheduleFit = (immediateResize = false, forceViewportRefresh = immediateResize) => {
+    cancelFitRequest();
+    fitRafRef.current = requestAnimationFrame(() => {
+      fitRafRef.current = null;
+      fitWhenStable(immediateResize, forceViewportRefresh);
+    });
   };
 
   const scheduleViewportRefresh = () => {
@@ -826,15 +556,10 @@ export function useTerminalDisplay({
     scheduleViewportRefresh,
     markViewportRefreshNeeded,
     enqueueActiveWrite,
-    getOutputRestorePlanState,
-    flushInactiveBufferForReplay,
-    resumeActiveWriteQueue,
-    getPendingOutputSnapshot,
     attachPtyOutput,
     attachViewport,
     resetOutputState,
     cancelScheduledFit,
-    resumeDeferredFitAfterWrite,
     resetViewportRefreshState,
   };
 }
