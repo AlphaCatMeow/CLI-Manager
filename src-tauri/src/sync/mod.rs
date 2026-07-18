@@ -1,6 +1,6 @@
 use crate::webdav::{WebDavClient, WebDavConfig};
 use chrono::Local;
-use log::{error, info};
+use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::path::Path;
@@ -74,30 +74,30 @@ pub async fn upload(
     data: SyncData,
     remote_dir: Option<String>,
 ) -> Result<(), String> {
-    info!("Creating WebDAV client for {}", config.url);
+    debug!("Creating WebDAV client for {}", config.url);
     let client = WebDavClient::new(config);
     let dir = sanitize_remote_dir(remote_dir.as_deref());
     let devices_dir = format!("{}/devices", dir);
     let remote_path = device_sync_file_path(&dir, &data.device_name)?;
 
     // ensure_directory 会递归创建所有父目录（backups → backups/cli-mgr → backups/cli-mgr/devices）
-    info!("Ensuring directory exists: {}", devices_dir);
+    debug!("Ensuring directory exists: {}", devices_dir);
     client.ensure_directory(&devices_dir).await.map_err(|e| {
         error!("Failed to ensure directory: {}", e);
         e.message
     })?;
 
-    info!("Serializing sync data");
+    debug!("Serializing sync data");
     let json =
         serde_json::to_vec(&data).map_err(|e| format!("Failed to serialize sync data: {}", e))?;
 
-    info!("Uploading to {}", remote_path);
+    debug!("Uploading to {}", remote_path);
     client.upload(&remote_path, json).await.map_err(|e| {
         error!("Upload failed: {}", e);
         e.message
     })?;
 
-    info!("Upload completed successfully");
+    debug!("Upload completed successfully");
     Ok(())
 }
 

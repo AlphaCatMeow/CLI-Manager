@@ -794,7 +794,7 @@ impl DaemonHost {
             }
             sessions.remove(&id);
             total -= bytes;
-            log::info!("daemon dropped exited session buffer to enforce cap: id={id}");
+            log::warn!("daemon dropped exited session buffer to enforce cap: id={id}");
         }
     }
 
@@ -1336,7 +1336,7 @@ impl DaemonServer {
                 },
             );
         }
-        log::info!("daemon client connected ({peer}, id={client_id})");
+        log::debug!("daemon client connected ({peer}, id={client_id})");
 
         while let Some(line) = read_line_bounded(&mut reader) {
             match decode_client_frame(&line) {
@@ -1364,7 +1364,7 @@ impl DaemonServer {
                 client.writer.close();
             }
         }
-        log::info!("daemon client disconnected ({peer}, id={client_id})");
+        log::debug!("daemon client disconnected ({peer}, id={client_id})");
     }
 
     fn handle_websocket_connection(self: Arc<Self>, stream: TcpStream) {
@@ -1425,7 +1425,7 @@ impl DaemonServer {
                 },
             );
         }
-        log::info!("daemon websocket client connected ({peer}, id={client_id})");
+        log::debug!("daemon websocket client connected ({peer}, id={client_id})");
 
         while let Some(message) = read_websocket_client_message(&mut socket) {
             match message {
@@ -1459,7 +1459,7 @@ impl DaemonServer {
                 client.writer.close();
             }
         }
-        log::info!("daemon websocket client disconnected ({peer}, id={client_id})");
+        log::debug!("daemon websocket client disconnected ({peer}, id={client_id})");
     }
 
     fn handle_binary_frame(

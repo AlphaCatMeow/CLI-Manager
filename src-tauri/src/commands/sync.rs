@@ -4,7 +4,7 @@ use crate::sync::{
 };
 use crate::webdav::WebDavConfig;
 use chrono::{DateTime, Utc};
-use log::{error, info};
+use log::{debug, error, info};
 
 #[derive(serde::Deserialize)]
 pub struct SyncConfigInput {
@@ -91,7 +91,7 @@ pub async fn sync_upload(
     data: SyncData,
     remote_dir: Option<String>,
 ) -> Result<SyncUploadResult, String> {
-    info!("Starting sync_upload to {}", config.url);
+    debug!("Starting sync_upload to {}", config.url);
 
     let webdav_config = WebDavConfig {
         url: config.url,
@@ -100,7 +100,7 @@ pub async fn sync_upload(
     };
 
     let timestamp = data.last_modified.clone();
-    info!(
+    debug!(
         "Sync data: {} projects, {} groups, {} templates",
         data.data.projects.len(),
         data.data.groups.len(),
@@ -175,7 +175,7 @@ pub struct LocalExportResult {
 
 #[tauri::command]
 pub async fn sync_local_export(dir: String, data: SyncData) -> Result<LocalExportResult, String> {
-    info!("Starting sync_local_export to {}", dir);
+    debug!("Starting sync_local_export to {}", dir);
     let path = tokio::task::spawn_blocking(move || local_export(&dir, &data))
         .await
         .map_err(|e| format!("内部错误: {}", e))??;
@@ -188,7 +188,7 @@ pub async fn sync_local_export(dir: String, data: SyncData) -> Result<LocalExpor
 
 #[tauri::command]
 pub async fn sync_local_import(zip_path: String) -> Result<SyncData, String> {
-    info!("Starting sync_local_import from {}", zip_path);
+    debug!("Starting sync_local_import from {}", zip_path);
     let data = tokio::task::spawn_blocking(move || local_import(&zip_path))
         .await
         .map_err(|e| format!("内部错误: {}", e))??;

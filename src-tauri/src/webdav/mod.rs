@@ -1,4 +1,4 @@
-use log::{debug, error, info};
+use log::{debug, error};
 use reqwest::{header, Client, Method, Response};
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
@@ -160,7 +160,7 @@ impl WebDavClient {
             remote_path.trim_start_matches('/')
         );
 
-        info!("Uploading to WebDAV: {} ({} bytes)", url, data.len());
+        debug!("Uploading to WebDAV: {} ({} bytes)", url, data.len());
 
         let response = self
             .client
@@ -192,7 +192,7 @@ impl WebDavClient {
             remote_path.trim_start_matches('/')
         );
 
-        info!("Creating WebDAV directory: {}", url);
+        debug!("Creating WebDAV directory: {}", url);
 
         let response = self
             .client
@@ -212,7 +212,7 @@ impl WebDavClient {
         debug!("MKCOL response status: {}", status);
 
         if status.is_success() || status.as_u16() == 405 {
-            info!("Directory created or already exists");
+            debug!("Directory created or already exists");
             Ok(())
         } else {
             error!("Failed to create directory: {}", status);
@@ -225,25 +225,25 @@ impl WebDavClient {
 
     pub async fn ensure_directory(&self, remote_path: &str) -> Result<(), WebDavError> {
         let path = remote_path.trim_matches('/');
-        info!("Ensuring directory path: {}", path);
+        debug!("Ensuring directory path: {}", path);
 
         // Try to create the directory directly first
         // If it fails (parent doesn't exist), create parents recursively
         if self.exists(path).await? {
-            info!("Directory already exists: {}", path);
+            debug!("Directory already exists: {}", path);
             return Ok(());
         }
 
         // Try direct MKCOL
         match self.mkdir(path).await {
             Ok(()) => {
-                info!("Directory created directly: {}", path);
+                debug!("Directory created directly: {}", path);
                 return Ok(());
             }
             Err(e) => {
                 // If 409 Conflict, parent might not exist, try creating parents
                 if e.status_code == Some(409) {
-                    info!("Parent directory may not exist, creating recursively");
+                    debug!("Parent directory may not exist, creating recursively");
                 } else {
                     return Err(e);
                 }
@@ -261,7 +261,7 @@ impl WebDavClient {
             current.push_str(part);
 
             if !self.exists(&current).await? {
-                info!("Creating directory: {}", current);
+                debug!("Creating directory: {}", current);
                 self.mkdir(&current).await?;
             }
         }
