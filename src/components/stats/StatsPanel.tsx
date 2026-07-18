@@ -911,43 +911,87 @@ function ProjectRanking({ items, selectedProjectKey, onSelectProject, onClearPro
 
 function SourceBreakdown({ items }: { items: HistoryStatsSourceItem[] }) {
   const { language, t } = useI18n();
-  const data = useMemo(
-    () =>
-      items.map((item) => ({
-        ...item,
-        input: item.input_tokens,
-        output: item.output_tokens,
-        cache: item.cache_creation_tokens + item.cache_read_tokens,
-      })),
-    [items]
-  );
+  const tokenParts = useMemo(() => [
+    { key: "input", label: t("termStats.input"), color: HISTORY_SERIES_COLORS.input },
+    { key: "output", label: t("termStats.output"), color: HISTORY_SERIES_COLORS.output },
+    { key: "cacheCreation", label: t("termStats.cacheWrite"), color: HISTORY_SERIES_COLORS.cacheCreation },
+    { key: "cacheRead", label: t("termStats.cacheHit"), color: HISTORY_SERIES_COLORS.cacheRead },
+  ], [t]);
+  const sourcePies = useMemo(() => {
+    return items.map((item) => {
+      const parts = [
+        { ...tokenParts[0], value: item.input_tokens },
+        { ...tokenParts[1], value: item.output_tokens },
+        { ...tokenParts[2], value: item.cache_creation_tokens },
+        { ...tokenParts[3], value: item.cache_read_tokens },
+      ];
+      return {
+        source: item.source,
+        total: parts.reduce((sum, part) => sum + part.value, 0),
+        chartParts: parts.filter((part) => part.value > 0),
+        parts,
+      };
+    }).filter((item) => item.total > 0);
+  }, [items, tokenParts]);
+
   return (
-    <section className="flex h-[320px] flex-col rounded-2xl border border-border/60 bg-bg-secondary p-4">
+    <section className="flex h-[420px] flex-col rounded-2xl border border-border/60 bg-bg-secondary p-4">
       <SectionHeading icon={Database} title={t("stats.sourceBreakdown")} hint="Claude / Codex" />
       <div className="min-h-0 flex-1">
-        {items.length === 0 ? (
+        {sourcePies.length === 0 ? (
           <EmptyBlock text={t("stats.sourceBreakdown.empty")} />
         ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-              <CartesianGrid stroke="var(--border)" strokeOpacity={0.42} vertical={false} />
-              <XAxis dataKey="source" tick={RECHARTS_AXIS_STYLE} tickLine={false} axisLine={{ stroke: "var(--border)" }} />
-              <YAxis tick={RECHARTS_AXIS_STYLE} tickLine={false} axisLine={false} tickFormatter={(value) => formatCompactCount(Number(value), language)} />
-              <Tooltip
-                cursor={RECHARTS_BAR_CURSOR}
-                contentStyle={RECHARTS_TOOLTIP_STYLE}
-                itemStyle={RECHARTS_TOOLTIP_ITEM_STYLE}
-                labelStyle={RECHARTS_TOOLTIP_LABEL_STYLE}
-                wrapperStyle={RECHARTS_TOOLTIP_WRAPPER_STYLE}
-                formatter={(value, name) => [`${formatCount(Number(value), language)} Token`, String(name)]}
-                labelFormatter={(label) => String(label)}
-              />
-              <Legend wrapperStyle={{ color: "var(--text-secondary)", fontSize: 11 }} />
-              <Bar dataKey="input" stackId="tokens" name={t("termStats.input")} fill={HISTORY_SERIES_COLORS.input} radius={[0, 0, 4, 4]} />
-              <Bar dataKey="output" stackId="tokens" name={t("termStats.output")} fill={HISTORY_SERIES_COLORS.output} />
-              <Bar dataKey="cache" stackId="tokens" name={`${t("termStats.cacheHit")} / ${t("termStats.cacheWrite")}`} fill={HISTORY_SERIES_COLORS.cacheRead} radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          <div className={`grid h-full gap-3 ${sourcePies.length === 1 ? "grid-cols-1" : "grid-cols-2"}`} role="group" aria-label={t("stats.sourceBreakdown")}>
+            {sourcePies.map((source) => (
+              <div key={source.source} className={`flex min-w-0 flex-col rounded-xl border border-border/50 bg-bg-tertiary/30 p-3 ${sourcePies.length === 1 ? "mx-auto w-full max-w-md" : ""}`}>
+                <div>
+                  <div className="flex items-center gap-1.5 text-[12px] font-semibold text-text-primary">
+                    <span className="inline-flex shrink-0 text-[#10a37f]" aria-hidden="true">
+                      <VendorIcon vendor={source.source === "codex" ? "openai" : "claude"} size={15} />
+                    </span>
+                    <span>{source.source === "codex" ? "Codex" : "Claude"}</span>
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-text-muted">{formatCompactCount(source.total, language)} Token</div>
+                </div>
+                <div className="h-[140px] shrink-0">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={source.chartParts} dataKey="value" nameKey="label" innerRadius={42} outerRadius={64} paddingAngle={1.5}>
+                        {source.chartParts.map((part) => <Cell key={part.key} fill={part.color} />)}
+                      </Pie>
+                      <Tooltip
+                        contentStyle={RECHARTS_TOOLTIP_STYLE}
+                        itemStyle={RECHARTS_TOOLTIP_ITEM_STYLE}
+                        labelStyle={RECHARTS_TOOLTIP_LABEL_STYLE}
+                        wrapperStyle={RECHARTS_TOOLTIP_WRAPPER_STYLE}
+                        formatter={(value, name) => [`${formatCount(Number(value), language)} Token`, String(name)]}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="flex flex-wrap justify-center gap-x-2.5 gap-y-1 text-[10px] text-text-secondary">
+                  {source.parts.map((part) => (
+                    <span key={part.key} className="inline-flex items-center gap-1">
+                      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: part.color }} />
+                      {part.label}
+                    </span>
+                  ))}
+                </div>
+                <div className="mt-2 min-h-0 space-y-1.5 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  {source.parts.map((part) => (
+                    <div key={part.key} className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 rounded-lg bg-bg-primary/60 px-2.5 py-1.5 text-[11px]">
+                      <span className="inline-flex min-w-0 items-center gap-1.5 truncate text-text-secondary">
+                        <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: part.color }} />
+                        {part.label}
+                      </span>
+                      <span className="font-medium tabular-nums text-text-primary">{formatCompactCount(part.value, language)}</span>
+                      <span className="w-11 text-right tabular-nums text-text-muted">{formatPercent((part.value / source.total) * 100)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </section>
@@ -1414,16 +1458,18 @@ export function StatsPanel({ open, onClose, onOpenSession }: StatsPanelProps) {
                   <ContextNote sourceLabel={sourceLabel} projectLabel={projectLabel} dateRangeLabel={dateRangeLabel} stats={stats} />
                   <DailyUsageTrendChart items={trendItems} granularity={statsGranularity} />
 
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-4 [&>*]:h-full">
-                    <ProjectRanking
-                      items={stats.project_ranking}
-                      selectedProjectKey={projectKey}
-                      onSelectProject={(nextProjectKey) => { setProjectPath(""); setProjectKey((prev) => (prev === nextProjectKey ? "" : nextProjectKey)); }}
-                      onClearProject={() => { setProjectPath(""); setProjectKey(""); }}
-                    />
-                    <ModelRankingChart items={stats.model_distribution} />
-                    <StatsHourlyActivityChart items={stats.hourly_activity} />
-                    <TokenCompositionStrip stats={stats} />
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-12 [&>*]:h-full [&>*]:min-w-0 [&>*>*]:h-full">
+                    <div className="2xl:col-span-3">
+                      <ProjectRanking
+                        items={stats.project_ranking}
+                        selectedProjectKey={projectKey}
+                        onSelectProject={(nextProjectKey) => { setProjectPath(""); setProjectKey((prev) => (prev === nextProjectKey ? "" : nextProjectKey)); }}
+                        onClearProject={() => { setProjectPath(""); setProjectKey(""); }}
+                      />
+                    </div>
+                    <div className="2xl:col-span-3"><ModelRankingChart items={stats.model_distribution} /></div>
+                    <div className="2xl:col-span-4"><StatsHourlyActivityChart items={stats.hourly_activity} /></div>
+                    <div className="2xl:col-span-2"><TokenCompositionStrip stats={stats} /></div>
                   </div>
 
                   <div className="grid grid-cols-1 gap-3 xl:grid-cols-2 [&>*]:h-full">

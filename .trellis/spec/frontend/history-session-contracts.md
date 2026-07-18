@@ -134,6 +134,70 @@ if (useProjectStore.getState().projects.length > 0) {
 }
 ```
 
+## Scenario: Resume History Session With Project CLI Arguments
+
+### 1. Scope / Trigger
+
+- Trigger: changing the history detail/list resume action, project matching, or resume command construction.
+
+### 2. Signatures
+
+- Project candidates: `findHistoryProjects(session, projects): Project[]`.
+- Command builder: `appendResumeCliArgs(baseCommand, source, project): string`.
+- Terminal creation keeps the existing `terminalStore.createSession(...)` contract.
+
+### 3. Contracts
+
+- Both the detail action and list context-menu action must enter the same resume flow.
+- Match maintained projects by history `cwd` first, then by `project_key`, and require the project's CLI type to match the history source.
+- One candidate resumes directly; multiple candidates require explicit selection; cancel creates no terminal.
+- The selected project supplies `cli_args`, provider overrides, environment variables, shell, and Worktree overrides.
+- Zero matching candidates must show all maintained projects plus a localized `Use New Window` option instead of stopping with an error.
+- `Use New Window` creates an unscoped internal terminal with the resolved history working directory as PTY `cwd`, then runs the bare resume command without project CLI arguments.
+- If no working directory can be resolved, stop with a localized error and create no terminal.
+
+### 4. Validation & Error Matrix
+
+- Invalid session ID or unsupported source -> localized error, no terminal.
+- Zero compatible project candidates -> show all projects plus `Use New Window`; cancel -> no terminal.
+- `Use New Window` + valid history working directory -> create an unscoped terminal in that directory, then run the resume command.
+- `Use New Window` + missing history working directory -> localized error, no terminal.
+- One compatible candidate -> create the terminal with its launch configuration.
+- Multiple compatible candidates -> show the searchable grouped picker; cancel -> no terminal.
+- Worktree match -> use the owning project configuration plus Worktree path/provider overrides.
+
+### 5. Good/Base/Bad Cases
+
+- Good: two Claude project records match one history directory; the user selects one and its `cli_args` appear after `claude --resume <id>`.
+- Base: one Codex project matches exactly and resumes without an extra prompt.
+- Bad: project lookup uses `find()` and silently chooses the first duplicate.
+- Bad: zero matching projects immediately produce an error without offering a manual project choice.
+- Bad: `Use New Window` starts in the application default directory and only then tries to recover the intended cwd.
+
+### 6. Tests Required
+
+- Run `npx tsc --noEmit`.
+- Manually verify detail and context-menu resume for Claude/Codex, one/multiple/no candidates, picker cancel, Local/WSL/Bash, and main project/Worktree.
+- Switch between `zh-CN` and `en-US` and verify picker, aria labels, and errors.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const project = projects.find(matchesHistoryProject);
+const command = appendResumeCliArgs(baseCommand, source, project);
+```
+
+#### Correct
+
+```typescript
+const candidates = findHistoryProjects(session, projects);
+if (candidates.length === 0) return openProjectPicker(projects, { allowNewWindow: true });
+if (candidates.length > 1) return openProjectPicker(candidates);
+return resumeWithProject(session, candidates[0]);
+```
+
 ## Scenario: History File Change Records
 
 ### 1. Scope / Trigger

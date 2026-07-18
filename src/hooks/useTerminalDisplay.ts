@@ -3,18 +3,25 @@ import type { ITheme, Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { refreshTerminalViewport } from "../lib/terminalVisibility";
 import { isLightTerminalTheme } from "../lib/terminalThemes";
 import { debugConsoleWarn } from "../lib/debugConsole";
-import { logInfo, logWarn } from "../lib/logger";
+import { logError, logInfo, logWarn } from "../lib/logger";
 import { markTerminalSnapshotDirty } from "../lib/sessionSnapshotPersistence";
 import {
   clampTerminalGridSize,
   LatestTerminalGridResizeScheduler,
+  LatestTerminalPtyResizeQueue,
   TerminalFitTaskScheduler,
   type TerminalGridSize,
 } from "../lib/terminalResizeCoordinator";
-import { useSettingsStore } from "../stores/settingsStore";
+import {
+  TERMINAL_FONT_SIZE_MAX,
+  TERMINAL_FONT_SIZE_MIN,
+  useSettingsStore,
+} from "../stores/settingsStore";
+import { useTerminalStore } from "../stores/terminalStore";
 
 const HIDDEN_WEBGL_DISPOSE_DELAY_MS = 10_000;
 const TUI_GRID_RESIZE_INTERVAL_MS = 34;
@@ -90,7 +97,12 @@ export interface UseTerminalDisplayResult {
   flushInactiveBufferForReplay: () => void;
   resumeActiveWriteQueue: () => void;
   getPendingOutputSnapshot: () => string;
-  attachPtyOutput: () => () => void;
+  attachPtyOutput: (options?: { waitForReplay?: boolean }) => {
+    ready: Promise<void>;
+    completeReplay: (replayBase64: string) => void;
+    dispose: () => void;
+  };
+  attachViewport: (terminal: Terminal) => () => void;
   resetOutputState: () => void;
   cancelScheduledFit: () => void;
   resumeDeferredFitAfterWrite: () => void;
@@ -149,6 +161,7 @@ export function useTerminalDisplay({
   const ptyPendingChunksRef = useRef<string[]>([]);
   const ptyWriteRafIdRef = useRef<number | null>(null);
   const ptyUnlistenRef = useRef<UnlistenFn | null>(null);
+  const lastObservedSizeRef = useRef<{ width: number; height: number } | null>(null);
 
   inactiveBufferLimitRef.current = getInactiveBufferLimit(terminalScrollbackRows);
 
@@ -242,9 +255,6 @@ export function useTerminalDisplay({
 
   const scheduleTuiResizeSnapshotReveal = () => {
     if (!tuiResizeSnapshotRef.current || tuiResizeSnapshotRevealRafRef.current !== null) return;
-    // xterm schedules its renderer while parsing the synchronous redraw. Our
-    // RAF is registered afterwards, so revealing here exposes the completed
-    // frame instead of the intermediate local reflow.
     tuiResizeSnapshotRevealRafRef.current = requestAnimationFrame(() => {
       tuiResizeSnapshotRevealRafRef.current = null;
       revealTuiResizeSnapshot();
@@ -254,13 +264,7 @@ export function useTerminalDisplay({
   const beginTuiResizeSnapshot = (terminal: Terminal) => {
     const existing = tuiResizeSnapshotRef.current;
     if (existing?.terminal === terminal) {
-      if (tuiResizeSnapshotRevealRafRef.current !== null) {
-        cancelAnimationFrame(tuiResizeSnapshotRevealRafRef.current);
-        tuiResizeSnapshotRevealRafRef.current = null;
-      }
-      if (tuiResizeSnapshotSafetyTimerRef.current !== null) {
-        window.clearTimeout(tuiResizeSnapshotSafetyTimerRef.current);
-      }
+      clearTuiResizeSnapshotRevealSchedule();
       tuiResizeSnapshotSafetyTimerRef.current = window.setTimeout(
         revealTuiResizeSnapshot,
         TUI_RESIZE_SNAPSHOT_SAFETY_MS,
@@ -528,9 +532,11 @@ export function useTerminalDisplay({
     ...inactiveBufferRef.current,
   ].join("");
 
-  const attachPtyOutput = () => {
+  const attachPtyOutput = (options: { waitForReplay?: boolean } = {}) => {
     const textDecoder = new TextDecoder("utf-8");
     let cancelled = false;
+    let waitingForReplay = options.waitForReplay === true;
+    const bufferedLivePayloads: string[] = [];
     const flushPendingWrites = (synchronous = false) => {
       ptyWriteRafIdRef.current = null;
       if (cancelled || ptyPendingChunksRef.current.length === 0) return;
@@ -542,16 +548,18 @@ export function useTerminalDisplay({
         stashInactiveText(combined);
       }
     };
-    void listen<string>(`pty-output-${sessionId}`, (event) => {
-      if (cancelled) return;
-      const binaryString = atob(event.payload);
+    const queuePayload = (payload: string, markSnapshotDirty: boolean) => {
+      const binaryString = atob(payload);
       const bytes = new Uint8Array(binaryString.length);
       for (let i = 0; i < binaryString.length; i += 1) {
         bytes[i] = binaryString.charCodeAt(i);
       }
       const text = normalizeOutputRef.current(textDecoder.decode(bytes, { stream: true }));
       if (!text) return;
-      markTerminalSnapshotDirty(sessionId);
+      if (markSnapshotDirty) {
+        markTerminalSnapshotDirty(sessionId);
+        useTerminalStore.getState().recordPtyOutputActivity(sessionId);
+      }
       if (isVisibleRef.current) {
         ptyPendingChunksRef.current.push(text);
         if (performance.now() <= tuiResizeUrgentOutputUntilRef.current) {
@@ -568,16 +576,32 @@ export function useTerminalDisplay({
       } else {
         stashInactiveText(text);
       }
+    };
+    const ready = listen<string>(`pty-output-${sessionId}`, (event) => {
+      if (cancelled) return;
+      if (waitingForReplay) {
+        bufferedLivePayloads.push(event.payload);
+        return;
+      }
+      queuePayload(event.payload, true);
     }).then((fn) => {
       if (cancelled) {
         fn();
       } else {
         ptyUnlistenRef.current = fn;
       }
-    }).catch(onPtyOutputListenError);
+    });
+    void ready.catch(onPtyOutputListenError);
 
-    return () => {
+    const completeReplay = (replayBase64: string) => {
+      if (cancelled || !waitingForReplay) return;
+      if (replayBase64) queuePayload(replayBase64, false);
+      waitingForReplay = false;
+      bufferedLivePayloads.splice(0).forEach((payload) => queuePayload(payload, true));
+    };
+    const dispose = () => {
       cancelled = true;
+      bufferedLivePayloads.length = 0;
       if (ptyWriteRafIdRef.current !== null) {
         cancelAnimationFrame(ptyWriteRafIdRef.current);
         ptyWriteRafIdRef.current = null;
@@ -585,6 +609,56 @@ export function useTerminalDisplay({
       ptyPendingChunksRef.current = [];
       ptyUnlistenRef.current?.();
       ptyUnlistenRef.current = null;
+    };
+    return { ready, completeReplay, dispose };
+  };
+
+  const attachViewport = (terminal: Terminal) => {
+    const container = containerRef.current;
+    if (!container) return () => {};
+    const ptyResizeQueue = new LatestTerminalPtyResizeQueue(
+      ({ cols, rows }) => invoke("pty_resize", { sessionId, cols, rows }),
+      (err, { cols, rows }) => {
+        logError("PTY resize failed in terminal display", { sessionId, cols, rows, err });
+      },
+    );
+    const resizeDisposable = terminal.onResize(({ cols, rows }) => {
+      if (cols < minimumGridRef.current.cols || rows < minimumGridRef.current.rows) return;
+      ptyResizeQueue.enqueue({ cols, rows });
+    });
+    const wheelListenerOptions = { passive: false, capture: true } as const;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const current = useSettingsStore.getState().fontSize;
+      const next = Math.min(
+        TERMINAL_FONT_SIZE_MAX,
+        Math.max(TERMINAL_FONT_SIZE_MIN, current + (event.deltaY > 0 ? -1 : 1)),
+      );
+      if (next !== current) {
+        void useSettingsStore.getState().update("fontSize", next);
+      }
+    };
+    const resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const width = Math.round(entry.contentRect.width);
+      const height = Math.round(entry.contentRect.height);
+      const lastSize = lastObservedSizeRef.current;
+      if (lastSize && Math.abs(lastSize.width - width) < 2 && Math.abs(lastSize.height - height) < 2) {
+        return;
+      }
+      lastObservedSizeRef.current = { width, height };
+      scheduleFit();
+    });
+    container.addEventListener("wheel", onWheel, wheelListenerOptions);
+    resizeObserver.observe(container);
+    return () => {
+      resizeDisposable.dispose();
+      ptyResizeQueue.dispose();
+      container.removeEventListener("wheel", onWheel, wheelListenerOptions);
+      resizeObserver.disconnect();
     };
   };
 
@@ -648,17 +722,10 @@ export function useTerminalDisplay({
     const clamped = clampTerminalGridSize(proposed, minimumGridRef.current);
     const dims = {
       cols: clamped.cols,
-      // A horizontal panel drag must not change rows while the measured height
-      // is stable. Only columns reflow as the pane becomes wider or narrower.
       rows: !force && !containerHeightChanged
         ? Math.max(minimumGridRef.current.rows, beforeRows)
         : clamped.rows,
     };
-    // A full-screen TUI must observe the same grid cadence as xterm. If local
-    // reflow runs every frame while SIGWINCH is slower, the display alternates
-    // between wrapped-down local rows and the application's next full redraw.
-    // Coordinate both through terminal.onResize at ~30Hz, latest-wins. Normal
-    // shell buffers still use interval 0 and therefore resize immediately.
     getTuiGridResizeScheduler().schedule(
       dims,
       !force && shouldCoordinateTuiResize(terminal) ? TUI_GRID_RESIZE_INTERVAL_MS : 0,
@@ -677,17 +744,9 @@ export function useTerminalDisplay({
         (callback) => {
           const terminal = terminalRef.current;
           if (webglAddonRef.current || (terminal && shouldCoordinateTuiResize(terminal))) {
-            // WebGL clears its backing canvas during resize. TUIs also need a
-            // complete frame before resize so SIGWINCH output gets the full next
-            // frame budget to replace local reflow before it can be painted.
             return window.setTimeout(callback, 0);
           }
 
-          // ResizeObserver runs after layout and before paint. The side panel
-          // already commits at most once per RAF, so a microtask both coalesces
-          // observers and fits the DOM renderer before that same frame paints.
-          // This removes the shrink-only frame where old wide rows are clipped
-          // first and then suddenly wrap downward.
           const taskId = -(fitMicrotaskSequenceRef.current + 1);
           fitMicrotaskSequenceRef.current += 1;
           queueMicrotask(() => {
@@ -772,6 +831,7 @@ export function useTerminalDisplay({
     resumeActiveWriteQueue,
     getPendingOutputSnapshot,
     attachPtyOutput,
+    attachViewport,
     resetOutputState,
     cancelScheduledFit,
     resumeDeferredFitAfterWrite,

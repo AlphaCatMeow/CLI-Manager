@@ -1,18 +1,36 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronLeft, ChevronRight, Coins, Database, ExternalLink, FileText, Layers3, RefreshCw, RotateCcw, Search } from "lucide-react";
+import { toast } from "sonner";
+import {
+  CalendarDays,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Coins,
+  Copy,
+  Database,
+  ExternalLink,
+  FileText,
+  Layers3,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  SlidersHorizontal,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Select } from "@/components/ui/select";
 import type { RequestLogFilters, RequestLogPage, RequestLogSyncResult } from "../../lib/types";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useI18n, type AppLanguage } from "../../lib/i18n";
+import { VendorIcon } from "../VendorIcon";
 import { StatsDatePicker } from "./StatsDatePicker";
 
 const PAGE_SIZE = 20;
 
 type RequestLogSourceFilter = "all" | "claude" | "codex";
+type RequestLogDatePreset = "today" | "last7Days" | "last30Days";
 
 interface RequestLogDraftFilters {
   source: RequestLogSourceFilter;
@@ -46,6 +64,18 @@ function defaultFilters(): RequestLogDraftFilters {
     startDate: toDateInput(start),
     endDate: toDateInput(end),
   };
+}
+
+function datePresetRange(preset: RequestLogDatePreset): Pick<RequestLogDraftFilters, "startDate" | "endDate"> {
+  const end = new Date();
+  const days = preset === "today" ? 1 : preset === "last7Days" ? 7 : 30;
+  const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - days + 1);
+  return { startDate: toDateInput(start), endDate: toDateInput(end) };
+}
+
+function matchesDatePreset(filters: RequestLogDraftFilters, preset: RequestLogDatePreset): boolean {
+  const range = datePresetRange(preset);
+  return filters.startDate === range.startDate && filters.endDate === range.endDate;
 }
 
 function parseDate(value: string, endOfDay: boolean): number | null {
@@ -112,6 +142,14 @@ function sessionKey(source: string, sessionId: string, filePath: string): string
   return `${source}:${sessionId}:${filePath}`;
 }
 
+function outlierThreshold(values: number[]): number {
+  if (values.length < 4) return Number.POSITIVE_INFINITY;
+  const positiveValues = values.filter((value) => Number.isFinite(value) && value > 0);
+  if (positiveValues.length < 4) return Number.POSITIVE_INFINITY;
+  const average = positiveValues.reduce((sum, value) => sum + value, 0) / positiveValues.length;
+  return average * 2;
+}
+
 export function RequestLogsView({ onOpenSession }: RequestLogsViewProps) {
   const { language, t } = useI18n();
   const claudeConfigDir = useSettingsStore((state) => state.claudeHookConfigDir);
@@ -122,6 +160,7 @@ export function RequestLogsView({ onOpenSession }: RequestLogsViewProps) {
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const filters = useMemo(() => normalizeFilters(applied), [applied]);
   const draftFilters = useMemo(() => normalizeFilters(draft), [draft]);
   const invalidRange = hasInvalidDateRange(draftFilters);
@@ -140,6 +179,15 @@ export function RequestLogsView({ onOpenSession }: RequestLogsViewProps) {
 
   const result = query.data;
   const pageCount = Math.max(1, Math.ceil((result?.total ?? 0) / PAGE_SIZE));
+  const tokenOutlierThreshold = useMemo(
+    () => outlierThreshold(result?.data.map((item) => item.total_tokens) ?? []),
+    [result?.data],
+  );
+  const costOutlierThreshold = useMemo(
+    () => outlierThreshold(result?.data.map((item) => item.total_cost_usd) ?? []),
+    [result?.data],
+  );
+  const advancedFilterCount = Number(Boolean(draft.model.trim())) + Number(Boolean(draft.session.trim()));
 
   const applyFilters = () => {
     const next = normalizeFilters(draft);
@@ -153,6 +201,29 @@ export function RequestLogsView({ onOpenSession }: RequestLogsViewProps) {
     setDraft(next);
     setApplied(next);
     setPage(0);
+  };
+
+  const applyQuickFilter = (patch: Partial<RequestLogDraftFilters>) => {
+    setDraft((current) => ({ ...current, ...patch }));
+    setApplied((current) => ({ ...current, ...patch }));
+    setPage(0);
+  };
+
+  const selectDatePreset = (preset: RequestLogDatePreset) => {
+    setDraft((current) => ({ ...current, ...datePresetRange(preset) }));
+  };
+
+  const copySessionId = async (value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast.success(t("requestLogs.copySessionIdSuccess"));
+    } catch (error) {
+      toast.error(t("requestLogs.copySessionIdFailed"), { description: String(error) });
+    }
+  };
+
+  const openSession = (source: string, sessionId: string, filePath: string) => {
+    void onOpenSession(sessionKey(source, sessionId, filePath));
   };
 
   const syncAndRefresh = async () => {
@@ -179,66 +250,110 @@ export function RequestLogsView({ onOpenSession }: RequestLogsViewProps) {
   return (
     <div className="space-y-3">
       <Card className="border-border/70 bg-bg-secondary p-3">
-        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-[120px_minmax(120px,1fr)_minmax(120px,1fr)_minmax(140px,1fr)_132px_auto_132px_auto_auto_auto]">
-          <Select
-            value={draft.source}
-            onChange={(event) => setDraft((current) => ({ ...current, source: event.target.value as RequestLogSourceFilter }))}
-            className={controlClass}
-            aria-label={t("requestLogs.filter.source")}
-          >
-            <option value="all">{t("common.allSources")}</option>
-            <option value="claude">Claude</option>
-            <option value="codex">Codex</option>
-          </Select>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="w-full shrink-0 sm:w-[120px]">
+            <Select
+              value={draft.source}
+              onChange={(event) => setDraft((current) => ({ ...current, source: event.target.value as RequestLogSourceFilter }))}
+              className={controlClass}
+              aria-label={t("requestLogs.filter.source")}
+            >
+              <option value="all">{t("common.allSources")}</option>
+              <option value="claude">Claude</option>
+              <option value="codex">Codex</option>
+            </Select>
+          </div>
           <input
             value={draft.project}
             onChange={(event) => setDraft((current) => ({ ...current, project: event.target.value }))}
-            className={controlClass}
+            className={`${controlClass} min-w-[220px] flex-[1_1_300px] xl:max-w-[520px]`}
             placeholder={t("requestLogs.filter.project")}
             aria-label={t("requestLogs.filter.project")}
           />
-          <input
-            value={draft.model}
-            onChange={(event) => setDraft((current) => ({ ...current, model: event.target.value }))}
-            className={controlClass}
-            placeholder={t("requestLogs.filter.model")}
-            aria-label={t("requestLogs.filter.model")}
-          />
-          <input
-            value={draft.session}
-            onChange={(event) => setDraft((current) => ({ ...current, session: event.target.value }))}
-            className={controlClass}
-            placeholder={t("requestLogs.filter.session")}
-            aria-label={t("requestLogs.filter.session")}
-          />
-          <StatsDatePicker
-            mode="date"
-            value={draft.startDate}
-            onChange={(value) => setDraft((current) => ({ ...current, startDate: value }))}
-            className={controlClass}
-            ariaLabel={t("requestLogs.filter.startDate")}
-          />
-          <span className="flex items-center justify-center text-[11px] text-text-muted">{t("common.to")}</span>
-          <StatsDatePicker
-            mode="date"
-            value={draft.endDate}
-            onChange={(value) => setDraft((current) => ({ ...current, endDate: value }))}
-            className={controlClass}
-            ariaLabel={t("requestLogs.filter.endDate")}
-          />
-          <Button onClick={applyFilters} disabled={invalidRange} size="sm">
-            <Search size={13} />
-            {t("requestLogs.query")}
+          <div className="flex w-full min-w-[280px] items-center gap-1.5 sm:w-auto sm:flex-[0_0_310px]">
+            <StatsDatePicker
+              mode="date"
+              value={draft.startDate}
+              onChange={(value) => setDraft((current) => ({ ...current, startDate: value }))}
+              className={`${controlClass} min-w-0 flex-1`}
+              ariaLabel={t("requestLogs.filter.startDate")}
+            />
+            <span className="shrink-0 text-[11px] text-text-muted">{t("common.to")}</span>
+            <StatsDatePicker
+              mode="date"
+              value={draft.endDate}
+              onChange={(value) => setDraft((current) => ({ ...current, endDate: value }))}
+              className={`${controlClass} min-w-0 flex-1`}
+              ariaLabel={t("requestLogs.filter.endDate")}
+            />
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-border/60 bg-bg-tertiary/45 p-0.5" role="group" aria-label={t("requestLogs.datePreset.label")}>
+            <CalendarDays size={13} className="mx-1 text-text-muted" aria-hidden="true" />
+            {(["today", "last7Days", "last30Days"] as RequestLogDatePreset[]).map((preset) => {
+              const selected = matchesDatePreset(draft, preset);
+              return (
+                <Button
+                  key={preset}
+                  onClick={() => selectDatePreset(preset)}
+                  variant="ghost"
+                  size="sm"
+                  className={selected ? "h-7 bg-primary/10 px-2 text-primary" : "h-7 px-2 text-text-muted"}
+                  aria-pressed={selected}
+                >
+                  {t(`requestLogs.datePreset.${preset}`)}
+                </Button>
+              );
+            })}
+          </div>
+          <Button
+            onClick={() => setAdvancedOpen((current) => !current)}
+            variant="outline"
+            size="sm"
+            className="h-8 shrink-0 text-text-secondary"
+            aria-expanded={advancedOpen}
+          >
+            <SlidersHorizontal size={13} />
+            {advancedOpen ? t("requestLogs.filter.hideAdvanced") : t("requestLogs.filter.showAdvanced")}
+            {advancedFilterCount > 0 && (
+              <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-primary/10 px-1 text-[10px] text-primary">
+                {advancedFilterCount}
+              </span>
+            )}
+            <ChevronDown size={12} className={`transition-transform ${advancedOpen ? "rotate-180" : ""}`} />
           </Button>
-          <Button onClick={resetFilters} variant="outline" size="sm">
-            <RotateCcw size={13} />
-            {t("requestLogs.reset")}
-          </Button>
-          <Button onClick={() => void syncAndRefresh()} disabled={syncing} size="sm">
-            <RefreshCw size={13} className={syncing ? "animate-spin" : ""} />
-            {syncing ? t("requestLogs.syncing") : t("requestLogs.refresh")}
-          </Button>
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
+            <Button onClick={applyFilters} disabled={invalidRange} variant="default" size="sm">
+              <Search size={13} />
+              {t("requestLogs.query")}
+            </Button>
+            <Button onClick={resetFilters} variant="ghost" size="sm">
+              <RotateCcw size={13} />
+              {t("requestLogs.reset")}
+            </Button>
+            <Button onClick={() => void syncAndRefresh()} disabled={syncing} variant="outline" size="sm">
+              <RefreshCw size={13} className={syncing ? "animate-spin" : ""} />
+              {syncing ? t("requestLogs.syncing") : t("requestLogs.refresh")}
+            </Button>
+          </div>
         </div>
+        {advancedOpen && (
+          <div className="mt-2 grid grid-cols-1 gap-2 border-t border-border/60 pt-2 md:grid-cols-2">
+            <input
+              value={draft.model}
+              onChange={(event) => setDraft((current) => ({ ...current, model: event.target.value }))}
+              className={controlClass}
+              placeholder={t("requestLogs.filter.model")}
+              aria-label={t("requestLogs.filter.model")}
+            />
+            <input
+              value={draft.session}
+              onChange={(event) => setDraft((current) => ({ ...current, session: event.target.value }))}
+              className={controlClass}
+              placeholder={t("requestLogs.filter.session")}
+              aria-label={t("requestLogs.filter.session")}
+            />
+          </div>
+        )}
         {invalidRange && <div className="mt-2 text-[12px] text-danger" role="alert">{t("requestLogs.invalidRange")}</div>}
         {syncError && <div className="mt-2 text-[12px] text-danger" role="alert">{t("requestLogs.syncFailed", { error: syncError })}</div>}
       </Card>
@@ -252,9 +367,17 @@ export function RequestLogsView({ onOpenSession }: RequestLogsViewProps) {
         ].map((item) => {
           const Icon = item.icon;
           return (
-            <Card key={item.label} className="border-border bg-bg-secondary p-3 text-center shadow-sm">
-              <div className="flex items-center justify-center gap-2 text-[11px] font-medium text-text-muted"><Icon size={13} />{item.label}</div>
-              <div className="mt-1 text-[20px] font-semibold tracking-tight text-text-primary">{item.value}</div>
+            <Card
+              key={item.label}
+              className="flex min-w-0 items-center gap-2.5 border-border/70 bg-bg-secondary px-3 py-2.5 shadow-sm"
+            >
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Icon size={14} />
+              </span>
+              <div className="min-w-0">
+                <div className="truncate text-[10px] font-medium text-text-muted">{item.label}</div>
+                <div className="mt-0.5 truncate text-[17px] font-semibold tabular-nums tracking-tight text-text-primary">{item.value}</div>
+              </div>
             </Card>
           );
         })}
@@ -267,9 +390,9 @@ export function RequestLogsView({ onOpenSession }: RequestLogsViewProps) {
           <div className="p-8 text-center text-[12px] text-text-muted">{t("requestLogs.empty")}</div>
         )}
         {result && result.data.length > 0 && (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1080px] border-collapse text-center text-[12px]">
-              <thead className="bg-bg-tertiary text-[11px] font-semibold text-text-muted">
+          <div className="max-h-[calc(100vh-280px)] overflow-auto">
+            <table className="w-full min-w-[1120px] border-collapse text-center text-[12px]">
+              <thead className="sticky top-0 z-10 border-b border-border bg-bg-tertiary text-[11px] font-semibold text-text-muted">
                 <tr>
                   <th className="px-3 py-2.5">{t("requestLogs.column.time")}</th>
                   <th className="px-3 py-2.5">{t("requestLogs.column.source")}</th>
@@ -279,58 +402,146 @@ export function RequestLogsView({ onOpenSession }: RequestLogsViewProps) {
                   <th className="px-3 py-2.5">{t("requestLogs.column.output")}</th>
                   <th className="px-3 py-2.5">{t("requestLogs.column.cost")}</th>
                   <th className="px-3 py-2.5">{t("requestLogs.column.status")}</th>
-                  <th className="px-3 py-2.5">{t("requestLogs.column.action")}</th>
+                  <th className="sticky right-0 z-20 bg-bg-tertiary px-3 py-2.5 text-center">{t("requestLogs.column.action")}</th>
                 </tr>
               </thead>
               <tbody>
-                {result.data.map((item) => (
-                  <tr key={item.request_id} className="border-t border-border/70 hover:bg-bg-tertiary/60">
-                    <td className="whitespace-nowrap px-3 py-2.5 text-text-secondary">{formatDateTime(item.timestamp_ms, language)}</td>
-                    <td className="px-3 py-2.5">
-                      <span className="inline-flex rounded-full border border-border bg-bg-primary px-2 py-0.5 font-medium text-text-secondary">
-                        {item.source === "codex" ? t("requestLogs.source.codex") : t("requestLogs.source.claude")}
-                      </span>
-                    </td>
-                    <td className="max-w-[180px] truncate px-3 py-2.5 font-medium text-text-primary" title={item.model ?? undefined}>{item.model || "—"}</td>
-                    <td className="max-w-[260px] px-3 py-2.5">
-                      <div className="truncate font-medium text-text-primary" title={item.project_key}>{item.project_key || t("requestLogs.unknownProject")}</div>
-                      <div className="mt-0.5 truncate text-[10px] text-text-muted" title={item.session_id}>{item.session_id}</div>
-                    </td>
-                    <td className="px-3 py-2.5 font-medium text-text-primary">
-                      <div>{formatCompact(item.input_tokens, language)}</div>
-                      {(item.cache_read_tokens > 0 || item.cache_creation_tokens > 0) && (
-                        <div className="mt-0.5 text-[10px] font-normal text-text-muted">
+                {result.data.map((item, rowIndex) => {
+                  const tokenOutlier = item.total_tokens > tokenOutlierThreshold;
+                  const costOutlier = item.total_cost_usd > costOutlierThreshold;
+                  const sourceLabel = item.source === "codex" ? t("requestLogs.source.codex") : t("requestLogs.source.claude");
+                  return (
+                    <tr
+                      key={item.request_id}
+                      className={`group border-t border-border/70 odd:bg-bg-tertiary/20 transition-colors hover:bg-bg-tertiary/60 ${item.session_available ? "cursor-default" : ""}`}
+                      onDoubleClick={() => {
+                        if (item.session_available) openSession(item.source, item.session_id, item.file_path);
+                      }}
+                      title={item.session_available ? t("requestLogs.rowOpenHint") : undefined}
+                    >
+                      <td className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] tabular-nums text-text-secondary">
+                        {formatDateTime(item.timestamp_ms, language)}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            applyQuickFilter({ source: item.source });
+                          }}
+                          onDoubleClick={(event) => event.stopPropagation()}
+                          className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-border bg-bg-primary px-2 py-0.5 font-medium text-text-secondary transition-colors hover:border-primary/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                          title={t("requestLogs.applyQuickFilter", { value: sourceLabel })}
+                        >
+                          <VendorIcon vendor={item.source === "codex" ? "openai" : "claude"} size={13} />
+                          {sourceLabel}
+                        </button>
+                      </td>
+                      <td className="max-w-[180px] px-3 py-2.5">
+                        {item.model ? (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              applyQuickFilter({ model: item.model ?? "" });
+                            }}
+                            onDoubleClick={(event) => event.stopPropagation()}
+                            className="mx-auto block max-w-full cursor-pointer truncate font-medium text-text-primary transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                            title={t("requestLogs.applyQuickFilter", { value: item.model })}
+                          >
+                            {item.model}
+                          </button>
+                        ) : "—"}
+                      </td>
+                      <td className="max-w-[280px] px-3 py-2.5">
+                        {item.project_key ? (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              applyQuickFilter({ project: item.project_key });
+                            }}
+                            onDoubleClick={(event) => event.stopPropagation()}
+                            className="mx-auto block max-w-full cursor-pointer truncate font-medium text-text-primary transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                            title={t("requestLogs.applyQuickFilter", { value: item.project_key })}
+                          >
+                            {item.project_key}
+                          </button>
+                        ) : (
+                          <div className="truncate font-medium text-text-primary">{t("requestLogs.unknownProject")}</div>
+                        )}
+                        <div className="mt-0.5 truncate font-mono text-[10px] text-text-muted" title={item.session_id}>{item.session_id}</div>
+                      </td>
+                      <td
+                        className={`px-3 py-2.5 font-medium tabular-nums ${tokenOutlier ? "bg-warning/5 text-warning" : "text-text-primary"}`}
+                        title={tokenOutlier ? t("requestLogs.tokenOutlier") : undefined}
+                      >
+                        <div>{formatCompact(item.input_tokens, language)}</div>
+                        <div className="mt-0.5 whitespace-nowrap text-[10px] font-normal text-text-muted">
                           {t("requestLogs.cacheDetail", {
                             read: formatCompact(item.cache_read_tokens, language),
                             write: formatCompact(item.cache_creation_tokens, language),
                           })}
                         </div>
-                      )}
-                    </td>
-                    <td className="px-3 py-2.5 font-medium text-text-primary">{formatCompact(item.output_tokens, language)}</td>
-                    <td className="px-3 py-2.5 font-medium text-text-primary">
-                      {item.unpriced_tokens > 0 ? <span className="text-warning">{t("requestLogs.unpriced")}</span> : formatCost(item.total_cost_usd)}
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <span className="inline-flex rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary">{t("requestLogs.status.recorded")}</span>
-                    </td>
-                    <td className="px-3 py-2.5">
-                      {item.session_available ? (
-                        <Button
-                          onClick={() => void onOpenSession(sessionKey(item.source, item.session_id, item.file_path))}
-                          variant="ghost"
-                          size="sm"
-                          title={t("requestLogs.openSession")}
-                        >
-                          <ExternalLink size={12} />
-                          {t("requestLogs.openSession")}
-                        </Button>
-                      ) : (
-                        <span className="text-text-muted">—</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td
+                        className={`px-3 py-2.5 font-medium tabular-nums ${tokenOutlier ? "text-warning" : "text-text-primary"}`}
+                        title={tokenOutlier ? t("requestLogs.tokenOutlier") : undefined}
+                      >
+                        {formatCompact(item.output_tokens, language)}
+                      </td>
+                      <td
+                        className={`px-3 py-2.5 font-medium tabular-nums ${costOutlier || item.unpriced_tokens > 0 ? "bg-warning/5 text-warning" : "text-text-primary"}`}
+                        title={costOutlier ? t("requestLogs.costOutlier") : undefined}
+                      >
+                        <div>{formatCost(item.total_cost_usd)}</div>
+                        {item.unpriced_tokens > 0 && (
+                          <div className="mt-0.5 whitespace-nowrap text-[10px] font-normal">
+                            {t("requestLogs.unpricedWithTokens", { count: formatCompact(item.unpriced_tokens, language) })}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 text-text-muted">
+                        <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                          <span className="h-1.5 w-1.5 rounded-full bg-primary/55" aria-hidden="true" />
+                          {t("requestLogs.status.recorded")}
+                        </span>
+                      </td>
+                      <td className={`sticky right-0 px-3 py-2.5 text-center transition-colors group-hover:bg-bg-tertiary ${rowIndex % 2 === 0 ? "bg-bg-tertiary/20" : "bg-bg-secondary"}`}>
+                        <div className="flex items-center justify-center gap-1">
+                          <Button
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void copySessionId(item.session_id);
+                            }}
+                            onDoubleClick={(event) => event.stopPropagation()}
+                            variant="ghost"
+                            size="icon"
+                            title={t("requestLogs.copySessionId")}
+                            aria-label={t("requestLogs.copySessionId")}
+                          >
+                            <Copy size={13} />
+                          </Button>
+                          {item.session_available && (
+                            <Button
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openSession(item.source, item.session_id, item.file_path);
+                              }}
+                              onDoubleClick={(event) => event.stopPropagation()}
+                              variant="ghost"
+                              size="icon"
+                              title={t("requestLogs.openSession")}
+                              aria-label={t("requestLogs.openSession")}
+                            >
+                              <ExternalLink size={13} />
+                            </Button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

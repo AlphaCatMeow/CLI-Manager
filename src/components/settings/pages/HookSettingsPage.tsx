@@ -106,10 +106,6 @@ function formatCcSwitchMessage(message: string | null, language: AppLanguage): s
       zh: "cc-switch 数据库路径必须指向 .db 文件。",
       en: "The cc-switch database path must point to a .db file.",
     },
-    wsl_environment_mismatch: {
-      zh: "当前 Claude 配置在 WSL 内，cc-switch 数据库在宿主环境，未自动跨环境写入。",
-      en: "Current Claude config is in WSL while the cc-switch database is on the host; cross-environment write was skipped.",
-    },
     common_config_parse_failed: {
       zh: "Claude 通用配置片段不是有效 JSON，未自动覆盖。",
       en: "The Claude common config snippet is not valid JSON and was not overwritten.",
@@ -131,9 +127,7 @@ function getCcSwitchProtectionDescription(status: CcSwitchHookProtectionStatus |
     case "invalidDb":
       return pickText(language, "设置中的 cc-switch 数据库路径不可用，已停止自动写入以避免误写。", "The cc-switch database path in settings is unavailable. Automatic write is stopped to avoid incorrect writes.");
     case "unavailable":
-      return status.wslMismatch
-        ? pickText(language, "检测到 WSL 环境不匹配，请在「设置 -> 供应商」选择同一环境内的 cc-switch.db。", "WSL environment mismatch detected. Choose a cc-switch.db from the same environment in Settings -> Providers.")
-        : pickText(language, "cc-switch 数据库暂不可用于通用配置同步。", "cc-switch database is currently unavailable for common config sync.");
+      return pickText(language, "cc-switch 数据库暂不可用于通用配置同步。", "cc-switch database is currently unavailable for common config sync.");
     case "syncFailed":
       return pickText(language, "cc-switch 通用配置同步失败，Hook 本身已安装，可稍后重试。", "cc-switch common config sync failed. The Hook itself is installed; retry later.");
   }
@@ -436,6 +430,8 @@ function CollapsibleHookSection({
   open,
   onToggle,
   children,
+  action,
+  collapsible = true,
   right,
 }: {
   title: string;
@@ -443,36 +439,59 @@ function CollapsibleHookSection({
   open: boolean;
   onToggle: () => void;
   children: ReactNode;
+  action?: ReactNode;
+  collapsible?: boolean;
   right?: ReactNode;
 }) {
+  const titleContent = (
+    <Box className="min-w-0">
+      <Text size="sm" fw={600} c="var(--on-surface)">
+        {title}
+      </Text>
+      {description && (
+        <Text mt={4} size="xs" c="var(--on-surface-variant)">
+          {description}
+        </Text>
+      )}
+    </Box>
+  );
+
   return (
     <section className="ui-surface-card overflow-hidden rounded-2xl border border-border">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="ui-focus-ring flex w-full items-center justify-between gap-3 p-4 text-left outline-none transition-colors hover:bg-surface-container-highest/50"
-        aria-expanded={open}
-      >
-        <Box className="min-w-0">
-          <Text size="sm" fw={600} c="var(--on-surface)">
-            {title}
-          </Text>
-          {description && (
-            <Text mt={4} size="xs" c="var(--on-surface-variant)">
-              {description}
-            </Text>
-          )}
-        </Box>
+      <div className="flex w-full items-center gap-3 p-4 transition-colors hover:bg-surface-container-highest/50">
+        {collapsible ? (
+          <button
+            type="button"
+            onClick={onToggle}
+            className="ui-focus-ring min-w-0 flex-1 text-left outline-none"
+            aria-expanded={open}
+          >
+            {titleContent}
+          </button>
+        ) : (
+          <div className="min-w-0 flex-1">{titleContent}</div>
+        )}
         <Group gap="xs" wrap="nowrap">
+          {action}
           {right}
-          <ChevronDown
-            size={18}
-            strokeWidth={1.8}
-            className={`shrink-0 text-text-muted transition-transform ${open ? "rotate-180" : ""}`}
-          />
+          {collapsible && (
+            <button
+              type="button"
+              onClick={onToggle}
+              className="ui-focus-ring rounded-md outline-none"
+              aria-label={title}
+              aria-expanded={open}
+            >
+              <ChevronDown
+                size={18}
+                strokeWidth={1.8}
+                className={`shrink-0 text-text-muted transition-transform ${open ? "rotate-180" : ""}`}
+              />
+            </button>
+          )}
         </Group>
-      </button>
-      {open && <Box px="md" pt="sm" pb="md">{children}</Box>}
+      </div>
+      {collapsible && open && <Box px="md" pt="sm" pb="md">{children}</Box>}
     </section>
   );
 }
@@ -909,15 +928,18 @@ export function HookSettingsPage() {
         description={text("Claude Code 的运行中、待审批、完成和异常退出状态通过 Hook 上报。", "Claude Code running, approval, completion, and failure states are reported through Hook.")}
         open={hookSettingsSectionsExpanded.claude}
         onToggle={() => toggleHookSection("claude")}
-        right={<StatusPill status={claudeStatus} />}
+        collapsible={claudeHookBridgeEnabled}
+        action={(
+          <Switch
+            color="cliPrimary"
+            checked={claudeHookBridgeEnabled}
+            onChange={(event) => void updateSetting("claudeHookBridgeEnabled", event.currentTarget.checked)}
+            aria-label={t("settings.hooks.bridge.enabled")}
+          />
+        )}
+        right={claudeHookBridgeEnabled ? <StatusPill status={claudeStatus} /> : undefined}
       >
         <Stack gap="lg">
-          <SettingsSwitchRow
-            title={t("settings.hooks.bridge.enabled")}
-            description={t("settings.hooks.bridge.claudeEnabled")}
-            checked={claudeHookBridgeEnabled}
-            onCheckedChange={(checked) => void updateSetting("claudeHookBridgeEnabled", checked)}
-          />
           {claudeHookBridgeEnabled && (
             <>
               <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="md">
@@ -1105,15 +1127,18 @@ export function HookSettingsPage() {
         description={text("Codex 的运行中、待审批和完成状态通过 Hook 上报。", "Codex running, approval, and completion states are reported through Hook.")}
         open={hookSettingsSectionsExpanded.codex}
         onToggle={() => toggleHookSection("codex")}
-        right={<StatusPill status={codexStatus} />}
+        collapsible={codexHookBridgeEnabled}
+        action={(
+          <Switch
+            color="cliPrimary"
+            checked={codexHookBridgeEnabled}
+            onChange={(event) => void updateSetting("codexHookBridgeEnabled", event.currentTarget.checked)}
+            aria-label={t("settings.hooks.bridge.enabled")}
+          />
+        )}
+        right={codexHookBridgeEnabled ? <StatusPill status={codexStatus} /> : undefined}
       >
         <Stack gap="lg">
-          <SettingsSwitchRow
-            title={t("settings.hooks.bridge.enabled")}
-            description={t("settings.hooks.bridge.codexEnabled")}
-            checked={codexHookBridgeEnabled}
-            onCheckedChange={(checked) => void updateSetting("codexHookBridgeEnabled", checked)}
-          />
           {codexHookBridgeEnabled && (
             <>
               <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="md">
