@@ -26,8 +26,12 @@ interface UseTerminalOscOptions {
   onPtyWriteError: (stage: string, err: unknown) => void;
 }
 
+export interface TerminalOutputNormalizationOptions {
+  replyToColorQueries?: boolean;
+}
+
 export interface UseTerminalOscResult {
-  normalizeTerminalOutput: (text: string) => string;
+  normalizeTerminalOutput: (text: string, options?: TerminalOutputNormalizationOptions) => string;
   updateSessionCwdIfChanged: (cwd: string | null) => void;
   updateTerminalColorReplies: (colors: TerminalColors) => void;
 }
@@ -156,10 +160,11 @@ export function useTerminalOsc({
     return output;
   };
 
-  const processSpecialOscQueries = (text: string) => {
+  const processSpecialOscQueries = (text: string, replyToColorQueries: boolean) => {
     const combined = specialOscBufferRef.current + text;
     specialOscBufferRef.current = "";
     let output = "";
+    let colorReplies = "";
     let cursor = 0;
 
     while (cursor < combined.length) {
@@ -189,11 +194,11 @@ export function useTerminalOsc({
       const body = combined.slice(start + OSC_PREFIX.length, terminator.index);
       const queryId = parseSpecialColorQuery(body);
       if (queryId === 10 || queryId === 11) {
-        const reply =
-          queryId === 10
+        if (replyToColorQueries) {
+          colorReplies += queryId === 10
             ? terminalColorRepliesRef.current.foreground
             : terminalColorRepliesRef.current.background;
-        terminalProcessManager.write(sessionId, reply).catch((err) => onPtyWriteError("osc_color_reply", err));
+        }
       } else {
         output += combined.slice(start, terminator.index + terminator.length);
       }
@@ -204,10 +209,17 @@ export function useTerminalOsc({
       specialOscBufferRef.current = "";
     }
 
+    if (colorReplies) {
+      terminalProcessManager.write(sessionId, colorReplies).catch((err) => onPtyWriteError("osc_color_reply", err));
+    }
+
     return output;
   };
 
-  const normalizeTerminalOutput = (text: string) => processShellIntegrationOsc(processSpecialOscQueries(text));
+  const normalizeTerminalOutput = (
+    text: string,
+    options: TerminalOutputNormalizationOptions = {},
+  ) => processShellIntegrationOsc(processSpecialOscQueries(text, options.replyToColorQueries !== false));
 
   const updateTerminalColorReplies = (colors: TerminalColors) => {
     terminalColorRepliesRef.current = {

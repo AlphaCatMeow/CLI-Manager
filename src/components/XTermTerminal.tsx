@@ -25,7 +25,7 @@ import { findTerminalFileLinks, resolveTerminalFileSystemPath } from "../lib/ter
 import { findProjectByPath, findWorktreeByPath } from "../lib/terminalProject";
 import { useTerminalSearch } from "../hooks/useTerminalSearch";
 import { useTerminalContextMenu } from "../hooks/useTerminalContextMenu";
-import { useTerminalOsc } from "../hooks/useTerminalOsc";
+import { useTerminalOsc, type TerminalOutputNormalizationOptions } from "../hooks/useTerminalOsc";
 import { useTerminalDisplay } from "../hooks/useTerminalDisplay";
 import { useTerminalInput, type TerminalSuggestionGhostState } from "../hooks/useTerminalInput";
 import { getTerminalCellWidth } from "../lib/terminalCellWidth";
@@ -296,7 +296,10 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const visibilityRestoreFallbackRafRef = useRef<number | null>(null);
   const cursorShowTimerRef = useRef<number | null>(null);
   const tuiComposerNormalizeRafRef = useRef<number | null>(null);
-  const displayNormalizeOutputRef = useRef<(text: string) => string>((text) => text);
+  const displayNormalizeOutputRef = useRef<(
+    text: string,
+    options?: TerminalOutputNormalizationOptions,
+  ) => string>((text) => text);
   const displayTransformOutputRef = useRef<(text: string) => string>((text) => text);
   const displayAfterWriteRef = useRef<((terminal: Terminal) => void) | null>(null);
   const cleanedAttachmentRootsRef = useRef<Set<string>>(new Set());
