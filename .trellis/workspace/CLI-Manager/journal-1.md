@@ -759,3 +759,36 @@ Claude 启动阶段提前订阅子任务 transcript，Codex rollout 增加有界
 ### Next Steps
 
 - None - task complete
+
+
+## Session 23: 精简项目多选右键菜单
+
+**Date**: 2026-07-18
+**Task**: 精简项目多选右键菜单
+**Branch**: `master`
+
+### Summary
+
+项目多选后右键已选项目仅保留取消选择、启动已选、批量修改 Shell 和删除已选；同步更新 TEMP 变更记录与功能清单，并通过 TypeScript 类型检查。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `41885d7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

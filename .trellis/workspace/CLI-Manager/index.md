@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 22
+- **Total Sessions**: 23
 - **Last Active**: 2026-07-18
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~761 | Active |
+| `journal-1.md` | ~794 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 23 | 2026-07-18 | 精简项目多选右键菜单 | `41885d7` | `master` |
 | 22 | 2026-07-18 | 修复终端 OSC 颜色响应泄漏 | `5c5d55f` | `master` |
 | 21 | 2026-07-18 | 合并 VS Code 终端正确性分支 | `7fd0c4a` | `master` |
 | 20 | 2026-07-16 | 修复历史会话恢复 CLI 参数 | `51c6ffd` | `master` |
