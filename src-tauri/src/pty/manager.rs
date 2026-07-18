@@ -806,7 +806,7 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
             .write()
             .unwrap()
             .insert(session_id.to_string(), session);
-        info!("pty session ready: id={}", session_id);
+        debug!("pty session ready: id={}", session_id);
         Ok(process_traits)
     }
 
@@ -1009,7 +1009,7 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
                         let diagnostics = session.diagnostics.lock().unwrap().clone();
                         session.missing_since = Some(now);
                         marked_missing += 1;
-                        info!(
+                        debug!(
                             "pty orphan candidate marked missing: id={}, age_secs={}, active_count={}, tracked_count={}, shell={}, exe={}, cwd={:?}",
                             session_id,
                             age.as_secs(),
@@ -1091,14 +1091,14 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
             if let Some(handle) = reader_handle {
                 reader_handles.push((session_id, handle));
             } else {
-                info!("pty session killed (close_all): id={}", session_id);
+                debug!("pty session killed (close_all): id={}", session_id);
             }
         }
 
         let closed = reader_handles.len();
         for (session_id, handle) in reader_handles {
             let _ = handle.join();
-            info!("pty session killed (close_all): id={}", session_id);
+            debug!("pty session killed (close_all): id={}", session_id);
         }
         info!(
             "pty close_all: batch closed sessions, joined_readers={}",

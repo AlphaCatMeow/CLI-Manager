@@ -5272,6 +5272,24 @@
   background-color: transparent;
 }
 
+.ui-history-message-card[data-selection-mode="true"] {
+  cursor: pointer;
+  transition: border-color 130ms ease, background-color 130ms ease;
+}
+
+.ui-history-message-card[data-selection-mode="true"]:hover {
+  background-color: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.ui-history-message-card[data-selected="true"] {
+  background-color: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.ui-history-message-card[data-selection-mode="true"]:focus-visible {
+  outline: 2px solid var(--interactive-focus-ring);
+  outline-offset: -2px;
+}
+
 .ui-history-message-card[data-role="user"] {
   justify-content: flex-end;
 }
@@ -5532,22 +5550,11 @@
   border-radius: 4px;
   background-color: transparent;
   color: var(--text-muted);
-  cursor: pointer;
   transition: color 130ms ease, background-color 130ms ease;
-}
-
-.ui-history-message-select:hover {
-  background-color: color-mix(in srgb, var(--on-surface) 7%, transparent);
-  color: var(--text-secondary);
 }
 
 .ui-history-message-select[data-selected="true"] {
   color: var(--accent);
-}
-
-.ui-history-message-select:focus-visible {
-  outline: 2px solid var(--interactive-focus-ring);
-  outline-offset: 1px;
 }
 
 .ui-history-message-select-bar {

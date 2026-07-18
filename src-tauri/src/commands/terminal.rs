@@ -63,7 +63,7 @@ pub async fn pty_prepare_create(
     }
 
     let env_count = env_vars.len();
-    info!(
+    debug!(
         "pty_prepare_create requested: session_id={}, cwd={:?}, shell={:?}, env_vars={}, daemon={}",
         session_id, cwd, shell, env_count, true
     );

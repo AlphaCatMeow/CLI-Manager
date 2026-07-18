@@ -655,7 +655,7 @@ pub fn run() {
                 },
                 log_file_name
             );
-            log::info!("Linux graphics diagnostics: {:?}", linux_graphics);
+            log::debug!("Linux graphics diagnostics: {:?}", linux_graphics);
 
             let show_item = MenuItem::with_id(app, "tray_show", "显示", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "tray_quit", "退出", true, None::<&str>)?;
