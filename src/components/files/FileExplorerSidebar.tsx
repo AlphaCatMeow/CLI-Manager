@@ -26,10 +26,10 @@ import {
   updateTerminalFileDragPointFromEvent,
 } from "../../lib/terminalFileDrag";
 import {
-  isIgnoredByRules,
-  parseDefaultIgnoreRules,
-  parseIgnoreContent,
-  type IgnoreRule,
+  createDefaultIgnoreMatcher,
+  createIgnoreMatcher,
+  includesProjectGitIgnoreChange,
+  type FileExplorerIgnoreMatcher,
 } from "../../lib/fileExplorerIgnore";
 import type { GitFileChange, ProjectFileContentMatch, ProjectFileEntry, ProjectFileSearchMode } from "../../lib/types";
 import { isDefaultCollapsedDirectoryName, useFileExplorerStore } from "../../stores/fileExplorerStore";
@@ -74,8 +74,8 @@ const FILE_WATCH_REFRESH_DEBOUNCE_MS = 600;
 interface AutoCollapseGroupState {
   expandedGroupPaths: Set<string>;
   ignoredPaths: Set<string>;
-  /** 项目 .gitignore（优先）或内置默认 ignore 规则 */
-  ignoreRules: IgnoreRule[];
+  /** Project .gitignore matcher, or the built-in fallback matcher. */
+  ignoreMatcher: FileExplorerIgnoreMatcher;
   toggleGroup: (parentPath: string) => void;
   ignorePath: (path: string) => void;
   unignorePath: (path: string) => void;
@@ -200,7 +200,7 @@ function collectCompactDirectoryChain(entry: ProjectFileEntry): {
 function splitAutoCollapsedEntries(
   entries: ProjectFileEntry[],
   ignoredPaths: Set<string>,
-  ignoreRules: IgnoreRule[]
+  ignoreMatcher: FileExplorerIgnoreMatcher
 ): {
   normalEntries: ProjectFileEntry[];
   collapsedEntries: ProjectFileEntry[];
@@ -209,7 +209,7 @@ function splitAutoCollapsedEntries(
   const collapsedEntries: ProjectFileEntry[] = [];
 
   for (const entry of entries) {
-    const ruleIgnored = isIgnoredByRules(entry.path, entry.kind === "directory", ignoreRules);
+    const ruleIgnored = ignoreMatcher.ignores(entry.path, entry.kind === "directory");
     // Issue #147：ignore 命中的文件直接隐藏；目录进入「已折叠」分组
     if (entry.kind === "file" && ruleIgnored) {
       continue;
@@ -223,7 +223,7 @@ function splitAutoCollapsedEntries(
     }
 
     if (entry.kind === "directory" && entry.children) {
-      const nested = splitAutoCollapsedEntries(entry.children, ignoredPaths, ignoreRules);
+      const nested = splitAutoCollapsedEntries(entry.children, ignoredPaths, ignoreMatcher);
       collapsedEntries.push(...nested.collapsedEntries);
       normalEntries.push(
         nested.collapsedEntries.length > 0
@@ -710,7 +710,7 @@ function FileTreeRows({
   renderAutoCollapsedGroup: boolean;
 }) {
   const { normalEntries, collapsedEntries } = renderAutoCollapsedGroup
-    ? splitAutoCollapsedEntries(entries, autoCollapseGroups.ignoredPaths, autoCollapseGroups.ignoreRules)
+    ? splitAutoCollapsedEntries(entries, autoCollapseGroups.ignoredPaths, autoCollapseGroups.ignoreMatcher)
     : { normalEntries: entries, collapsedEntries: [] };
   const groupOpen = autoCollapseGroups.expandedGroupPaths.has(parentPath);
 
@@ -822,9 +822,10 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
   const [renamingAction, setRenamingAction] = useState<RenameAction | null>(null);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
   const [expandedAutoCollapseGroups, setExpandedAutoCollapseGroups] = useState<Set<string>>(new Set());
-  /** null = 尚未加载；有数组 = 已从 .gitignore 解析（可为空）；加载失败则保持用默认规则 */
-  const [projectGitIgnoreRules, setProjectGitIgnoreRules] = useState<IgnoreRule[] | null>(null);
+  /** null = not loaded or unavailable; fallback rules remain active. */
+  const [projectGitIgnoreMatcher, setProjectGitIgnoreMatcher] = useState<FileExplorerIgnoreMatcher | null>(null);
   const [gitIgnoreLoadState, setGitIgnoreLoadState] = useState<"idle" | "loaded" | "missing">("idle");
+  const [gitIgnoreRefreshSeq, setGitIgnoreRefreshSeq] = useState(0);
   const [searchControlsVisible, setSearchControlsVisible] = useState(false);
   const [dragPreview, setDragPreview] = useState<FileDragPreviewState | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -844,14 +845,14 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
   useEffect(() => {
     setExpandedAutoCollapseGroups(new Set());
     setSearchControlsVisible(false);
-    setProjectGitIgnoreRules(null);
+    setProjectGitIgnoreMatcher(null);
     setGitIgnoreLoadState("idle");
   }, [project?.id]);
 
   // Issue #147：优先读取项目根 .gitignore；不存在则回退内置默认规则
   useEffect(() => {
     if (!project?.path) {
-      setProjectGitIgnoreRules(null);
+      setProjectGitIgnoreMatcher(null);
       setGitIgnoreLoadState("missing");
       return;
     }
@@ -863,18 +864,18 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
           relativePath: ".gitignore",
         });
         if (cancelled) return;
-        setProjectGitIgnoreRules(parseIgnoreContent(payload.content ?? ""));
+        setProjectGitIgnoreMatcher(createIgnoreMatcher(payload.content ?? ""));
         setGitIgnoreLoadState("loaded");
       } catch {
         if (cancelled) return;
-        setProjectGitIgnoreRules(null);
+        setProjectGitIgnoreMatcher(null);
         setGitIgnoreLoadState("missing");
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [project?.path]);
+  }, [project?.path, gitIgnoreRefreshSeq]);
 
   useEffect(() => {
     if (searchQuery.trim()) setSearchControlsVisible(true);
@@ -927,7 +928,11 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
 
     void listen<{ projectPath: string; changedPaths?: string[] }>("project-files-changed", (event) => {
       if (disposed) return;
-      if (event.payload.projectPath === project.path) scheduleRefreshIfActive(event.payload.changedPaths);
+      if (event.payload.projectPath !== project.path) return;
+      if (includesProjectGitIgnoreChange(event.payload.changedPaths)) {
+        setGitIgnoreRefreshSeq((current) => current + 1);
+      }
+      scheduleRefreshIfActive(event.payload.changedPaths);
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -1011,21 +1016,21 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
   }, [project, updateSetting]);
 
   // 优先使用项目 .gitignore；缺失或尚未成功加载时使用内置默认规则
-  const ignoreRules = useMemo<IgnoreRule[]>(() => {
-    if (gitIgnoreLoadState === "loaded" && projectGitIgnoreRules) {
-      return projectGitIgnoreRules;
+  const ignoreMatcher = useMemo<FileExplorerIgnoreMatcher>(() => {
+    if (gitIgnoreLoadState === "loaded" && projectGitIgnoreMatcher) {
+      return projectGitIgnoreMatcher;
     }
-    return parseDefaultIgnoreRules();
-  }, [gitIgnoreLoadState, projectGitIgnoreRules]);
+    return createDefaultIgnoreMatcher();
+  }, [gitIgnoreLoadState, projectGitIgnoreMatcher]);
 
   const autoCollapseGroups = useMemo<AutoCollapseGroupState>(() => ({
     expandedGroupPaths: expandedAutoCollapseGroups,
     ignoredPaths,
-    ignoreRules,
+    ignoreMatcher,
     toggleGroup: toggleAutoCollapseGroup,
     ignorePath,
     unignorePath,
-  }), [expandedAutoCollapseGroups, ignoredPaths, ignoreRules, toggleAutoCollapseGroup, ignorePath, unignorePath]);
+  }), [expandedAutoCollapseGroups, ignoredPaths, ignoreMatcher, toggleAutoCollapseGroup, ignorePath, unignorePath]);
 
   const getDisplayStatus = useCallback((entry: ProjectFileEntry): FileDisplayStatus | null => {
     if (dirtyFilePaths.has(entry.path)) {
